@@ -1,6 +1,6 @@
 # NetStream
 
-![Version](https://img.shields.io/badge/version-v1.2.3-4c8bf5)
+![Version](https://img.shields.io/badge/version-v1.0.0-4c8bf5)
 ![Language](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Platform](https://img.shields.io/badge/platform-Roblox-111111)
 ![Protocol](https://img.shields.io/badge/protocol-0x12-6f42c1)
