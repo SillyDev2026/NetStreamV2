@@ -9,9 +9,9 @@
 
 It provides reliable and unreliable events, request/response calls, replicated state, schema-based encoding, batching, coalescing, queue protection, rate limiting, immediate sends, live traffic statistics, and network-health diagnostics through one ModuleScript.
 
-> Current release: **v1.2.3**
+> Current release: **v1.0.0**
 >
-> This README targets the **v1.2.3 fixed build**, which includes the client bootstrap timeout fix and the Luau local-register/compiler fix.
+> This README targets the **v1.0.0 fixed build**, which includes the client bootstrap timeout fix and the Luau local-register/compiler fix.
 
 ---
 
@@ -103,7 +103,7 @@ Roblox still adds its own networking and transport overhead after NetStream send
 
 ## 1. Add the ModuleScript
 
-Place the v1.2.3 fixed module in `ReplicatedStorage` and name it:
+Place the v1.0.0 fixed module in `ReplicatedStorage` and name it:
 
 ```text
 ReplicatedStorage
@@ -1158,7 +1158,7 @@ print(stats.RouteRateLimited)
 
 Stopping a loop does not automatically erase data that has already been queued.
 
-v1.2.3 provides cancellation APIs for this.
+v1.0.0 provides cancellation APIs for this.
 
 ## Cancel all unsent messages for an Event route
 
@@ -2020,15 +2020,15 @@ Recommended location:
 ServerScriptService
 ```
 
-The fixed v1.2.3 build uses a client remote wait timeout instead of waiting forever.
+The fixed v1.0.0 build uses a client remote wait timeout instead of waiting forever.
 
 ---
 
 ## `Out of local registers ... exceeded limit 200`
 
-Use the **v1.2.3 fixed build**.
+Use the **v1.0.0 fixed build**.
 
-Earlier v1.2.3 builds grew beyond Luau's module-scope local-register limit.
+Earlier v1.0.0 builds grew beyond Luau's module-scope local-register limit.
 
 The fixed build restructures cold internal helpers so the module loads below that compiler limit while keeping the public API intact.
 
@@ -2357,7 +2357,7 @@ NetStream.Compression
 
 # Protocol and Compatibility
 
-v1.2.3 uses:
+v1.0.0 uses:
 
 ```text
 Protocol: 0x12
