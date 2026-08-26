@@ -5,11 +5,16 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
+local Compression = require(assert(script:WaitForChild("Compression", 10), "NetStream v1.3.0 requires a child ModuleScript named Compression (v2.3.2)"))
+assert(type(Compression) == "table" and type(Compression.Version) == "function" and Compression.Version() == "2.3.2", "NetStream v1.3.0 requires Compression v2.3.2")
+
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
 local Internal = {}
-local VERSION = "1.0.0"
-local PROTOCOL = 0x12
+local VERSION = "1.3.0"
+local PROTOCOL = 0x18
+local PROTOCOL_SINGLE = 0x19
+local PROTOCOL_COMPACT_TABLE = 0x1A
 local LOG_PREFIX = "[NetStream v" .. VERSION .. "]"
 local KIND_EVENT = 0
 local KIND_CALL = 1
@@ -34,12 +39,22 @@ local TYPE_MAP = 11
 local TYPE_COLOR3 = 12
 local TYPE_VECTOR2 = 13
 local TYPE_BUFFER = 14
-local TYPE_RAW_STRING = 15
+local TYPE_EXTENDED = 15
+
+local EXT = table.freeze({
+	RAW_STRING = 0,
+	UDIM = 1,
+	UDIM2 = 2,
+	RECT = 3,
+	NUMBER_RANGE = 4,
+	BRICK_COLOR = 5,
+	DATETIME = 6,
+})
 
 local DEFAULTS = {
 	Namespace = "NetStream",
 	RemoteWaitTimeout = 10,
-	FlushRate = 60,
+	FlushRate = 30,
 	MaxBatchMessages = 256,
 	MaxOutgoingBatchBytes = 2 * 1024 * 1024,
 	MaxIncomingPacketBytes = 2 * 1024 * 1024,
@@ -74,6 +89,37 @@ local DEFAULTS = {
 	MaxBufferBytes = 1024 * 1024,
 	MaxTableEntries = 8192,
 	MaxDepth = 32,
+	CompressionEnabled = true,
+	CompressionMinSavingsBytes = 1,
+	CompressionMinStringBytes = 8,
+	CompressionStringStrategy = "Auto",
+	CompressionUseStringDictionary = true,
+	CompressionTableCompression = true,
+	CompressionTableStrategy = "Auto",
+	CompressionHomogeneousArrays = true,
+	CompressionDeltaArrays = true,
+	CompressionRunLengthArrays = true,
+	CompressionCompactMapKeys = true,
+	CompressionTableKeyMapping = true,
+	CompressionMappedKeyMinUses = 2,
+	CompressionMaxMappedKeys = 255,
+	CompressionCompressBuffers = true,
+	CompressionMinBufferBytes = 6,
+	CompressionBufferStrategy = "Auto",
+	CompressionAllowExpansion = false,
+	BandwidthGovernorEnabled = true,
+	BandwidthLimitBytesPerSecond = 768,
+	BandwidthMaxPacketBytes = 192,
+	BandwidthMaxPacketsPerSecond = 6,
+	BandwidthMaxReliableQueue = 384,
+	BandwidthMaxUnreliableQueue = 96,
+	BandwidthDropUnreliableOnPressure = true,
+	BandwidthWarnAtUtilization = 0.85,
+	TransportAdaptiveBatching = true,
+	TransportBatchWindowSeconds = 0.050,
+	TransportRealtimeBatchWindowSeconds = 0.033,
+	TransportEstimatedPacketOverheadBytes = 96,
+	TransportTargetMessagesPerPacket = 8,
 	Debug = false,
 }
 
@@ -117,6 +163,8 @@ local messagePool = {}
 local argsPool = {}
 local batchPool = {}
 local globalIncomingRate = nil
+Internal.bandwidthStates = {}
+Internal.trafficWindowEstimatedTransportBytes = 0
 local trafficWindowStarted = os.clock()
 local trafficWindowSentBytes = 0
 local trafficWindowReceivedBytes = 0
@@ -131,6 +179,12 @@ local trafficSnapshot = {
 	ReceivedMessagesPerSecond = 0,
 	SentBatchesPerSecond = 0,
 	ReceivedBatchesPerSecond = 0,
+	BandwidthLimitBytesPerSecond = 0,
+	BandwidthUtilization = 0,
+	BandwidthHeadroomBytesPerSecond = 0,
+	EstimatedTransportBytesPerSecond = 0,
+	EstimatedTransportUtilization = 0,
+	EstimatedTransportHeadroomBytesPerSecond = 0,
 }
 
 local EMPTY_ARGS = table.freeze({ n = 0 })
@@ -171,10 +225,134 @@ local Stats = {
 	CancelledQueued = 0,
 	RouteRateLimited = 0,
 	TrafficSnapshots = 0,
+	CompressionAttempts = 0,
+	CompressionUsed = 0,
+	CompressionRejected = 0,
+	CompressionErrors = 0,
+	CompressionNoGain = 0,
+	CompressionDecodeCount = 0,
+	CompressionInputBytes = 0,
+	CompressionOutputBytes = 0,
+	CompressionSavedBytes = 0,
+	CompressionCompactTableUsed = 0,
+	CompressionDynamicTableUsed = 0,
+	CompressionDirectTableUsed = 0,
+	CompressionTailLengthElisions = 0,
+	CompressionCompactSingleSent = 0,
+	CompressionCompactSingleReceived = 0,
+	CompressionFramingBytesSaved = 0,
+	CompressionEstimatedNetBytesSaved = 0,
+	SingleMessagePackets = 0,
+	SingleMessageHeaderBytesSaved = 0,
+	CompressedSchemaStrings = 0,
+	SchemaStringBytesSaved = 0,
+	CompressedSchemaBuffers = 0,
+	SchemaBufferBytesSaved = 0,
+	CompressionMappedTableUsed = 0,
+	BandwidthGovernedBatches = 0,
+	BandwidthGovernedBytes = 0,
+	BandwidthDeferredFlushes = 0,
+	BandwidthDeferredBatches = 0,
+	BandwidthDeferredBytes = 0,
+	BandwidthDroppedUnreliableMessages = 0,
+	BandwidthQueuePressureDrops = 0,
+	BandwidthOversizedPackets = 0,
+	BandwidthBatchSplits = 0,
+	BandwidthThrottleEvents = 0,
+	TransportLogicalMessagesQueued = 0,
+	TransportBatchHolds = 0,
+	TransportCriticalMessagesQueued = 0,
+	TransportNormalMessagesQueued = 0,
+	TransportRealtimeMessagesQueued = 0,
+	TransportEstimatedOverheadBytes = 0,
+	TransportEstimatedBytes = 0,
+	TransportTargetFlushes = 0,
+	TransportImmediateDeferred = 0,
 }
 
 local Float32Tag = {}
 local RawStringTag = {}
+
+function Internal.compressionOptions()
+	return {
+		Mode = "Binary",
+		CompressStrings = true,
+		StringMinLength = Config.CompressionMinStringBytes,
+		StringStrategy = Config.CompressionStringStrategy,
+		UseStringDictionary = Config.CompressionUseStringDictionary,
+		TableCompression = Config.CompressionTableCompression,
+		TableStrategy = Config.CompressionTableStrategy,
+		HomogeneousArrays = Config.CompressionHomogeneousArrays,
+		DeltaArrays = Config.CompressionDeltaArrays,
+		RunLengthArrays = Config.CompressionRunLengthArrays,
+		CompactMapKeys = Config.CompressionCompactMapKeys,
+		TableKeyMapping = Config.CompressionTableKeyMapping,
+		MappedKeyMinUses = Config.CompressionMappedKeyMinUses,
+		MaxMappedKeys = Config.CompressionMaxMappedKeys,
+		CompressBuffers = Config.CompressionCompressBuffers,
+		BufferMinLength = Config.CompressionMinBufferBytes,
+		BufferStrategy = Config.CompressionBufferStrategy,
+		AllowExpansion = Config.CompressionAllowExpansion,
+	}
+end
+
+function Internal.varUIntByteLength(value)
+	local bytes = 1
+	while value >= 128 do
+		value = math.floor(value / 128)
+		bytes += 1
+	end
+	return bytes
+end
+
+function Internal.canCompressionRoundTrip(value, seen)
+	local kind = typeof(value)
+	if kind == "nil" or kind == "boolean" or kind == "number" or kind == "string"
+		or kind == "buffer" or kind == "Vector2" or kind == "Vector3" or kind == "Color3" or kind == "CFrame"
+		or kind == "UDim" or kind == "UDim2" or kind == "Rect" or kind == "NumberRange"
+		or kind == "BrickColor" or kind == "DateTime" then
+		return true
+	elseif kind ~= "table" then
+		return false
+	end
+
+	local mt = getmetatable(value)
+	if mt == Float32Tag or mt == RawStringTag then
+		return false
+	end
+
+	seen = seen or {}
+	if seen[value] then
+		return false
+	end
+	seen[value] = true
+	for key, child in pairs(value) do
+		if not Internal.canCompressionRoundTrip(key, seen) or not Internal.canCompressionRoundTrip(child, seen) then
+			seen[value] = nil
+			return false
+		end
+	end
+	seen[value] = nil
+	return true
+end
+
+function Internal.shouldAttemptCompression(args)
+	if not Internal.canCompressionRoundTrip(args, {}) then
+		return false
+	end
+	for i = 1, args.n do
+		local value = args[i]
+		local kind = typeof(value)
+		if kind == "string" and #value >= Config.CompressionMinStringBytes then
+			return true
+		elseif kind == "buffer" and Config.CompressionCompressBuffers and buffer.len(value) >= Config.CompressionMinBufferBytes then
+			return true
+		elseif kind == "table" then
+			return true
+		end
+	end
+	return false
+end
 
 local SCHEMA_BOOL = 1
 local SCHEMA_U8 = 2
@@ -192,6 +370,14 @@ local SCHEMA_VECTOR3Q = 13
 local SCHEMA_VECTOR2Q = 14
 local SCHEMA_CFRAMEQ = 15
 local SCHEMA_COLOR3 = 16
+local SCHEMA_EXT = table.freeze({
+	UDIM = 17,
+	UDIM2 = 18,
+	RECT = 19,
+	NUMBER_RANGE = 20,
+	BRICK_COLOR = 21,
+	DATETIME = 22,
+})
 
 function Internal.schemaType(kind, name, precision)
 	return table.freeze({
@@ -216,6 +402,12 @@ local Types = {
 	String = Internal.schemaType(SCHEMA_STRING, "String"),
 	Buffer = Internal.schemaType(SCHEMA_BUFFER, "Buffer"),
 	Color3 = Internal.schemaType(SCHEMA_COLOR3, "Color3"),
+	UDim = Internal.schemaType(SCHEMA_EXT.UDIM, "UDim"),
+	UDim2 = Internal.schemaType(SCHEMA_EXT.UDIM2, "UDim2"),
+	Rect = Internal.schemaType(SCHEMA_EXT.RECT, "Rect"),
+	NumberRange = Internal.schemaType(SCHEMA_EXT.NUMBER_RANGE, "NumberRange"),
+	BrickColor = Internal.schemaType(SCHEMA_EXT.BRICK_COLOR, "BrickColor"),
+	DateTime = Internal.schemaType(SCHEMA_EXT.DATETIME, "DateTime"),
 }
 
 function Types.Vector3Q(precision)
@@ -739,6 +931,25 @@ function Internal.validateSchemaValue(field, value, level)
 	elseif kind == SCHEMA_COLOR3 then
 		if typeof(value) ~= "Color3" then error("Color3 expects Color3", level) end
 		if not isFiniteNumber(value.R) or not isFiniteNumber(value.G) or not isFiniteNumber(value.B) then error("Color3 contains a non-finite component", level) end
+	elseif kind == SCHEMA_EXT.UDIM then
+		if typeof(value) ~= "UDim" then error("UDim expects UDim", level) end
+		if not isFiniteNumber(value.Scale) or not isInteger(value.Offset) or value.Offset < -2147483648 or value.Offset > 2147483647 then error("UDim contains an invalid component", level) end
+	elseif kind == SCHEMA_EXT.UDIM2 then
+		if typeof(value) ~= "UDim2" then error("UDim2 expects UDim2", level) end
+		if not isFiniteNumber(value.X.Scale) or not isFiniteNumber(value.Y.Scale)
+			or not isInteger(value.X.Offset) or value.X.Offset < -2147483648 or value.X.Offset > 2147483647
+			or not isInteger(value.Y.Offset) or value.Y.Offset < -2147483648 or value.Y.Offset > 2147483647 then error("UDim2 contains an invalid component", level) end
+	elseif kind == SCHEMA_EXT.RECT then
+		if typeof(value) ~= "Rect" then error("Rect expects Rect", level) end
+		if not isFiniteNumber(value.Min.X) or not isFiniteNumber(value.Min.Y) or not isFiniteNumber(value.Max.X) or not isFiniteNumber(value.Max.Y) then error("Rect contains a non-finite component", level) end
+	elseif kind == SCHEMA_EXT.NUMBER_RANGE then
+		if typeof(value) ~= "NumberRange" then error("NumberRange expects NumberRange", level) end
+		if not isFiniteNumber(value.Min) or not isFiniteNumber(value.Max) then error("NumberRange contains a non-finite component", level) end
+	elseif kind == SCHEMA_EXT.BRICK_COLOR then
+		if typeof(value) ~= "BrickColor" then error("BrickColor expects BrickColor", level) end
+	elseif kind == SCHEMA_EXT.DATETIME then
+		if typeof(value) ~= "DateTime" then error("DateTime expects DateTime", level) end
+		if not isFiniteNumber(value.UnixTimestampMillis) then error("DateTime contains an invalid timestamp", level) end
 	else
 		error("Unknown NetStream schema type", level)
 	end
@@ -762,11 +973,52 @@ end
 function Internal.writeSchemaString(writer, value)
 	local index = writer.stringToIndex[value]
 	if index ~= nil then
-		writer:varUInt(index * 2 + 1)
+		writer:varUInt(index * 4 + 1)
 		return
 	end
-	writer:varUInt(#value * 2)
-	writer:rawString(value)
+
+	local rawMeta = #value * 4
+	local rawCost = Internal.varUIntByteLength(rawMeta) + #value
+	local compressed = nil
+	local compressedCost = math.huge
+
+	if Config.CompressionEnabled and #value >= Config.CompressionMinStringBytes then
+		Stats.CompressionAttempts += 1
+		local ok, packed = pcall(Compression.CompressString, value, Internal.compressionOptions())
+		if ok and typeof(packed) == "buffer" then
+			local packedLength = buffer.len(packed)
+			local packedMeta = packedLength * 4 + 2
+			compressedCost = Internal.varUIntByteLength(packedMeta) + packedLength
+			if compressedCost + Config.CompressionMinSavingsBytes <= rawCost then
+				compressed = packed
+			else
+				Stats.CompressionRejected += 1
+				Stats.CompressionNoGain += 1
+			end
+		else
+			Stats.CompressionRejected += 1
+			Stats.CompressionErrors += 1
+		end
+	end
+
+	if compressed then
+		local packedLength = buffer.len(compressed)
+		writer:varUInt(packedLength * 4 + 2)
+		writer:rawBuffer(compressed)
+		Stats.CompressionUsed += 1
+		Stats.CompressedSchemaStrings += 1
+		Stats.CompressionInputBytes += rawCost
+		Stats.CompressionOutputBytes += compressedCost
+		local saved = rawCost - compressedCost
+		if saved > 0 then
+			Stats.CompressionSavedBytes += saved
+			Stats.SchemaStringBytesSaved += saved
+		end
+	else
+		writer:varUInt(rawMeta)
+		writer:rawString(value)
+	end
+
 	local nextIndex = #writer.strings
 	writer.strings[nextIndex + 1] = value
 	writer.stringToIndex[value] = nextIndex
@@ -774,21 +1026,99 @@ end
 
 function Internal.readSchemaString(reader)
 	local meta = reader:varUInt()
-	if meta % 2 == 1 then
-		local index = math.floor(meta / 2)
-		local value = reader.strings[index + 1]
+	local mode = meta % 4
+	local payload = math.floor(meta / 4)
+
+	if mode == 1 then
+		local value = reader.strings[payload + 1]
 		if value == nil then
 			error("NetStream invalid schema string reference", 0)
 		end
 		return value
+	elseif mode == 2 then
+		if payload > Config.MaxIncomingPacketBytes then
+			error("NetStream incoming compressed schema string is too large", 0)
+		end
+		local packed = reader:rawBuffer(payload)
+		local value = Compression.DecompressString(packed)
+		if #value > Config.MaxStringBytes then
+			error("NetStream incoming schema string exceeds MaxStringBytes", 0)
+		end
+		reader.strings[#reader.strings + 1] = value
+		Stats.CompressionDecodeCount += 1
+		return value
+	elseif mode ~= 0 then
+		error("NetStream invalid schema string mode", 0)
 	end
-	local length = math.floor(meta / 2)
+
+	local length = payload
 	if length > Config.MaxStringBytes then
 		error("NetStream incoming schema string exceeds MaxStringBytes", 0)
 	end
 	local value = reader:rawString(length)
 	reader.strings[#reader.strings + 1] = value
 	return value
+end
+
+function Internal.writeSchemaBuffer(writer, value)
+	local rawLength = buffer.len(value)
+	local rawMeta = rawLength * 2
+	local rawCost = Internal.varUIntByteLength(rawMeta) + rawLength
+	local compressed = nil
+	local compressedCost = math.huge
+
+	if Config.CompressionEnabled and Config.CompressionCompressBuffers and rawLength >= Config.CompressionMinBufferBytes then
+		Stats.CompressionAttempts += 1
+		local ok, packed = pcall(Compression.CompressBuffer, value, Internal.compressionOptions())
+		if ok and typeof(packed) == "buffer" then
+			local packedLength = buffer.len(packed)
+			local packedMeta = packedLength * 2 + 1
+			compressedCost = Internal.varUIntByteLength(packedMeta) + packedLength
+			if compressedCost + Config.CompressionMinSavingsBytes <= rawCost then
+				compressed = packed
+			else
+				Stats.CompressionRejected += 1
+				Stats.CompressionNoGain += 1
+			end
+		else
+			Stats.CompressionRejected += 1
+			Stats.CompressionErrors += 1
+		end
+	end
+
+	if compressed then
+		local packedLength = buffer.len(compressed)
+		writer:varUInt(packedLength * 2 + 1)
+		writer:rawBuffer(compressed)
+		Stats.CompressionUsed += 1
+		Stats.CompressedSchemaBuffers += 1
+		Stats.CompressionInputBytes += rawCost
+		Stats.CompressionOutputBytes += compressedCost
+		local saved = rawCost - compressedCost
+		if saved > 0 then
+			Stats.CompressionSavedBytes += saved
+			Stats.SchemaBufferBytesSaved += saved
+		end
+	else
+		writer:varUInt(rawMeta)
+		writer:rawBuffer(value)
+	end
+end
+
+function Internal.readSchemaBuffer(reader)
+	local meta = reader:varUInt()
+	local compressed = meta % 2 == 1
+	local payload = math.floor(meta / 2)
+	if compressed then
+		if payload > Config.MaxIncomingPacketBytes then error("NetStream incoming compressed schema buffer is too large", 0) end
+		local packed = reader:rawBuffer(payload)
+		local value = Compression.DecompressBuffer(packed)
+		if buffer.len(value) > Config.MaxBufferBytes then error("NetStream incoming schema buffer exceeds MaxBufferBytes", 0) end
+		Stats.CompressionDecodeCount += 1
+		return value
+	end
+	if payload > Config.MaxBufferBytes then error("NetStream incoming schema buffer exceeds MaxBufferBytes", 0) end
+	return reader:rawBuffer(payload)
 end
 
 local function writeSchemaValue(writer, field, value)
@@ -816,8 +1146,7 @@ local function writeSchemaValue(writer, field, value)
 	elseif kind == SCHEMA_STRING then
 		Internal.writeSchemaString(writer, value)
 	elseif kind == SCHEMA_BUFFER then
-		writer:varUInt(buffer.len(value))
-		writer:rawBuffer(value)
+		Internal.writeSchemaBuffer(writer, value)
 	elseif kind == SCHEMA_VECTOR3Q then
 		local precision = field.Precision
 		writer:varInt(roundScaled(value.X, precision))
@@ -842,6 +1171,26 @@ local function writeSchemaValue(writer, field, value)
 		writer:u8(clampInteger(math.floor(value.R * 255 + 0.5), 0, 255))
 		writer:u8(clampInteger(math.floor(value.G * 255 + 0.5), 0, 255))
 		writer:u8(clampInteger(math.floor(value.B * 255 + 0.5), 0, 255))
+	elseif kind == SCHEMA_EXT.UDIM then
+		writer:f64(value.Scale)
+		writer:i32(value.Offset)
+	elseif kind == SCHEMA_EXT.UDIM2 then
+		writer:f64(value.X.Scale)
+		writer:i32(value.X.Offset)
+		writer:f64(value.Y.Scale)
+		writer:i32(value.Y.Offset)
+	elseif kind == SCHEMA_EXT.RECT then
+		writer:f64(value.Min.X)
+		writer:f64(value.Min.Y)
+		writer:f64(value.Max.X)
+		writer:f64(value.Max.Y)
+	elseif kind == SCHEMA_EXT.NUMBER_RANGE then
+		writer:f64(value.Min)
+		writer:f64(value.Max)
+	elseif kind == SCHEMA_EXT.BRICK_COLOR then
+		writer:u16(value.Number)
+	elseif kind == SCHEMA_EXT.DATETIME then
+		writer:f64(value.UnixTimestampMillis)
 	end
 end
 
@@ -882,9 +1231,7 @@ local function readSchemaValue(reader, field)
 	elseif kind == SCHEMA_STRING then
 		return Internal.readSchemaString(reader)
 	elseif kind == SCHEMA_BUFFER then
-		local length = reader:varUInt()
-		if length > Config.MaxBufferBytes then error("NetStream incoming schema buffer exceeds MaxBufferBytes", 0) end
-		return reader:rawBuffer(length)
+		return Internal.readSchemaBuffer(reader)
 	elseif kind == SCHEMA_VECTOR3Q then
 		local inv = 1 / field.Precision
 		return Vector3.new(reader:varInt() * inv, reader:varInt() * inv, reader:varInt() * inv)
@@ -904,6 +1251,20 @@ local function readSchemaValue(reader, field)
 		return CFrame.new(x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22)
 	elseif kind == SCHEMA_COLOR3 then
 		return Color3.fromRGB(reader:u8(), reader:u8(), reader:u8())
+	elseif kind == SCHEMA_EXT.UDIM then
+		return UDim.new(reader:f64(), reader:i32())
+	elseif kind == SCHEMA_EXT.UDIM2 then
+		return UDim2.new(reader:f64(), reader:i32(), reader:f64(), reader:i32())
+	elseif kind == SCHEMA_EXT.RECT then
+		return Rect.new(reader:f64(), reader:f64(), reader:f64(), reader:f64())
+	elseif kind == SCHEMA_EXT.NUMBER_RANGE then
+		return NumberRange.new(reader:f64(), reader:f64())
+	elseif kind == SCHEMA_EXT.BRICK_COLOR then
+		return BrickColor.new(reader:u16())
+	elseif kind == SCHEMA_EXT.DATETIME then
+		local millis = reader:f64()
+		if not isFiniteNumber(millis) then error("NetStream incoming DateTime timestamp is not finite", 0) end
+		return DateTime.fromUnixTimestampMillis(millis)
 	end
 	error("Unknown NetStream schema type", 0)
 end
@@ -977,6 +1338,25 @@ local function validateValue(value, depth, seen)
 		if buffer.len(value) > Config.MaxBufferBytes then
 			error("NetStream buffer exceeds MaxBufferBytes", 4)
 		end
+		return
+	elseif robloxType == "UDim" then
+		if not isFiniteNumber(value.Scale) or not isInteger(value.Offset) or value.Offset < -2147483648 or value.Offset > 2147483647 then error("NetStream UDim contains an invalid component", 4) end
+		return
+	elseif robloxType == "UDim2" then
+		if not isFiniteNumber(value.X.Scale) or not isFiniteNumber(value.Y.Scale)
+			or not isInteger(value.X.Offset) or value.X.Offset < -2147483648 or value.X.Offset > 2147483647
+			or not isInteger(value.Y.Offset) or value.Y.Offset < -2147483648 or value.Y.Offset > 2147483647 then error("NetStream UDim2 contains an invalid component", 4) end
+		return
+	elseif robloxType == "Rect" then
+		if not isFiniteNumber(value.Min.X) or not isFiniteNumber(value.Min.Y) or not isFiniteNumber(value.Max.X) or not isFiniteNumber(value.Max.Y) then error("NetStream Rect contains a non-finite component", 4) end
+		return
+	elseif robloxType == "NumberRange" then
+		if not isFiniteNumber(value.Min) or not isFiniteNumber(value.Max) then error("NetStream NumberRange contains a non-finite component", 4) end
+		return
+	elseif robloxType == "BrickColor" then
+		return
+	elseif robloxType == "DateTime" then
+		if not isFiniteNumber(value.UnixTimestampMillis) then error("NetStream DateTime contains an invalid timestamp", 4) end
 		return
 	elseif luaType == "table" then
 		local mt = getmetatable(value)
@@ -1082,6 +1462,32 @@ writeValue = function(writer, value, depth, seen)
 		local length = buffer.len(value)
 		writeMeta(writer, TYPE_BUFFER, length)
 		writer:rawBuffer(value)
+	elseif robloxType == "UDim" then
+		writer:u8(TYPE_EXTENDED * 16 + EXT.UDIM)
+		writer:f64(value.Scale)
+		writer:i32(value.Offset)
+	elseif robloxType == "UDim2" then
+		writer:u8(TYPE_EXTENDED * 16 + EXT.UDIM2)
+		writer:f64(value.X.Scale)
+		writer:i32(value.X.Offset)
+		writer:f64(value.Y.Scale)
+		writer:i32(value.Y.Offset)
+	elseif robloxType == "Rect" then
+		writer:u8(TYPE_EXTENDED * 16 + EXT.RECT)
+		writer:f64(value.Min.X)
+		writer:f64(value.Min.Y)
+		writer:f64(value.Max.X)
+		writer:f64(value.Max.Y)
+	elseif robloxType == "NumberRange" then
+		writer:u8(TYPE_EXTENDED * 16 + EXT.NUMBER_RANGE)
+		writer:f64(value.Min)
+		writer:f64(value.Max)
+	elseif robloxType == "BrickColor" then
+		writer:u8(TYPE_EXTENDED * 16 + EXT.BRICK_COLOR)
+		writer:u16(value.Number)
+	elseif robloxType == "DateTime" then
+		writer:u8(TYPE_EXTENDED * 16 + EXT.DATETIME)
+		writer:f64(value.UnixTimestampMillis)
 	elseif luaType == "table" then
 		local mt = getmetatable(value)
 		if mt == Float32Tag then
@@ -1090,7 +1496,8 @@ writeValue = function(writer, value, depth, seen)
 			return
 		elseif mt == RawStringTag then
 			local raw = value[1]
-			writeMeta(writer, TYPE_RAW_STRING, #raw)
+			writer:u8(TYPE_EXTENDED * 16 + EXT.RAW_STRING)
+			writer:varUInt(#raw)
 			writer:rawString(raw)
 			return
 		end
@@ -1224,12 +1631,27 @@ readValue = function(reader, depth)
 			error("NetStream incoming buffer exceeds MaxBufferBytes", 0)
 		end
 		return reader:rawBuffer(length)
-	elseif typeId == TYPE_RAW_STRING then
-		local length = readMeta(reader, descriptor)
-		if length > Config.MaxStringBytes then
-			error("NetStream incoming raw string exceeds MaxStringBytes", 0)
+	elseif typeId == TYPE_EXTENDED then
+		if meta == EXT.RAW_STRING then
+			local length = reader:varUInt()
+			if length > Config.MaxStringBytes then error("NetStream incoming raw string exceeds MaxStringBytes", 0) end
+			return reader:rawString(length)
+		elseif meta == EXT.UDIM then
+			return UDim.new(reader:f64(), reader:i32())
+		elseif meta == EXT.UDIM2 then
+			return UDim2.new(reader:f64(), reader:i32(), reader:f64(), reader:i32())
+		elseif meta == EXT.RECT then
+			return Rect.new(reader:f64(), reader:f64(), reader:f64(), reader:f64())
+		elseif meta == EXT.NUMBER_RANGE then
+			return NumberRange.new(reader:f64(), reader:f64())
+		elseif meta == EXT.BRICK_COLOR then
+			return BrickColor.new(reader:u16())
+		elseif meta == EXT.DATETIME then
+			local millis = reader:f64()
+			if not isFiniteNumber(millis) then error("NetStream incoming DateTime timestamp is not finite", 0) end
+			return DateTime.fromUnixTimestampMillis(millis)
 		end
-		return reader:rawString(length)
+		error("NetStream unknown extended type descriptor", 0)
 	end
 	error("NetStream unknown type descriptor", 0)
 end
@@ -1269,6 +1691,8 @@ function Internal.newBucket()
 		unreliable = Internal.newQueue(),
 		latestReliable = {},
 		latestUnreliable = {},
+		reliableNotBefore = 0,
+		unreliableNotBefore = 0,
 	}
 end
 
@@ -1447,6 +1871,7 @@ local function makeMessage(kind, id, request, args, schema)
 	message.args = args
 	message.n = args and args.n or 0
 	message.schema = schema
+	message.latestKey = nil
 	return message
 end
 
@@ -1461,15 +1886,66 @@ releaseMessage = function(message)
 	message.args = nil
 	message.n = nil
 	message.schema = nil
+	message.latestKey = nil
 	if #messagePool < Config.MaxPoolSize then
 		messagePool[#messagePool + 1] = message
 	end
 end
 
+function Internal.messagePriority(message)
+	if message.kind == KIND_RETURN then
+		return "Critical"
+	end
+	local route
+	if message.kind == KIND_EVENT then
+		route = eventRoutes[message.id]
+	elseif message.kind == KIND_CALL then
+		route = functionRoutes[message.id]
+	elseif message.kind == KIND_STATE then
+		route = stateRoutes[message.id]
+	end
+	if route and route.Priority then
+		return route.Priority
+	end
+	if message.kind == KIND_CALL then
+		return "Critical"
+	end
+	return "Normal"
+end
+
+function Internal.transportWindow(priority)
+	if not Config.TransportAdaptiveBatching or priority == "Critical" then
+		return 0
+	end
+	if priority == "Realtime" then
+		return Config.TransportRealtimeBatchWindowSeconds
+	end
+	return Config.TransportBatchWindowSeconds
+end
+
 local function enqueue(target, unreliable, message, latestKey)
 	local bucket = getTargetBucket(target)
+	message.latestKey = latestKey
+	local priority = Internal.messagePriority(message)
+	local queue = if unreliable then bucket.unreliable else bucket.reliable
+	local latest = if unreliable then bucket.latestUnreliable else bucket.latestReliable
+	local wasEmpty = queueCount(queue) <= 0 and next(latest) == nil
+	local now = os.clock()
+	local notBeforeKey = if unreliable then "unreliableNotBefore" else "reliableNotBefore"
+	if wasEmpty then
+		bucket[notBeforeKey] = now + Internal.transportWindow(priority)
+	elseif priority == "Critical" then
+		bucket[notBeforeKey] = now
+	end
+	Stats.TransportLogicalMessagesQueued += 1
+	if priority == "Critical" then
+		Stats.TransportCriticalMessagesQueued += 1
+	elseif priority == "Realtime" then
+		Stats.TransportRealtimeMessagesQueued += 1
+	else
+		Stats.TransportNormalMessagesQueued += 1
+	end
 	if latestKey ~= nil then
-		local latest = if unreliable then bucket.latestUnreliable else bucket.latestReliable
 		local old = latest[latestKey]
 		if old then
 			releaseMessage(old)
@@ -1478,19 +1954,23 @@ local function enqueue(target, unreliable, message, latestKey)
 		latest[latestKey] = message
 		return true
 	end
-	local queue = if unreliable then bucket.unreliable else bucket.reliable
 	local maxQueue = if unreliable then Config.MaxUnreliableQueue else Config.MaxReliableQueue
+	if Config.BandwidthGovernorEnabled then
+		local pressureLimit = if unreliable then Config.BandwidthMaxUnreliableQueue else Config.BandwidthMaxReliableQueue
+		maxQueue = math.min(maxQueue, pressureLimit)
+	end
 	if queueCount(queue) >= maxQueue then
 		if unreliable then
 			local dropped = queuePop(queue)
 			releaseMessage(dropped)
 			Stats.DroppedUnreliable += 1
+			Stats.BandwidthQueuePressureDrops += 1
 		else
 			Stats.RejectedReliable += 1
 			releaseMessage(message)
 			if not overflowWarned then
 				overflowWarned = true
-				warn(LOG_PREFIX, "Reliable queue is full; rejecting new messages. Increase MaxReliableQueue or use Latest/Unreliable for high-frequency traffic.")
+				warn(LOG_PREFIX, "Reliable queue is full; rejecting new messages. Use Coalesce/Latest for high-frequency state or increase the bandwidth queue limits deliberately.")
 			end
 			return false
 		end
@@ -1499,10 +1979,199 @@ local function enqueue(target, unreliable, message, latestKey)
 	return true
 end
 
-local function writeMessage(writer, item)
+function Internal.routeCompressionEnabled(item)
+	if not Config.CompressionEnabled then
+		return false
+	end
+	local route = nil
+	if item.kind == KIND_EVENT then
+		route = eventRoutes[item.id]
+	elseif item.kind == KIND_CALL then
+		route = functionRoutes[item.id]
+	elseif item.kind == KIND_STATE then
+		route = stateRoutes[item.id]
+	end
+	if route and route.Compression == false then
+		return false
+	end
+	if route and route.Compression == true then
+		return true
+	end
+	return Internal.shouldAttemptCompression(item.args)
+end
+
+function Internal.tryCompressDynamicArgs(writer, item, isTail)
+	if not Internal.routeCompressionEnabled(item) then
+		return nil, nil, false, false
+	end
+
+	Stats.CompressionAttempts += 1
+
+	local temp = Writer.new(128, Config.MaxOutgoingBatchBytes)
+	for i, value in ipairs(writer.strings) do
+		temp.strings[i] = value
+		temp.stringToIndex[value] = i - 1
+	end
+
+	local okRaw, rawErr = pcall(function()
+		for i = 1, item.n do
+			writeValue(temp, item.args[i], 0, nil)
+		end
+	end)
+	if not okRaw then
+		Stats.CompressionRejected += 1
+		Internal.debugWarn("Raw dynamic measurement failed:", rawErr)
+		return nil, nil, false, false
+	end
+
+	local rawPayloadBytes = temp.position
+	local rawCountBytes = if item.n >= 30 then Internal.varUIntByteLength(item.n * 4) else 0
+	local rawCost = rawCountBytes + rawPayloadBytes
+
+	local source = item.args
+	local mode = 1
+	if item.n == 1 and typeof(item.args[1]) == "table" then
+		source = item.args[1]
+		mode = 2
+	end
+
+	local ok, packet = pcall(Compression.Compress, source, Internal.compressionOptions())
+	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
+		Stats.CompressionRejected += 1
+		Stats.CompressionErrors += 1
+		if not ok then
+			Internal.debugWarn("Compression candidate rejected:", packet)
+		end
+		return nil, nil, false, false
+	end
+
+	local data = packet.Data
+	local dataBytes = buffer.len(data)
+	local directSingle = mode == 2
+	local control = if directSingle then nil else item.n * 4 + mode
+	local omitLength = isTail == true
+	local compressedCost = dataBytes
+	if not omitLength then
+		compressedCost += Internal.varUIntByteLength(dataBytes)
+	end
+	if control ~= nil then
+		compressedCost += Internal.varUIntByteLength(control)
+	end
+
+	if compressedCost + Config.CompressionMinSavingsBytes <= rawCost then
+		Stats.CompressionUsed += 1
+		Stats.CompressionInputBytes += rawCost
+		Stats.CompressionOutputBytes += compressedCost
+		local saved = rawCost - compressedCost
+		if saved > 0 then
+			Stats.CompressionSavedBytes += saved
+			Stats.CompressionEstimatedNetBytesSaved += saved
+		end
+		if Compression.IsCompactTable(data) then
+			Stats.CompressionCompactTableUsed += 1
+			local tableMode = Compression.TableMode(data)
+			if string.find(tableMode, "Mapped", 1, true) ~= nil then Stats.CompressionMappedTableUsed += 1 end
+		else
+			Stats.CompressionDynamicTableUsed += 1
+		end
+		if directSingle then
+			Stats.CompressionDirectTableUsed += 1
+		end
+		if omitLength then
+			Stats.CompressionTailLengthElisions += 1
+		end
+		return data, control, directSingle, omitLength
+	end
+
+	Stats.CompressionRejected += 1
+	Stats.CompressionNoGain += 1
+	return nil, nil, false, false
+end
+
+function Internal.tryEncodeCompactSingle(item)
+	if item.schema ~= nil
+		or item.n ~= 1
+		or typeof(item.args[1]) ~= "table"
+		or (item.kind ~= KIND_EVENT and item.kind ~= KIND_STATE)
+		or item.id < 0
+		or item.id > 63
+		or not Internal.routeCompressionEnabled(item)
+	then
+		return nil, false
+	end
+
+	Stats.CompressionAttempts += 1
+
+	local rawWriter = Writer.new(128, Config.MaxOutgoingBatchBytes)
+	local okRaw, rawErr = pcall(writeValue, rawWriter, item.args[1], 0, nil)
+	if not okRaw then
+		Stats.CompressionRejected += 1
+		Internal.debugWarn("Compact single raw measurement failed:", rawErr)
+		return nil, true
+	end
+
+	local rawPayloadBytes = rawWriter.position
+	local ok, packet = pcall(Compression.Compress, item.args[1], Internal.compressionOptions())
+	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
+		Stats.CompressionRejected += 1
+		Stats.CompressionErrors += 1
+		if not ok then
+			Internal.debugWarn("Compact single compression rejected:", packet)
+		end
+		return nil, true
+	end
+
+	local data = packet.Data
+	local dataBytes = buffer.len(data)
+	local nativePacketBytes = 1 + 1 + Internal.varUIntByteLength(item.id) + rawPayloadBytes
+	local compactPacketBytes = 2 + dataBytes
+	local netSaved = nativePacketBytes - compactPacketBytes
+
+	if netSaved < Config.CompressionMinSavingsBytes then
+		Stats.CompressionRejected += 1
+		Stats.CompressionNoGain += 1
+		return nil, true
+	end
+
+	local writer = Writer.new(math.max(16, compactPacketBytes), Config.MaxOutgoingBatchBytes)
+	writer:u8(PROTOCOL_COMPACT_TABLE)
+	writer:u8(item.id * 4 + item.kind)
+	writer:rawBuffer(data)
+
+	Stats.CompressionUsed += 1
+	Stats.CompressionInputBytes += rawPayloadBytes
+	Stats.CompressionOutputBytes += dataBytes
+	local payloadSaved = rawPayloadBytes - dataBytes
+	if payloadSaved > 0 then
+		Stats.CompressionSavedBytes += payloadSaved
+	end
+	Stats.CompressionEstimatedNetBytesSaved += netSaved
+	Stats.CompressionCompactSingleSent += 1
+	Stats.CompressionDirectTableUsed += 1
+	Stats.CompressionTailLengthElisions += 1
+	Stats.SingleMessagePackets += 1
+	Stats.SingleMessageHeaderBytesSaved += 1
+	Stats.CompressionFramingBytesSaved += math.max(0, netSaved - math.max(0, payloadSaved))
+	if Compression.IsCompactTable(data) then
+		Stats.CompressionCompactTableUsed += 1
+		local tableMode = Compression.TableMode(data)
+		if string.find(tableMode, "Mapped", 1, true) ~= nil then Stats.CompressionMappedTableUsed += 1 end
+	else
+		Stats.CompressionDynamicTableUsed += 1
+	end
+
+	return writer:finish(), true
+end
+
+local function writeMessage(writer, item, isTail, skipCompression)
 	local argc = item.n
 	local routeBearing = item.kind == KIND_EVENT or item.kind == KIND_CALL or item.kind == KIND_STATE
 	local reuseRoute = false
+	local compressedData = nil
+	local compressedControl = nil
+	local compressedDirect = false
+	local compressedOmitLength = false
+
 	if item.schema and routeBearing then
 		if item.kind == KIND_EVENT then
 			reuseRoute = writer.lastEventRoute == item.id
@@ -1515,25 +2184,45 @@ local function writeMessage(writer, item)
 			writer.lastStateRoute = item.id
 		end
 	end
+
 	if item.schema then
 		writer:u8(item.kind + 4 + (if reuseRoute then 8 else 0))
 		Stats.SchemaMessages += 1
 	else
-		local shortCount = if argc < 31 then argc else 31
-		writer:u8(shortCount * 8 + item.kind)
-		if argc >= 31 then
-			writer:varUInt(argc)
+		if not skipCompression then
+			compressedData, compressedControl, compressedDirect, compressedOmitLength = Internal.tryCompressDynamicArgs(writer, item, isTail)
+		end
+		if compressedData then
+			if compressedDirect then
+				writer:u8(30 * 8 + item.kind)
+			else
+				writer:u8(31 * 8 + item.kind)
+				writer:varUInt(compressedControl)
+			end
+		else
+			local shortCount = if argc < 30 then argc else 31
+			writer:u8(shortCount * 8 + item.kind)
+			if argc >= 30 then
+				writer:varUInt(argc * 4)
+			end
 		end
 		Stats.DynamicMessages += 1
 	end
+
 	if routeBearing and not reuseRoute then
 		writer:varUInt(item.id)
 	end
 	if item.kind == KIND_CALL or item.kind == KIND_RETURN then
 		writer:varUInt(item.request)
 	end
+
 	if item.schema then
 		writeSchemaArgs(writer, item.schema, item.args)
+	elseif compressedData then
+		if not compressedOmitLength then
+			writer:varUInt(buffer.len(compressedData))
+		end
+		writer:rawBuffer(compressedData)
 	else
 		for i = 1, argc do
 			writeValue(writer, item.args[i], 0, nil)
@@ -1631,10 +2320,26 @@ local function releaseWriter(writer)
 end
 
 local function encodeBatch(items)
+	local compactAttempted = false
+	if #items == 1 then
+		local compact, attempted = Internal.tryEncodeCompactSingle(items[1])
+		compactAttempted = attempted
+		if compact then
+			Stats.DynamicMessages += 1
+			return compact
+		end
+	end
+
 	local writer = acquireWriter()
 	local ok, result = pcall(function()
-		writer:u8(PROTOCOL)
-		writer:varUInt(#items)
+		if #items == 1 then
+			writer:u8(PROTOCOL_SINGLE)
+			Stats.SingleMessagePackets += 1
+			Stats.SingleMessageHeaderBytesSaved += 1
+		else
+			writer:u8(PROTOCOL)
+			writer:varUInt(#items)
+		end
 		local index = 1
 		while index <= #items do
 			local item = items[index]
@@ -1651,11 +2356,11 @@ local function encodeBatch(items)
 					writeSchemaEventRun(writer, items, index, runCount)
 					index += runCount
 				else
-					writeMessage(writer, item)
+					writeMessage(writer, item, index == #items, compactAttempted and #items == 1)
 					index += 1
 				end
 			else
-				writeMessage(writer, item)
+				writeMessage(writer, item, index == #items, compactAttempted and #items == 1)
 				index += 1
 			end
 		end
@@ -1666,6 +2371,99 @@ local function encodeBatch(items)
 		error(result, 0)
 	end
 	return result
+end
+
+function Internal.getBandwidthState(target)
+	local key
+	if IS_SERVER then
+		key = target
+	else
+		key = "client"
+	end
+	local state = Internal.bandwidthStates[key]
+	if not state then
+		state = {
+			nextByteAt = 0,
+			nextPacketAt = 0,
+			lastDelay = 0,
+		}
+		Internal.bandwidthStates[key] = state
+	end
+	return state
+end
+
+function Internal.bandwidthReady(target)
+	if not Config.BandwidthGovernorEnabled then
+		return true, 0
+	end
+	local now = os.clock()
+	local waitUntil = 0
+	if IS_SERVER and target == ALL then
+		for _, player in ipairs(Players:GetPlayers()) do
+			local state = Internal.getBandwidthState(player)
+			waitUntil = math.max(waitUntil, state.nextByteAt, state.nextPacketAt)
+		end
+	else
+		local state = Internal.getBandwidthState(target)
+		waitUntil = math.max(state.nextByteAt, state.nextPacketAt)
+	end
+	if now + 1e-6 < waitUntil then
+		return false, waitUntil - now
+	end
+	return true, 0
+end
+
+function Internal.commitBandwidth(target, bytes)
+	if not Config.BandwidthGovernorEnabled then
+		return
+	end
+	local now = os.clock()
+	local chargedBytes = bytes + Config.TransportEstimatedPacketOverheadBytes
+	local byteDelay = chargedBytes / Config.BandwidthLimitBytesPerSecond
+	local packetDelay = 1 / Config.BandwidthMaxPacketsPerSecond
+	local function commitState(state)
+		state.nextByteAt = math.max(now, state.nextByteAt) + byteDelay
+		state.nextPacketAt = math.max(now, state.nextPacketAt) + packetDelay
+		state.lastDelay = math.max(byteDelay, packetDelay)
+	end
+	if IS_SERVER and target == ALL then
+		for _, player in ipairs(Players:GetPlayers()) do
+			commitState(Internal.getBandwidthState(player))
+		end
+	else
+		commitState(Internal.getBandwidthState(target))
+	end
+	Stats.BandwidthGovernedBatches += 1
+	Stats.BandwidthGovernedBytes += bytes
+	Stats.TransportEstimatedOverheadBytes += Config.TransportEstimatedPacketOverheadBytes
+	Stats.TransportEstimatedBytes += chargedBytes
+	Internal.trafficWindowEstimatedTransportBytes += chargedBytes
+end
+
+function Internal.restoreDeferredItems(queue, latest, items, unreliable)
+	local normal = table.create(#items)
+	for i = 1, #items do
+		local item = items[i]
+		if item then
+			if item.latestKey ~= nil then
+				local old = latest[item.latestKey]
+				if old and old ~= item then
+					releaseMessage(old)
+					Stats.CoalescedLatest += 1
+				end
+				latest[item.latestKey] = item
+			elseif unreliable and Config.BandwidthDropUnreliableOnPressure then
+				releaseMessage(item)
+				Stats.BandwidthDroppedUnreliableMessages += 1
+			else
+				normal[#normal + 1] = item
+			end
+		end
+	end
+	for i = #normal, 1, -1 do
+		queue.head -= 1
+		queue.items[queue.head] = normal[i]
+	end
 end
 
 local function fireRemote(remote, target, data)
@@ -1682,9 +2480,22 @@ end
 
 local function sendBatch(target, unreliable, data)
 	if IS_SERVER and target ~= ALL and (not target or target.Parent ~= Players) then
-		return false
+		return false, "invalid"
 	end
 	local bytes = buffer.len(data)
+	local ready = Internal.bandwidthReady(target)
+	if not ready then
+		Stats.BandwidthDeferredBatches += 1
+		Stats.BandwidthDeferredBytes += bytes
+		Stats.BandwidthThrottleEvents += 1
+		return false, "defer"
+	end
+	if Config.BandwidthGovernorEnabled and bytes > Config.BandwidthMaxPacketBytes then
+		Stats.BandwidthOversizedPackets += 1
+		if unreliable and Config.BandwidthDropUnreliableOnPressure then
+			return false, "drop"
+		end
+	end
 	local remote = reliableRemote
 	if unreliable and unreliableRemote and bytes <= Config.UnreliableMaxBytes then
 		remote = unreliableRemote
@@ -1698,14 +2509,15 @@ local function sendBatch(target, unreliable, data)
 	end
 	if not ok then
 		warn(LOG_PREFIX, "send failed:", err)
-		return false
+		return false, "error"
 	end
+	Internal.commitBandwidth(target, bytes)
 	Stats.SentBatches += 1
 	Stats.SentBytes += bytes
 	trafficWindowSentBatches += 1
 	trafficWindowSentBytes += bytes
 	lastPacketBytes = bytes
-	return true
+	return true, "sent"
 end
 
 local function acquireBatch(limit)
@@ -1747,22 +2559,52 @@ local function collectBatch(queue, latest, limit)
 	return items
 end
 
+function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
+	local ok, data = pcall(encodeBatch, items)
+	while ok and Config.BandwidthGovernorEnabled and #items > 1 and buffer.len(data) > Config.BandwidthMaxPacketBytes do
+		local originalCount = #items
+		local keepCount = math.max(1, math.floor(originalCount / 2))
+		local deferred = acquireBatch(originalCount - keepCount)
+		for i = keepCount + 1, originalCount do
+			deferred[#deferred + 1] = items[i]
+			items[i] = nil
+		end
+		Internal.restoreDeferredItems(queue, latest, deferred, unreliable)
+		releaseBatch(deferred)
+		Stats.BandwidthBatchSplits += 1
+		ok, data = pcall(encodeBatch, items)
+	end
+	return ok, data
+end
+
 function Internal.sendIsolatedMessages(target, unreliable, items)
 	for i = 1, #items do
+		local item = items[i]
 		local single = acquireBatch(1)
-		single[1] = items[i]
+		single[1] = item
 		local ok, data = pcall(encodeBatch, single)
 		releaseBatch(single)
 		if ok then
-			if sendBatch(target, unreliable, data) then
+			local sent, reason = sendBatch(target, unreliable, data)
+			if sent then
 				Stats.SentMessages += 1
 				trafficWindowSentMessages += 1
+				releaseMessage(item)
+				items[i] = nil
+			elseif reason == "defer" then
+				return i
+			else
+				releaseMessage(item)
+				items[i] = nil
 			end
 		else
 			Stats.RejectedMessages += 1
 			Internal.debugWarn("Dropped malformed message during batch recovery:", data)
+			releaseMessage(item)
+			items[i] = nil
 		end
 	end
+	return nil
 end
 
 local function flushChannel(target, queue, latest, unreliable, deadline)
@@ -1773,30 +2615,91 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		if queueCount(queue) <= 0 and next(latest) == nil then
 			break
 		end
+		local ready = Internal.bandwidthReady(target)
+		if not ready then
+			Stats.BandwidthDeferredFlushes += 1
+			break
+		end
 		local items = collectBatch(queue, latest, Config.MaxBatchMessages)
 		if #items == 0 then
 			releaseBatch(items)
 			break
 		end
-		local ok, data = pcall(encodeBatch, items)
+		local ok, data = Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 		if not ok then
 			Internal.debugWarn("Batch encode failed; retrying messages individually:", data)
-			Internal.sendIsolatedMessages(target, unreliable, items)
-		elseif sendBatch(target, unreliable, data) then
-			Stats.SentMessages += #items
-			trafficWindowSentMessages += #items
+			local deferredIndex = Internal.sendIsolatedMessages(target, unreliable, items)
+			if deferredIndex then
+				local pendingItems = acquireBatch(#items - deferredIndex + 1)
+				for i = deferredIndex, #items do
+					if items[i] then
+						pendingItems[#pendingItems + 1] = items[i]
+					end
+				end
+				Internal.restoreDeferredItems(queue, latest, pendingItems, unreliable)
+				releaseBatch(pendingItems)
+				releaseBatch(items)
+				break
+			end
+			releaseBatch(items)
+		else
+			local sent, reason = sendBatch(target, unreliable, data)
+			if sent then
+				Stats.SentMessages += #items
+				trafficWindowSentMessages += #items
+				for i = 1, #items do
+					releaseMessage(items[i])
+				end
+			elseif reason == "defer" then
+				Internal.restoreDeferredItems(queue, latest, items, unreliable)
+				releaseBatch(items)
+				break
+			else
+				for i = 1, #items do
+					releaseMessage(items[i])
+				end
+			end
+			releaseBatch(items)
 		end
-		for i = 1, #items do
-			releaseMessage(items[i])
-		end
-		releaseBatch(items)
 	end
 end
 
-local function flushBucket(target, bucket, deadline)
-	flushChannel(target, bucket.reliable, bucket.latestReliable, false, deadline)
+local function flushBucket(target, bucket, deadline, force)
+	local now = os.clock()
+	local reliableCount = math.max(0, queueCount(bucket.reliable)) + Internal.mapCount(bucket.latestReliable)
+	local reliablePending = reliableCount > 0
+	if reliablePending then
+		local targetReady = reliableCount >= Config.TransportTargetMessagesPerPacket
+		if force or targetReady or now + 1e-6 >= bucket.reliableNotBefore then
+			if targetReady and not force then
+				Stats.TransportTargetFlushes += 1
+			end
+			flushChannel(target, bucket.reliable, bucket.latestReliable, false, deadline)
+		else
+			Stats.TransportBatchHolds += 1
+		end
+	end
+	if queueCount(bucket.reliable) <= 0 and next(bucket.latestReliable) == nil then
+		bucket.reliableNotBefore = 0
+	end
 	if os.clock() < deadline then
-		flushChannel(target, bucket.unreliable, bucket.latestUnreliable, true, deadline)
+		now = os.clock()
+		local unreliableCount = math.max(0, queueCount(bucket.unreliable)) + Internal.mapCount(bucket.latestUnreliable)
+		local unreliablePending = unreliableCount > 0
+		if unreliablePending then
+			local targetReady = unreliableCount >= Config.TransportTargetMessagesPerPacket
+			if force or targetReady or now + 1e-6 >= bucket.unreliableNotBefore then
+				if targetReady and not force then
+					Stats.TransportTargetFlushes += 1
+				end
+				flushChannel(target, bucket.unreliable, bucket.latestUnreliable, true, deadline)
+			else
+				Stats.TransportBatchHolds += 1
+			end
+		end
+	end
+	if queueCount(bucket.unreliable) <= 0 and next(bucket.latestUnreliable) == nil then
+		bucket.unreliableNotBefore = 0
 	end
 end
 
@@ -1953,6 +2856,10 @@ end
 
 function BaseRoute:GetId()
 	return self.Id
+end
+
+function BaseRoute:GetPriority()
+	return self.Priority or "Normal"
 end
 
 function BaseRoute:Wait(timeout)
@@ -2396,11 +3303,88 @@ local function decodeSchemaEventRun(reader, schema, repeatCount, route, player, 
 	end
 end
 
-local function decodeBatch(player, data, reader)
-	if reader:u8() ~= PROTOCOL then
-		error("NetStream protocol mismatch", 0)
+function Internal.decodeCompactSingleTable(player, data, reader)
+	if not canAcceptIncomingMessages(player, 1) then
+		Stats.RateLimitedBatches += 1
+		Stats.ReceivedBatches += 1
+		Stats.ReceivedBytes += buffer.len(data)
+		return
 	end
-	local count = reader:varUInt()
+
+	local packedRoute = reader:u8()
+	local kind = packedRoute % 4
+	local routeId = math.floor(packedRoute / 4)
+	if kind ~= KIND_EVENT and kind ~= KIND_STATE then
+		error("NetStream compact-table packet only supports Event or State", 0)
+	end
+
+	local route = if kind == KIND_EVENT then eventRoutes[routeId] else stateRoutes[routeId]
+	if not route then
+		error("NetStream compact-table packet referenced an unknown route", 0)
+	end
+	if route._schema then
+		error("NetStream compact-table packet is not valid for a schema route", 0)
+	end
+
+	local compressedBytes = reader.length - reader.position
+	if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then
+		error("NetStream compact-table payload has an invalid size", 0)
+	end
+	local compressedData = reader:rawBuffer(compressedBytes)
+	local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
+	if typeof(decoded) ~= "table" then
+		error("NetStream compact-table payload did not decode to a table", 0)
+	end
+	validateValue(decoded, 0, nil)
+
+	local args = acquireArgsCount(1)
+	args[1] = decoded
+	Stats.CompressionDecodeCount += 1
+	Stats.CompressionCompactSingleReceived += 1
+
+	if kind == KIND_EVENT then
+		if consumeRouteAllowance(route, player, 1) > 0 then
+			enqueueDispatch(route, player, args)
+		else
+			releaseArgs(args)
+		end
+	else
+		if consumeRouteAllowance(route, player, 1) > 0 then
+			local state = Internal.getPeerState(player)
+			state[routeId] = decoded
+			enqueueDispatch(route, player, args)
+		else
+			releaseArgs(args)
+		end
+	end
+
+	if reader.position ~= reader.length then
+		error("NetStream compact-table packet contains trailing bytes", 0)
+	end
+	commitIncomingMessages(player, 1)
+	local receivedBytes = buffer.len(data)
+	Stats.ReceivedBatches += 1
+	Stats.ReceivedBytes += receivedBytes
+	Stats.ReceivedMessages += 1
+	trafficWindowReceivedBatches += 1
+	trafficWindowReceivedBytes += receivedBytes
+	trafficWindowReceivedMessages += 1
+end
+
+local function decodeBatch(player, data, reader)
+	local packetProtocol = reader:u8()
+	if packetProtocol == PROTOCOL_COMPACT_TABLE then
+		Internal.decodeCompactSingleTable(player, data, reader)
+		return
+	end
+	local count
+	if packetProtocol == PROTOCOL_SINGLE then
+		count = 1
+	elseif packetProtocol == PROTOCOL then
+		count = reader:varUInt()
+	else
+		error(string.format("%s protocol mismatch: received 0x%02X, expected 0x%02X, 0x%02X, or 0x%02X. Make sure both peers use the same NetStream version.", LOG_PREFIX, packetProtocol, PROTOCOL, PROTOCOL_SINGLE, PROTOCOL_COMPACT_TABLE), 0)
+	end
 	if count > Config.MaxIncomingMessages then
 		error("NetStream batch exceeds MaxIncomingMessages", 0)
 	end
@@ -2418,10 +3402,24 @@ local function decodeBatch(player, data, reader)
 		local reuseRoute = schemaEncoded and (math.floor(header / 8) % 2 == 1) or false
 		local runEncoded = schemaEncoded and (math.floor(header / 16) % 2 == 1) or false
 		local argc = 0
+		local compressedDynamic = false
+		local compressedSingle = false
 		if not schemaEncoded then
 			argc = math.floor(header / 8)
-			if argc == 31 then
-				argc = reader:varUInt()
+			if argc == 30 then
+				compressedSingle = true
+				argc = 1
+			elseif argc == 31 then
+				local control = reader:varUInt()
+				local compressionMode = control % 4
+				argc = math.floor(control / 4)
+				if compressionMode == 1 then
+					compressedDynamic = true
+				elseif compressionMode == 2 then
+					compressedSingle = true
+				elseif compressionMode ~= 0 then
+					error("NetStream invalid dynamic compression mode", 0)
+				end
 			end
 			if argc > Config.MaxTableEntries then
 				error("NetStream argument count is too large", 0)
@@ -2497,6 +3495,32 @@ local function decodeBatch(player, data, reader)
 			local args
 			if schemaEncoded then
 				args = readSchemaArgs(reader, schema)
+			elseif compressedDynamic or compressedSingle then
+				local isTail = processed + 1 == count
+				local compressedBytes = if isTail then reader.length - reader.position else reader:varUInt()
+				if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then
+					error("NetStream compressed dynamic payload exceeds MaxIncomingPacketBytes", 0)
+				end
+				local compressedData = reader:rawBuffer(compressedBytes)
+				local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
+				if compressedSingle then
+					if argc ~= 1 or typeof(decoded) ~= "table" then
+						error("NetStream direct compressed table payload is invalid", 0)
+					end
+					validateValue(decoded, 0, nil)
+					args = acquireArgsCount(1)
+					args[1] = decoded
+				else
+					if typeof(decoded) ~= "table" or type(decoded.n) ~= "number" or decoded.n ~= argc then
+						error("NetStream compressed argument payload is invalid", 0)
+					end
+					args = acquireArgsCount(argc)
+					for i = 1, argc do
+						args[i] = decoded[i]
+					end
+					validateArgs(args)
+				end
+				Stats.CompressionDecodeCount += 1
 			else
 				args = acquireArgsCount(argc)
 				for i = 1, argc do
@@ -2594,13 +3618,13 @@ function Internal.makeRemoteFolder()
 	local folder = ReplicatedStorage:WaitForChild(folderName, Config.RemoteWaitTimeout)
 	if not folder then
 		error(string.format(
-			"[NetStream v1.2.3] Timed out after %.1fs waiting for ReplicatedStorage.%s. Make sure a server Script requires NetStream and calls NetStream.Start() (or creates a route) before the client starts.",
+			LOG_PREFIX .. " Timed out after %.1fs waiting for ReplicatedStorage.%s. Make sure a server Script requires NetStream and calls NetStream.Start() (or creates a route) before the client starts.",
 			Config.RemoteWaitTimeout,
 			folderName
 			), 0)
 	end
 	if not folder:IsA("Folder") then
-		error("[NetStream v1.2.3] Remote container " .. folderName .. " is not a Folder", 0)
+		error(LOG_PREFIX .. " Remote container " .. folderName .. " is not a Folder", 0)
 	end
 	return folder
 end
@@ -2635,7 +3659,7 @@ function Internal.ensureRemotes()
 		reliableRemote = folder:WaitForChild("R", Config.RemoteWaitTimeout)
 		if not reliableRemote then
 			error(string.format(
-				"[NetStream v1.2.3] Timed out after %.1fs waiting for reliable remote R. Make sure NetStream.Start() is running on the server.",
+				LOG_PREFIX .. " Timed out after %.1fs waiting for reliable remote R. Make sure NetStream.Start() is running on the server.",
 				Config.RemoteWaitTimeout
 				), 0)
 		end
@@ -2662,6 +3686,12 @@ local function updateTrafficSnapshot()
 	trafficSnapshot.ReceivedMessagesPerSecond = trafficWindowReceivedMessages / elapsed
 	trafficSnapshot.SentBatchesPerSecond = trafficWindowSentBatches / elapsed
 	trafficSnapshot.ReceivedBatchesPerSecond = trafficWindowReceivedBatches / elapsed
+	trafficSnapshot.BandwidthLimitBytesPerSecond = if Config.BandwidthGovernorEnabled then Config.BandwidthLimitBytesPerSecond else 0
+	trafficSnapshot.EstimatedTransportBytesPerSecond = Internal.trafficWindowEstimatedTransportBytes / elapsed
+	trafficSnapshot.BandwidthUtilization = if Config.BandwidthGovernorEnabled then trafficSnapshot.EstimatedTransportBytesPerSecond / Config.BandwidthLimitBytesPerSecond else 0
+	trafficSnapshot.BandwidthHeadroomBytesPerSecond = if Config.BandwidthGovernorEnabled then math.max(0, Config.BandwidthLimitBytesPerSecond - trafficSnapshot.EstimatedTransportBytesPerSecond) else math.huge
+	trafficSnapshot.EstimatedTransportUtilization = trafficSnapshot.BandwidthUtilization
+	trafficSnapshot.EstimatedTransportHeadroomBytesPerSecond = trafficSnapshot.BandwidthHeadroomBytesPerSecond
 	trafficWindowStarted = now
 	trafficWindowSentBytes = 0
 	trafficWindowReceivedBytes = 0
@@ -2669,6 +3699,7 @@ local function updateTrafficSnapshot()
 	trafficWindowReceivedMessages = 0
 	trafficWindowSentBatches = 0
 	trafficWindowReceivedBatches = 0
+	Internal.trafficWindowEstimatedTransportBytes = 0
 	Stats.TrafficSnapshots += 1
 end
 
@@ -2753,6 +3784,7 @@ local function ensureStarted()
 			Internal.releaseBucket(targetBuckets[player])
 			targetBuckets[player] = nil
 			incomingRates[player] = nil
+			Internal.bandwidthStates[player] = nil
 			peerStates[player] = nil
 			Internal.failPendingForPlayer(player, "Player left before NetStream call completed")
 		end)
@@ -2803,11 +3835,15 @@ function Internal.flushTargetNow(target)
 	end
 	Stats.ImmediateFlushes += 1
 	local deadline = os.clock() + Config.ImmediateFlushBudgetSeconds
-	flushBucket(target, bucket, deadline)
-	if IS_SERVER and target ~= ALL and bucketEmpty(bucket) then
+	flushBucket(target, bucket, deadline, true)
+	local empty = bucketEmpty(bucket)
+	if not empty then
+		Stats.TransportImmediateDeferred += 1
+	end
+	if IS_SERVER and target ~= ALL and empty then
 		targetBuckets[target] = nil
 	end
-	return bucketEmpty(bucket)
+	return empty
 end
 
 function Internal.cancelLatestForRoute(target, key)
@@ -3023,6 +4059,10 @@ EventRoute.Send = EventRoute.Fire
 local FunctionRoute = {}
 FunctionRoute.__index = FunctionRoute
 
+function FunctionRoute:GetPriority()
+	return self.Priority or "Critical"
+end
+
 function FunctionRoute:SetCallback(callback)
 	assert(type(callback) == "function" or callback == nil, "SetCallback expects a function or nil")
 	ensureStarted()
@@ -3236,6 +4276,9 @@ local NetStream = {}
 NetStream.Types = Types
 NetStream.Version = VERSION
 NetStream.Protocol = PROTOCOL
+NetStream.ProtocolSingle = PROTOCOL_SINGLE
+NetStream.ProtocolCompactTable = PROTOCOL_COMPACT_TABLE
+NetStream.RequiredCompressionVersion = "2.3.2"
 
 function Internal.validateConfig(config)
 	assert(type(config.Namespace) == "string" and #config.Namespace > 0, "Namespace must be a non-empty string")
@@ -3275,6 +4318,50 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxBufferBytes) == "number" and config.MaxBufferBytes >= 0, "MaxBufferBytes must be >= 0")
 	assert(type(config.MaxTableEntries) == "number" and config.MaxTableEntries >= 1, "MaxTableEntries must be >= 1")
 	assert(type(config.MaxDepth) == "number" and config.MaxDepth >= 1, "MaxDepth must be >= 1")
+	assert(type(config.CompressionEnabled) == "boolean", "CompressionEnabled must be a boolean")
+	assert(type(config.CompressionMinSavingsBytes) == "number" and config.CompressionMinSavingsBytes >= 0, "CompressionMinSavingsBytes must be >= 0")
+	assert(type(config.CompressionMinStringBytes) == "number" and config.CompressionMinStringBytes >= 0, "CompressionMinStringBytes must be >= 0")
+	assert(
+		config.CompressionStringStrategy == "Auto"
+			or config.CompressionStringStrategy == "Raw"
+			or config.CompressionStringStrategy == "LZ"
+			or config.CompressionStringStrategy == "ASCII7"
+			or config.CompressionStringStrategy == "Identifier6"
+			or config.CompressionStringStrategy == "Numeric4",
+		"CompressionStringStrategy must be Auto, Raw, LZ, ASCII7, Identifier6, or Numeric4"
+	)
+	assert(type(config.CompressionUseStringDictionary) == "boolean", "CompressionUseStringDictionary must be a boolean")
+	assert(type(config.CompressionTableCompression) == "boolean", "CompressionTableCompression must be a boolean")
+	assert(
+		config.CompressionTableStrategy == "Auto"
+			or config.CompressionTableStrategy == "Compact"
+			or config.CompressionTableStrategy == "Dynamic",
+		"CompressionTableStrategy must be Auto, Compact, or Dynamic"
+	)
+	assert(type(config.CompressionHomogeneousArrays) == "boolean", "CompressionHomogeneousArrays must be a boolean")
+	assert(type(config.CompressionDeltaArrays) == "boolean", "CompressionDeltaArrays must be a boolean")
+	assert(type(config.CompressionRunLengthArrays) == "boolean", "CompressionRunLengthArrays must be a boolean")
+	assert(type(config.CompressionCompactMapKeys) == "boolean", "CompressionCompactMapKeys must be a boolean")
+	assert(type(config.CompressionTableKeyMapping) == "boolean", "CompressionTableKeyMapping must be a boolean")
+	assert(type(config.CompressionMappedKeyMinUses) == "number" and isInteger(config.CompressionMappedKeyMinUses) and config.CompressionMappedKeyMinUses >= 2, "CompressionMappedKeyMinUses must be an integer >= 2")
+	assert(type(config.CompressionMaxMappedKeys) == "number" and isInteger(config.CompressionMaxMappedKeys) and config.CompressionMaxMappedKeys >= 0 and config.CompressionMaxMappedKeys <= 4095, "CompressionMaxMappedKeys must be an integer from 0 to 4095")
+	assert(type(config.CompressionCompressBuffers) == "boolean", "CompressionCompressBuffers must be a boolean")
+	assert(type(config.CompressionMinBufferBytes) == "number" and isInteger(config.CompressionMinBufferBytes) and config.CompressionMinBufferBytes >= 0, "CompressionMinBufferBytes must be a non-negative integer")
+	assert(config.CompressionBufferStrategy == "Auto" or config.CompressionBufferStrategy == "Raw" or config.CompressionBufferStrategy == "LZ" or config.CompressionBufferStrategy == "Sparse" or config.CompressionBufferStrategy == "Nibble", "CompressionBufferStrategy must be Auto, Raw, LZ, Sparse, or Nibble")
+	assert(type(config.CompressionAllowExpansion) == "boolean", "CompressionAllowExpansion must be a boolean")
+	assert(type(config.BandwidthGovernorEnabled) == "boolean", "BandwidthGovernorEnabled must be a boolean")
+	assert(type(config.BandwidthLimitBytesPerSecond) == "number" and isFiniteNumber(config.BandwidthLimitBytesPerSecond) and config.BandwidthLimitBytesPerSecond >= 64, "BandwidthLimitBytesPerSecond must be a finite number >= 64")
+	assert(type(config.BandwidthMaxPacketBytes) == "number" and isFiniteNumber(config.BandwidthMaxPacketBytes) and config.BandwidthMaxPacketBytes >= 32 and config.BandwidthMaxPacketBytes <= config.BandwidthLimitBytesPerSecond, "BandwidthMaxPacketBytes must be >= 32 and <= BandwidthLimitBytesPerSecond")
+	assert(type(config.BandwidthMaxPacketsPerSecond) == "number" and isFiniteNumber(config.BandwidthMaxPacketsPerSecond) and config.BandwidthMaxPacketsPerSecond >= 1, "BandwidthMaxPacketsPerSecond must be a finite number >= 1")
+	assert(type(config.BandwidthMaxReliableQueue) == "number" and isInteger(config.BandwidthMaxReliableQueue) and config.BandwidthMaxReliableQueue >= 1, "BandwidthMaxReliableQueue must be an integer >= 1")
+	assert(type(config.BandwidthMaxUnreliableQueue) == "number" and isInteger(config.BandwidthMaxUnreliableQueue) and config.BandwidthMaxUnreliableQueue >= 1, "BandwidthMaxUnreliableQueue must be an integer >= 1")
+	assert(type(config.BandwidthDropUnreliableOnPressure) == "boolean", "BandwidthDropUnreliableOnPressure must be a boolean")
+	assert(type(config.BandwidthWarnAtUtilization) == "number" and isFiniteNumber(config.BandwidthWarnAtUtilization) and config.BandwidthWarnAtUtilization > 0 and config.BandwidthWarnAtUtilization <= 1, "BandwidthWarnAtUtilization must be > 0 and <= 1")
+	assert(type(config.TransportAdaptiveBatching) == "boolean", "TransportAdaptiveBatching must be a boolean")
+	assert(type(config.TransportBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportBatchWindowSeconds) and config.TransportBatchWindowSeconds >= 0 and config.TransportBatchWindowSeconds <= 1, "TransportBatchWindowSeconds must be from 0 to 1")
+	assert(type(config.TransportRealtimeBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportRealtimeBatchWindowSeconds) and config.TransportRealtimeBatchWindowSeconds >= 0 and config.TransportRealtimeBatchWindowSeconds <= 1, "TransportRealtimeBatchWindowSeconds must be from 0 to 1")
+	assert(type(config.TransportEstimatedPacketOverheadBytes) == "number" and isFiniteNumber(config.TransportEstimatedPacketOverheadBytes) and config.TransportEstimatedPacketOverheadBytes >= 0, "TransportEstimatedPacketOverheadBytes must be >= 0")
+	assert(type(config.TransportTargetMessagesPerPacket) == "number" and isInteger(config.TransportTargetMessagesPerPacket) and config.TransportTargetMessagesPerPacket >= 1, "TransportTargetMessagesPerPacket must be an integer >= 1")
 	assert(type(config.Debug) == "boolean", "Debug must be a boolean")
 end
 
@@ -3354,6 +4441,14 @@ function Internal.applyRouteHandlingOptions(route, options, label)
 	elseif options.Burst ~= nil then
 		error(label .. " Burst requires MaxPerSecond", 3)
 	end
+	if options.Compression ~= nil then
+		assert(type(options.Compression) == "boolean", label .. " Compression must be a boolean")
+		route.Compression = options.Compression
+	end
+	if options.Priority ~= nil then
+		assert(options.Priority == "Critical" or options.Priority == "Normal" or options.Priority == "Realtime", label .. " Priority must be Critical, Normal, or Realtime")
+		route.Priority = options.Priority
+	end
 	return route
 end
 
@@ -3389,6 +4484,8 @@ function NetStream.Event(nameOrId, options, colonOptions)
 	base.Unreliable = options and options.Unreliable == true or false
 	base.Immediate = options and options.Immediate == true or false
 	base.Coalesce = false
+	base.Compression = options and options.Compression
+	base.Priority = options and options.Priority or "Normal"
 	base._schema = Internal.compileSchema(options and options.Schema, "Event " .. name .. " Schema")
 	base._trusted = options and options.Trusted == true or false
 	route = setmetatable(base, EventRoute)
@@ -3412,6 +4509,9 @@ function NetStream.Function(nameOrId, options, colonOptions)
 	end
 	ensureStarted()
 	local id, name = Internal.resolveId(nameOrId, functionNames, "F:", options and options.Id)
+	if options and options.Priority ~= nil then
+		assert(options.Priority == "Critical" or options.Priority == "Normal" or options.Priority == "Realtime", "Function " .. name .. " Priority must be Critical, Normal, or Realtime")
+	end
 	local route = functionRoutes[id]
 	if route then
 		if route.Name ~= name then
@@ -3428,12 +4528,22 @@ function NetStream.Function(nameOrId, options, colonOptions)
 		if options and options.Immediate == true then
 			route.Immediate = true
 		end
+		if options and options.Compression ~= nil then
+			assert(type(options.Compression) == "boolean", "Function " .. name .. " Compression must be a boolean")
+			route.Compression = options.Compression
+		end
+		if options and options.Priority ~= nil then
+			assert(options.Priority == "Critical" or options.Priority == "Normal" or options.Priority == "Realtime", "Function " .. name .. " Priority must be Critical, Normal, or Realtime")
+			route.Priority = options.Priority
+		end
 		return route
 	end
 	route = setmetatable({
 		Id = id,
 		Name = name,
 		Immediate = options and options.Immediate == true or false,
+		Compression = options and options.Compression,
+		Priority = options and options.Priority or "Critical",
 		_callback = nil,
 		_schema = Internal.compileSchema(options and options.Schema, "Function " .. name .. " Schema"),
 		_trusted = options and options.Trusted == true or false,
@@ -3475,6 +4585,8 @@ function NetStream.State(nameOrId, options, colonOptions)
 	base._trusted = options and options.Trusted == true or false
 	base.Immediate = options and options.Immediate == true or false
 	base.Coalesce = false
+	base.Compression = options and options.Compression
+	base.Priority = options and options.Priority or "Normal"
 	route = setmetatable(base, StateRoute)
 	Internal.applyRouteHandlingOptions(route, options, "State " .. name)
 	stateRoutes[id] = route
@@ -3504,11 +4616,11 @@ function NetStream.Define(schema, colonSchema)
 		elseif type(spec) == "table" then
 			local kind = spec.Type or spec.Kind or "Event"
 			if kind == "Function" or kind == "function" then
-				routes[name] = NetStream.Function(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate })
+				routes[name] = NetStream.Function(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Compression = spec.Compression })
 			elseif kind == "State" or kind == "state" then
-				routes[name] = NetStream.State(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst })
+				routes[name] = NetStream.State(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst, Compression = spec.Compression })
 			else
-				routes[name] = NetStream.Event(name, { Id = spec.Id, Unreliable = spec.Unreliable == true or kind == "Unreliable" or kind == "unreliable", Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst })
+				routes[name] = NetStream.Event(name, { Id = spec.Id, Unreliable = spec.Unreliable == true or kind == "Unreliable" or kind == "unreliable", Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst, Compression = spec.Compression })
 			end
 		else
 			error("Invalid NetStream.Define entry for " .. tostring(name), 2)
@@ -3663,9 +4775,11 @@ function NetStream.ResetStats()
 	trafficWindowReceivedMessages = 0
 	trafficWindowSentBatches = 0
 	trafficWindowReceivedBatches = 0
+	Internal.trafficWindowEstimatedTransportBytes = 0
 	for key in pairs(trafficSnapshot) do
 		trafficSnapshot[key] = 0
 	end
+	table.clear(Internal.bandwidthStates)
 	return NetStream
 end
 
@@ -3707,6 +4821,9 @@ function NetStream.GetStats()
 	copy.WriterPoolSize = #writerPool
 	copy.ReaderPoolSize = #readerPool
 	copy.BatchPoolSize = #batchPool
+	copy.CompressionRatio = if copy.CompressionInputBytes > 0 then copy.CompressionOutputBytes / copy.CompressionInputBytes else 1
+	copy.CompressionSavingsPercent = if copy.CompressionInputBytes > 0 then (copy.CompressionInputBytes - copy.CompressionOutputBytes) / copy.CompressionInputBytes * 100 else 0
+	copy.CompressionVersion = Compression.Version()
 	return copy
 end
 
@@ -3715,19 +4832,80 @@ function NetStream.GetRateStats()
 	return table.clone(trafficSnapshot)
 end
 
+function NetStream.GetBandwidthStats()
+	local rates = NetStream.GetRateStats()
+	return {
+		Enabled = Config.BandwidthGovernorEnabled,
+		LimitBytesPerSecond = Config.BandwidthLimitBytesPerSecond,
+		MaxPacketBytes = Config.BandwidthMaxPacketBytes,
+		MaxPacketsPerSecond = Config.BandwidthMaxPacketsPerSecond,
+		SentBytesPerSecond = rates.SentBytesPerSecond,
+		ReceivedBytesPerSecond = rates.ReceivedBytesPerSecond,
+		EstimatedTransportBytesPerSecond = rates.EstimatedTransportBytesPerSecond,
+		EstimatedPacketOverheadBytes = Config.TransportEstimatedPacketOverheadBytes,
+		Utilization = rates.BandwidthUtilization,
+		HeadroomBytesPerSecond = rates.BandwidthHeadroomBytesPerSecond,
+		DeferredFlushes = Stats.BandwidthDeferredFlushes,
+		DeferredBatches = Stats.BandwidthDeferredBatches,
+		DeferredBytes = Stats.BandwidthDeferredBytes,
+		DroppedUnreliableMessages = Stats.BandwidthDroppedUnreliableMessages,
+		QueuePressureDrops = Stats.BandwidthQueuePressureDrops,
+		OversizedPackets = Stats.BandwidthOversizedPackets,
+		BatchSplits = Stats.BandwidthBatchSplits,
+		ThrottleEvents = Stats.BandwidthThrottleEvents,
+	}
+end
+
+function NetStream.GetTransportStats()
+	local rates = NetStream.GetRateStats()
+	local sentBatches = Stats.SentBatches
+	return {
+		AdaptiveBatching = Config.TransportAdaptiveBatching,
+		BatchWindowSeconds = Config.TransportBatchWindowSeconds,
+		RealtimeBatchWindowSeconds = Config.TransportRealtimeBatchWindowSeconds,
+		EstimatedPacketOverheadBytes = Config.TransportEstimatedPacketOverheadBytes,
+		TargetMessagesPerPacket = Config.TransportTargetMessagesPerPacket,
+		LogicalMessagesQueued = Stats.TransportLogicalMessagesQueued,
+		LogicalMessagesSent = Stats.SentMessages,
+		TransportPackets = Stats.SentBatches,
+		MessagesPerTransportPacket = if sentBatches > 0 then Stats.SentMessages / sentBatches else 0,
+		EncodedBytesPerSecond = rates.SentBytesPerSecond,
+		EstimatedTransportBytesPerSecond = rates.EstimatedTransportBytesPerSecond,
+		PacketRatePerSecond = rates.SentBatchesPerSecond,
+		EstimatedUtilization = rates.EstimatedTransportUtilization,
+		EstimatedHeadroomBytesPerSecond = rates.EstimatedTransportHeadroomBytesPerSecond,
+		BatchHolds = Stats.TransportBatchHolds,
+		TargetFlushes = Stats.TransportTargetFlushes,
+		ImmediateDeferred = Stats.TransportImmediateDeferred,
+		CriticalQueued = Stats.TransportCriticalMessagesQueued,
+		NormalQueued = Stats.TransportNormalMessagesQueued,
+		RealtimeQueued = Stats.TransportRealtimeMessagesQueued,
+		EstimatedOverheadBytes = Stats.TransportEstimatedOverheadBytes,
+		EstimatedTransportBytes = Stats.TransportEstimatedBytes,
+		CoalescedMessages = Stats.CoalescedLatest,
+		DroppedUnreliableMessages = Stats.BandwidthDroppedUnreliableMessages + Stats.DroppedUnreliable,
+		DeferredBatches = Stats.BandwidthDeferredBatches,
+		BatchSplits = Stats.BandwidthBatchSplits,
+	}
+end
+
 function NetStream.GetHealth()
 	local stats = NetStream.GetStats()
 	local queued = stats.QueuedReliable + stats.QueuedUnreliable
 	local backlog = stats.DispatchBacklog
 	local status = "Healthy"
-	if backlog >= Config.MaxDispatchBacklog * 0.8 or queued >= (Config.MaxReliableQueue + Config.MaxUnreliableQueue) * 0.8 then
+	local queueLimit = if Config.BandwidthGovernorEnabled then Config.BandwidthMaxReliableQueue + Config.BandwidthMaxUnreliableQueue else Config.MaxReliableQueue + Config.MaxUnreliableQueue
+	if backlog >= Config.MaxDispatchBacklog * 0.8 or queued >= queueLimit * 0.8 then
 		status = "Overloaded"
-	elseif backlog >= Config.MaxDispatchBacklog * 0.4 or queued >= (Config.MaxReliableQueue + Config.MaxUnreliableQueue) * 0.4 then
+	elseif backlog >= Config.MaxDispatchBacklog * 0.4 or queued >= queueLimit * 0.4 then
 		status = "Congested"
 	elseif backlog > 0 or queued > Config.MaxBatchMessages then
 		status = "Busy"
 	end
 	local rates = NetStream.GetRateStats()
+	if Config.BandwidthGovernorEnabled and rates.BandwidthUtilization >= Config.BandwidthWarnAtUtilization and status == "Healthy" then
+		status = "Busy"
+	end
 	return {
 		Status = status,
 		QueuedMessages = queued,
@@ -3737,7 +4915,93 @@ function NetStream.GetHealth()
 		ReceivedBytesPerSecond = rates.ReceivedBytesPerSecond,
 		SentMessagesPerSecond = rates.SentMessagesPerSecond,
 		ReceivedMessagesPerSecond = rates.ReceivedMessagesPerSecond,
+		BandwidthLimitBytesPerSecond = rates.BandwidthLimitBytesPerSecond,
+		BandwidthUtilization = rates.BandwidthUtilization,
+		BandwidthHeadroomBytesPerSecond = rates.BandwidthHeadroomBytesPerSecond,
+		EstimatedTransportBytesPerSecond = rates.EstimatedTransportBytesPerSecond,
+		TransportPacketRatePerSecond = rates.SentBatchesPerSecond,
 	}
+end
+
+function NetStream.GetCompressionStats()
+	local stats = NetStream.GetStats()
+	return {
+		Version = Compression.Version(),
+		Enabled = Config.CompressionEnabled,
+		Attempts = stats.CompressionAttempts,
+		Used = stats.CompressionUsed,
+		Rejected = stats.CompressionRejected,
+		Errors = stats.CompressionErrors,
+		NoGain = stats.CompressionNoGain,
+		AcceptancePercent = if stats.CompressionAttempts > 0 then stats.CompressionUsed / stats.CompressionAttempts * 100 else 0,
+		Decoded = stats.CompressionDecodeCount,
+		InputBytes = stats.CompressionInputBytes,
+		OutputBytes = stats.CompressionOutputBytes,
+		SavedBytes = stats.CompressionSavedBytes,
+		AverageSavedBytes = if stats.CompressionUsed > 0 then stats.CompressionSavedBytes / stats.CompressionUsed else 0,
+		SavingsPercent = stats.CompressionSavingsPercent,
+		Ratio = stats.CompressionRatio,
+		AllowExpansion = Config.CompressionAllowExpansion,
+		StringStrategy = Config.CompressionStringStrategy,
+		BufferStrategy = Config.CompressionBufferStrategy,
+		TableStrategy = Config.CompressionTableStrategy,
+		TableKeyMapping = Config.CompressionTableKeyMapping,
+		CompactTablesUsed = stats.CompressionCompactTableUsed,
+		MappedTablesUsed = stats.CompressionMappedTableUsed,
+		DynamicTablesUsed = stats.CompressionDynamicTableUsed,
+		DirectTablesUsed = stats.CompressionDirectTableUsed,
+		TailLengthElisions = stats.CompressionTailLengthElisions,
+		CompactSingleSent = stats.CompressionCompactSingleSent,
+		CompactSingleReceived = stats.CompressionCompactSingleReceived,
+		FramingBytesSaved = stats.CompressionFramingBytesSaved,
+		EstimatedNetBytesSaved = stats.CompressionEstimatedNetBytesSaved,
+		SingleMessagePackets = stats.SingleMessagePackets,
+		SingleMessageHeaderBytesSaved = stats.SingleMessageHeaderBytesSaved,
+		CompressedSchemaStrings = stats.CompressedSchemaStrings,
+		SchemaStringBytesSaved = stats.SchemaStringBytesSaved,
+		CompressedSchemaBuffers = stats.CompressedSchemaBuffers,
+		SchemaBufferBytesSaved = stats.SchemaBufferBytesSaved,
+	}
+end
+
+function NetStream.GetCompressionOptions()
+	return Internal.compressionOptions()
+end
+
+function NetStream.GetSupportedTypes()
+	return {
+		"nil",
+		"boolean",
+		"number",
+		"string",
+		"buffer",
+		"table",
+		"Vector2",
+		"Vector3",
+		"Color3",
+		"CFrame",
+		"UDim",
+		"UDim2",
+		"Rect",
+		"NumberRange",
+		"BrickColor",
+		"DateTime",
+	}
+end
+
+function NetStream.GetCompatibilityInfo()
+	return {
+		Version = VERSION,
+		CompressionVersion = Compression.Version(),
+		Protocol = PROTOCOL,
+		ProtocolSingle = PROTOCOL_SINGLE,
+		ProtocolCompactTable = PROTOCOL_COMPACT_TABLE,
+		SupportedTypes = 16,
+	}
+end
+
+function NetStream.AnalyzeCompression(value, options)
+	return Compression.Analyze(value, options or Internal.compressionOptions())
 end
 
 function NetStream.FormatBytes(bytes)
@@ -3792,6 +5056,8 @@ function NetStream.Destroy()
 		Internal.releaseBucket(bucket)
 	end
 	table.clear(targetBuckets)
+	table.clear(Internal.bandwidthStates)
+	Internal.trafficWindowEstimatedTransportBytes = 0
 	clientBucket = nil
 	broadcastBucket = nil
 
@@ -3845,37 +5111,54 @@ local Codec = {}
 function Codec.Encode(...)
 	local args = table.pack(...)
 	validateArgs(args)
-	local writer = Writer.new(128)
-	writer:varUInt(args.n)
-	for i = 1, args.n do
-		writeValue(writer, args[i], 0, nil)
-	end
-	return writer:finish()
+	local packet = Compression.Compress(args, Internal.compressionOptions())
+	return packet.Data
 end
 
 function Codec.Decode(data)
 	assert(typeof(data) == "buffer", "NetStream.Codec.Decode expects a buffer")
-	local reader = Reader.new(data)
-	local count = reader:varUInt()
-	if count > Config.MaxTableEntries then
-		error("NetStream codec value count too large", 2)
-	end
-	local args = table.create(count)
-	for i = 1, count do
-		args[i] = readValue(reader, 0)
-	end
-	if reader.position ~= reader.length then
-		error("NetStream.Codec.Decode found trailing bytes", 2)
-	end
-	return table.unpack(args, 1, count)
+	local args = Compression.Decode(data, Internal.compressionOptions())
+	assert(typeof(args) == "table" and type(args.n) == "number", "NetStream.Codec.Decode received an invalid Compression payload")
+	validateArgs(args)
+	return table.unpack(args, 1, args.n)
+end
+
+function Codec.TryEncode(...)
+	local args = table.pack(...)
+	local ok, dataOrError = pcall(function()
+		validateArgs(args)
+		local packet = Compression.Compress(args, Internal.compressionOptions())
+		return packet.Data
+	end)
+	if ok then return true, dataOrError, nil end
+	return false, nil, tostring(dataOrError)
+end
+
+function Codec.TryDecode(data)
+	local ok, valuesOrError = pcall(function()
+		assert(typeof(data) == "buffer", "NetStream.Codec.TryDecode expects a buffer")
+		local args = Compression.Decode(data, Internal.compressionOptions())
+		assert(typeof(args) == "table" and type(args.n) == "number", "NetStream.Codec.TryDecode received an invalid Compression payload")
+		validateArgs(args)
+		return args
+	end)
+	if not ok then return false, nil, tostring(valuesOrError) end
+	return true, valuesOrError, nil
 end
 
 function Codec.ByteLength(...)
 	return buffer.len(Codec.Encode(...))
 end
 
+function Codec.Analyze(...)
+	local args = table.pack(...)
+	validateArgs(args)
+	return Compression.Analyze(args, Internal.compressionOptions())
+end
+
 NetStream.Codec = Codec
-NetStream.Compression = Codec
+NetStream.Compression = Compression
+NetStream.CompressionVersion = Compression.Version()
 
 
 local LegacyBus = {}
