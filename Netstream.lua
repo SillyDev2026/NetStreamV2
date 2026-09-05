@@ -5,16 +5,20 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
-local Compression = require(assert(script:WaitForChild("Compression", 10), "NetStream v1.3.0 requires a child ModuleScript named Compression (v2.3.2)"))
-assert(type(Compression) == "table" and type(Compression.Version) == "function" and Compression.Version() == "2.3.2", "NetStream v1.3.0 requires Compression v2.3.2")
-
+local Compression = require(assert(script:WaitForChild("Compression", 10), "NetStream v2.1.0 requires a child ModuleScript named Compression (v2.9.0)"))
+assert(type(Compression) == "table" and type(Compression.Version) == "function" and Compression.Version() == "2.9.0", "NetStream v2.1.0 requires Compression v2.9.0")
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
 local Internal = {}
-local VERSION = "1.3.0"
-local PROTOCOL = 0x18
-local PROTOCOL_SINGLE = 0x19
-local PROTOCOL_COMPACT_TABLE = 0x1A
+Internal.BufferUtil = require(assert(script:WaitForChild("BufferUtil", 10), "NetStream v2.1.0 requires child BufferUtil v1.1.0+"))
+assert(type(Internal.BufferUtil) == "table" and type(Internal.BufferUtil.VERSION) == "string", "NetStream v2.1.0 requires BufferUtil")
+local VERSION = "2.1.0"
+-- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
+-- Keep them on Internal so BitFrame does not spend top-level Luau registers.
+Internal.LEGACY_PROTOCOL = 0x30
+Internal.LEGACY_PROTOCOL_SINGLE = 0x31
+Internal.LEGACY_PROTOCOL_COMPACT_TABLE = 0x32
+Internal.LEGACY_PROTOCOL_FAST_SCHEMA = 0x33
 local LOG_PREFIX = "[NetStream v" .. VERSION .. "]"
 local KIND_EVENT = 0
 local KIND_CALL = 1
@@ -54,11 +58,11 @@ local EXT = table.freeze({
 local DEFAULTS = {
 	Namespace = "NetStream",
 	RemoteWaitTimeout = 10,
-	FlushRate = 30,
+	FlushRate = 60,
 	MaxBatchMessages = 256,
 	MaxOutgoingBatchBytes = 2 * 1024 * 1024,
 	MaxIncomingPacketBytes = 2 * 1024 * 1024,
-	MaxBatchesPerFlush = 4,
+	MaxBatchesPerFlush = 8,
 	MaxDispatchPerCycle = 2048,
 	MaxDispatchBacklog = 16384,
 	DispatchBudgetSeconds = 0.0025,
@@ -70,6 +74,9 @@ local DEFAULTS = {
 	MaxPooledWriterBytes = 128 * 1024,
 	MaxPooledStrings = 2048,
 	MaxBatchPoolSize = 64,
+	MaxWriterPoolSize = 32,
+	MaxScratchWriterPoolSize = 16,
+	InitialWriterBytes = 1024,
 	MaxTargetsPerFlush = 128,
 	MaxIncomingMessagesPerSecond = 30000,
 	MaxIncomingBytesPerSecond = 2 * 1024 * 1024,
@@ -91,7 +98,7 @@ local DEFAULTS = {
 	MaxDepth = 32,
 	CompressionEnabled = true,
 	CompressionMinSavingsBytes = 1,
-	CompressionMinStringBytes = 8,
+	CompressionMinStringBytes = 6,
 	CompressionStringStrategy = "Auto",
 	CompressionUseStringDictionary = true,
 	CompressionTableCompression = true,
@@ -106,20 +113,44 @@ local DEFAULTS = {
 	CompressionCompressBuffers = true,
 	CompressionMinBufferBytes = 6,
 	CompressionBufferStrategy = "Auto",
+	CompressionEntropyCoding = true,
+	CompressionEntropyStrategy = "Auto",
+	CompressionHuffmanMinBytes = 256,
+	CompressionRouteStrategyCache = true,
+	CompressionRouteStrategyWarmup = 3,
+	CompressionRouteStrategyResample = 64,
+	CompressionHuffmanMinSavings = 2,
+	CompressionHuffmanMaxCodeBits = 32,
 	CompressionAllowExpansion = false,
 	BandwidthGovernorEnabled = true,
-	BandwidthLimitBytesPerSecond = 768,
-	BandwidthMaxPacketBytes = 192,
-	BandwidthMaxPacketsPerSecond = 6,
-	BandwidthMaxReliableQueue = 384,
-	BandwidthMaxUnreliableQueue = 96,
+	BandwidthLimitBytesPerSecond = 32 * 1024,
+	BandwidthMaxPacketBytes = 1200,
+	BandwidthMaxPacketsPerSecond = 60,
+	BandwidthMaxReliableQueue = 2048,
+	BandwidthMaxUnreliableQueue = 512,
 	BandwidthDropUnreliableOnPressure = true,
 	BandwidthWarnAtUtilization = 0.85,
 	TransportAdaptiveBatching = true,
-	TransportBatchWindowSeconds = 0.050,
-	TransportRealtimeBatchWindowSeconds = 0.033,
+	TransportBatchWindowSeconds = 1 / 60,
+	TransportRealtimeBatchWindowSeconds = 0,
 	TransportEstimatedPacketOverheadBytes = 96,
-	TransportTargetMessagesPerPacket = 8,
+	TransportTargetMessagesPerPacket = 16,
+	FastSchemaEnabled = true,
+	FastSchemaMaxBytes = 512,
+	FastSchemaAllowHeaderExpansion = false,
+	PackedSchemaRunEnabled = true,
+	PackedSchemaRunMaxFields = 8,
+	BitPacketEnabled = true,
+	BitPacketCompressedCalls = true,
+	HybridCodecEnabled = true,
+	HybridSmallScalarEnabled = true,
+	HybridSmallPacketMaxBits = 256,
+	HybridSmallStringMaxBytes = 31,
+	HybridCompressionThresholdBits = 512,
+	HybridMinPhysicalSavingsBytes = 1,
+	BitFrameEnabled = true,
+	BitFrameMaxBytes = 2 * 1024 * 1024,
+	BitFrameTinyScalarEnabled = true,
 	Debug = false,
 }
 
@@ -153,15 +184,19 @@ local fallbackCallHandler = nil
 local dispatchRoutes = {}
 local dispatchPlayers = {}
 local dispatchArgs = {}
+local dispatchScalarFlags = {}
+local dispatchScalarValues = {}
 local dispatchCount = 0
 local dispatchHead = 1
 local lastPacketBytes = 0
 local overflowWarned = false
 local writerPool = {}
+local scratchWriterPool = {}
 local readerPool = {}
 local messagePool = {}
 local argsPool = {}
 local batchPool = {}
+local packedValuePool = {}
 local globalIncomingRate = nil
 Internal.bandwidthStates = {}
 Internal.trafficWindowEstimatedTransportBytes = 0
@@ -234,6 +269,20 @@ local Stats = {
 	CompressionInputBytes = 0,
 	CompressionOutputBytes = 0,
 	CompressionSavedBytes = 0,
+	CompressionInputBits = 0,
+	CompressionUsefulBits = 0,
+	CompressionPhysicalBits = 0,
+	CompressionPaddingBits = 0,
+	CompressionUsefulBitsSaved = 0,
+	CompressionBitPackedPackets = 0,
+	CompressionNativeSizeEstimates = 0,
+	CompressionNativeScratchAvoided = 0,
+	CompressionOptionsCacheHits = 0,
+	CompressionStrategyCacheHits = 0,
+	CompressionStrategyCacheMisses = 0,
+	CompressionStrategyCacheLocks = 0,
+	CompressionStrategyCacheResamples = 0,
+	CompressionStrategyCacheResets = 0,
 	CompressionCompactTableUsed = 0,
 	CompressionDynamicTableUsed = 0,
 	CompressionDirectTableUsed = 0,
@@ -268,13 +317,73 @@ local Stats = {
 	TransportEstimatedBytes = 0,
 	TransportTargetFlushes = 0,
 	TransportImmediateDeferred = 0,
+	FastSchemaSent = 0,
+	FastSchemaReceived = 0,
+	FastSchemaBytes = 0,
+	FastSchemaHeaderBytesSaved = 0,
+	FixedSchemaFastWrites = 0,
+	FixedSchemaFastReads = 0,
+	ScratchWriterPoolHits = 0,
+	PackedSchemaRunItems = 0,
+	PackedSchemaRunMessages = 0,
+	PackedSchemaRunAppends = 0,
+	PackedValuePoolHits = 0,
+	ScalarDispatches = 0,
+	BitPacketCallsSent = 0,
+	BitPacketCallsReceived = 0,
+	BitPacketHeaderBits = 0,
+	BitPacketHeaderBitsSaved = 0,
+	BitPacketPaddingBits = 0,
+	HybridBufferUtilSent = 0,
+	HybridBufferUtilReceived = 0,
+	HybridBufferUtilUsefulBits = 0,
+	HybridBufferUtilPhysicalBits = 0,
+	HybridBufferUtilPaddingBits = 0,
+	HybridBufferUtilBytesSaved = 0,
+	HybridCompressionThresholdSkips = 0,
+	HybridCompressionThresholdAttempts = 0,
+	BitFramePacketsEncoded = 0,
+	BitFramePacketsSent = 0,
+	BitFramePacketsReceived = 0,
+	BitFrameMessagesEncoded = 0,
+	BitFrameMessagesDecoded = 0,
+	BitFrameUsefulBits = 0,
+	BitFramePhysicalBits = 0,
+	BitFramePaddingBits = 0,
+	BitFrameProtocolBytesElided = 0,
+	BitFrameBatchCountBytesElided = 0,
+	BitFrameTinyValues = 0,
+	BitFrameNativeValues = 0,
+	BitFrameCompressedValues = 0,
 }
 
 local Float32Tag = {}
 local RawStringTag = {}
 
+Internal._compressionOptionsCache = nil
+Internal._lastEncodedUsefulBits = 0
+Internal._lastEncodedCodec = "None"
+Internal._lastEncodedProtocolBytesElided = 0
+Internal._lastEncodedBatchCountBytesElided = 0
+Internal.LastSendStats = {
+	Bytes = 0,
+	PhysicalBits = 0,
+	UsefulBits = 0,
+	PaddingBits = 0,
+	Codec = "None",
+}
+Internal.BIT_CALL_MARKER = 0
+Internal.HYBRID_EVENT_STATE_MARKER = 1
+Internal.HYBRID_CALL_MARKER = 2
+Internal.HYBRID_RETURN_MARKER = 3
+
 function Internal.compressionOptions()
-	return {
+	local cached = Internal._compressionOptionsCache
+	if cached ~= nil then
+		Stats.CompressionOptionsCacheHits += 1
+		return cached
+	end
+	local options = {
 		Mode = "Binary",
 		CompressStrings = true,
 		StringMinLength = Config.CompressionMinStringBytes,
@@ -292,8 +401,42 @@ function Internal.compressionOptions()
 		CompressBuffers = Config.CompressionCompressBuffers,
 		BufferMinLength = Config.CompressionMinBufferBytes,
 		BufferStrategy = Config.CompressionBufferStrategy,
+		EntropyCoding = Config.CompressionEntropyCoding,
+		EntropyStrategy = Config.CompressionEntropyStrategy,
+		HuffmanMinBytes = Config.CompressionHuffmanMinBytes,
+		HuffmanMinSavings = Config.CompressionHuffmanMinSavings,
+		HuffmanMaxCodeBits = Config.CompressionHuffmanMaxCodeBits,
 		AllowExpansion = Config.CompressionAllowExpansion,
 	}
+	Internal._compressionOptionsCache = options
+	return options
+end
+-- Records v2.9 logical bit usage separately from physical wire bytes.
+-- Framing bytes added by NetStream are counted as fully useful because they
+-- carry protocol information; Compression padding is the only removable tail.
+function Internal.recordCompressionPacketBits(packet, inputBytes, outputBytes)
+	if type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
+		return
+	end
+	local payloadPhysicalBits = packet.PhysicalBits or buffer.len(packet.Data) * 8
+	local payloadUsefulBits = packet.UsefulBits or packet.Bits or payloadPhysicalBits
+	local outputPhysicalBits = math.max(0, outputBytes) * 8
+	local framingBits = math.max(0, outputPhysicalBits - payloadPhysicalBits)
+	local outputUsefulBits = payloadUsefulBits + framingBits
+	local paddingBits = packet.PaddingBits or math.max(0, payloadPhysicalBits - payloadUsefulBits)
+	local inputBits = math.max(0, inputBytes) * 8
+
+	Stats.CompressionInputBits += inputBits
+	Stats.CompressionUsefulBits += outputUsefulBits
+	Stats.CompressionPhysicalBits += outputPhysicalBits
+	Stats.CompressionPaddingBits += paddingBits
+	if paddingBits > 0 or payloadUsefulBits < payloadPhysicalBits then
+		Stats.CompressionBitPackedPackets += 1
+	end
+	local saved = inputBits - outputUsefulBits
+	if saved > 0 then
+		Stats.CompressionUsefulBitsSaved += saved
+	end
 end
 
 function Internal.varUIntByteLength(value)
@@ -303,6 +446,219 @@ function Internal.varUIntByteLength(value)
 		bytes += 1
 	end
 	return bytes
+end
+
+
+-- Packet-level LSB-first bit primitives used by the v1.8 compact call path.
+-- These deliberately operate on a final Roblox buffer: only the very end of
+-- the packet is rounded to a whole byte.
+function Internal.packetWriteBits(data, bitPosition, value, count)
+	Internal.BufferUtil.writeBits(data, bitPosition, count, value)
+	return bitPosition + count
+end
+
+function Internal.packetReadBits(data, bitPosition, count)
+	if bitPosition + count > buffer.len(data) * 8 then error("NetStream bit packet ended unexpectedly", 0) end
+	return Internal.BufferUtil.readBits(data, bitPosition, count), bitPosition + count
+end
+
+function Internal.packetAdaptiveUIntBitLength(value)
+	if value == 0 then return 1 end
+	if value <= 8 then return 5 end
+	if value <= 40 then return 8 end
+	return 3 + Internal.varUIntByteLength(value) * 8
+end
+
+function Internal.packetWriteAdaptiveUInt(data, bitPosition, value)
+	if value == 0 then
+		return Internal.packetWriteBits(data, bitPosition, 0, 1)
+	elseif value <= 8 then
+		bitPosition = Internal.packetWriteBits(data, bitPosition, 1, 2)
+		return Internal.packetWriteBits(data, bitPosition, value - 1, 3)
+	elseif value <= 40 then
+		bitPosition = Internal.packetWriteBits(data, bitPosition, 3, 3)
+		return Internal.packetWriteBits(data, bitPosition, value - 9, 5)
+	end
+	bitPosition = Internal.packetWriteBits(data, bitPosition, 7, 3)
+	repeat
+		local byte = value % 128
+		value = math.floor(value / 128)
+		if value > 0 then byte += 128 end
+		bitPosition = Internal.packetWriteBits(data, bitPosition, byte, 8)
+	until value == 0
+	return bitPosition
+end
+
+function Internal.packetReadAdaptiveUInt(data, bitPosition)
+	local bit
+	bit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+	if bit == 0 then return 0, bitPosition end
+	bit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+	if bit == 0 then
+		local payload
+		payload, bitPosition = Internal.packetReadBits(data, bitPosition, 3)
+		return payload + 1, bitPosition
+	end
+	bit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+	if bit == 0 then
+		local payload
+		payload, bitPosition = Internal.packetReadBits(data, bitPosition, 5)
+		return payload + 9, bitPosition
+	end
+	local result = 0
+	local multiplier = 1
+	for _ = 1, 8 do
+		local byte
+		byte, bitPosition = Internal.packetReadBits(data, bitPosition, 8)
+		result += (byte % 128) * multiplier
+		if byte < 128 then return result, bitPosition end
+		multiplier *= 128
+	end
+	error("NetStream bit packet contains an invalid VarUInt", 0)
+end
+
+function Internal.packetAppendBufferBits(out, bitPosition, payload)
+	for i = 0, buffer.len(payload) - 1 do
+		bitPosition = Internal.packetWriteBits(out, bitPosition, buffer.readu8(payload, i), 8)
+	end
+	return bitPosition
+end
+
+function Internal.packetReadBufferBits(data, bitPosition, byteCount)
+	local out = buffer.create(byteCount)
+	for i = 0, byteCount - 1 do
+		local byte
+		byte, bitPosition = Internal.packetReadBits(data, bitPosition, 8)
+		buffer.writeu8(out, i, byte)
+	end
+	return out, bitPosition
+end
+
+local isInteger
+local isFiniteNumber
+local clampInteger
+
+Internal.HYBRID_NIL = 0
+Internal.HYBRID_BOOL = 1
+Internal.HYBRID_UINT = 2
+Internal.HYBRID_SINT = 3
+Internal.HYBRID_F32 = 4
+Internal.HYBRID_F64 = 5
+Internal.HYBRID_STRING = 6
+Internal.HYBRID_COLOR3 = 7
+Internal.HYBRID_FLOAT_SCRATCH = buffer.create(8)
+
+function Internal.hybridScalarBitLength(value)
+	if value == nil then return 3 end
+	local t, rt = type(value), typeof(value)
+	if t == "boolean" then return 4 end
+	if t == "number" then
+		if isInteger(value) and value >= 0 and value <= MAX_SAFE_INTEGER then return 3 + Internal.packetAdaptiveUIntBitLength(value) end
+		if isInteger(value) and value < 0 and -value <= MAX_SAFE_VARINT_MAGNITUDE then return 3 + Internal.packetAdaptiveUIntBitLength(-value * 2 - 1) end
+		if isFiniteNumber(value) then return 67 end
+		return nil
+	end
+	if t == "string" then
+		if #value > Config.HybridSmallStringMaxBytes then return nil end
+		return 3 + Internal.packetAdaptiveUIntBitLength(#value) + #value * 8
+	end
+	if rt == "Color3" then return 27 end
+	if t == "table" and getmetatable(value) == Float32Tag then
+		local n = value[1]
+		if isFiniteNumber(n) and math.abs(n) <= MAX_FLOAT32 then return 35 end
+	end
+	return nil
+end
+
+function Internal.hybridWriteScalar(data, bitPosition, value)
+	if value == nil then return Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_NIL, 3) end
+	local t, rt = type(value), typeof(value)
+	if t == "boolean" then
+		bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_BOOL, 3)
+		return Internal.packetWriteBits(data, bitPosition, value and 1 or 0, 1)
+	elseif t == "number" then
+		if isInteger(value) and value >= 0 and value <= MAX_SAFE_INTEGER then
+			bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_UINT, 3)
+			return Internal.packetWriteAdaptiveUInt(data, bitPosition, value)
+		elseif isInteger(value) and value < 0 and -value <= MAX_SAFE_VARINT_MAGNITUDE then
+			bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_SINT, 3)
+			return Internal.packetWriteAdaptiveUInt(data, bitPosition, -value * 2 - 1)
+		end
+		bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_F64, 3)
+		buffer.writef64(Internal.HYBRID_FLOAT_SCRATCH, 0, value)
+		bitPosition = Internal.packetWriteBits(data, bitPosition, buffer.readu32(Internal.HYBRID_FLOAT_SCRATCH, 0), 32)
+		return Internal.packetWriteBits(data, bitPosition, buffer.readu32(Internal.HYBRID_FLOAT_SCRATCH, 4), 32)
+	elseif t == "string" then
+		bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_STRING, 3)
+		bitPosition = Internal.packetWriteAdaptiveUInt(data, bitPosition, #value)
+		for i = 1, #value do bitPosition = Internal.packetWriteBits(data, bitPosition, string.byte(value, i), 8) end
+		return bitPosition
+	elseif rt == "Color3" then
+		bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_COLOR3, 3)
+		bitPosition = Internal.packetWriteBits(data, bitPosition, clampInteger(math.floor(value.R * 255 + 0.5), 0, 255), 8)
+		bitPosition = Internal.packetWriteBits(data, bitPosition, clampInteger(math.floor(value.G * 255 + 0.5), 0, 255), 8)
+		return Internal.packetWriteBits(data, bitPosition, clampInteger(math.floor(value.B * 255 + 0.5), 0, 255), 8)
+	elseif t == "table" and getmetatable(value) == Float32Tag then
+		bitPosition = Internal.packetWriteBits(data, bitPosition, Internal.HYBRID_F32, 3)
+		buffer.writef32(Internal.HYBRID_FLOAT_SCRATCH, 0, value[1])
+		return Internal.packetWriteBits(data, bitPosition, buffer.readu32(Internal.HYBRID_FLOAT_SCRATCH, 0), 32)
+	end
+	error("NetStream hybrid scalar encoder unsupported value", 0)
+end
+
+function Internal.hybridReadScalar(data, bitPosition)
+	local tag; tag, bitPosition = Internal.packetReadBits(data, bitPosition, 3)
+	if tag == Internal.HYBRID_NIL then return nil, bitPosition end
+	if tag == Internal.HYBRID_BOOL then local v; v, bitPosition = Internal.packetReadBits(data, bitPosition, 1); return v ~= 0, bitPosition end
+	if tag == Internal.HYBRID_UINT then return Internal.packetReadAdaptiveUInt(data, bitPosition) end
+	if tag == Internal.HYBRID_SINT then
+		local z; z, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+		return (if z % 2 == 0 then z / 2 else -((z + 1) / 2)), bitPosition
+	end
+	if tag == Internal.HYBRID_F32 then
+		local bits; bits, bitPosition = Internal.packetReadBits(data, bitPosition, 32)
+		buffer.writeu32(Internal.HYBRID_FLOAT_SCRATCH, 0, bits)
+		local value = buffer.readf32(Internal.HYBRID_FLOAT_SCRATCH, 0)
+		if not isFiniteNumber(value) then error("NetStream hybrid float32 is not finite", 0) end
+		return value, bitPosition
+	end
+	if tag == Internal.HYBRID_F64 then
+		local lo, hi; lo, bitPosition = Internal.packetReadBits(data, bitPosition, 32); hi, bitPosition = Internal.packetReadBits(data, bitPosition, 32)
+		buffer.writeu32(Internal.HYBRID_FLOAT_SCRATCH, 0, lo); buffer.writeu32(Internal.HYBRID_FLOAT_SCRATCH, 4, hi)
+		local value = buffer.readf64(Internal.HYBRID_FLOAT_SCRATCH, 0)
+		if not isFiniteNumber(value) then error("NetStream hybrid float64 is not finite", 0) end
+		return value, bitPosition
+	end
+	if tag == Internal.HYBRID_STRING then
+		local len; len, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+		if len > Config.HybridSmallStringMaxBytes or len > Config.MaxStringBytes then error("NetStream hybrid string too large", 0) end
+		local chars = table.create(len)
+		for i = 1, len do local b; b, bitPosition = Internal.packetReadBits(data, bitPosition, 8); chars[i] = string.char(b) end
+		return table.concat(chars), bitPosition
+	end
+	if tag == Internal.HYBRID_COLOR3 then
+		local r,g,b; r,bitPosition=Internal.packetReadBits(data,bitPosition,8); g,bitPosition=Internal.packetReadBits(data,bitPosition,8); b,bitPosition=Internal.packetReadBits(data,bitPosition,8)
+		return Color3.fromRGB(r,g,b), bitPosition
+	end
+	error("NetStream invalid hybrid scalar tag", 0)
+end
+
+function Internal.hybridCompressionAllowed(item, rawBits)
+	if not Config.HybridCodecEnabled then return true end
+	local route = Internal.routeForItem(item)
+	if route and route.Compression == true then Stats.HybridCompressionThresholdAttempts += 1; return true end
+	if rawBits < Config.HybridCompressionThresholdBits then Stats.HybridCompressionThresholdSkips += 1; return false end
+	Stats.HybridCompressionThresholdAttempts += 1
+	return true
+end
+
+function Internal.recordHybridPacket(usefulBits, physicalBytes, nativeBytes)
+	local physicalBits = physicalBytes * 8
+	Stats.HybridBufferUtilSent += 1
+	Stats.HybridBufferUtilUsefulBits += usefulBits
+	Stats.HybridBufferUtilPhysicalBits += physicalBits
+	Stats.HybridBufferUtilPaddingBits += math.max(0, physicalBits - usefulBits)
+	Stats.HybridBufferUtilBytesSaved += math.max(0, nativeBytes - physicalBytes)
 end
 
 function Internal.canCompressionRoundTrip(value, seen)
@@ -434,11 +790,11 @@ function Internal.debugWarn(...)
 	end
 end
 
-local function isInteger(n)
+isInteger = function(n)
 	return n == math.floor(n)
 end
 
-local function isFiniteNumber(n)
+isFiniteNumber = function(n)
 	return type(n) == "number" and n == n and n ~= math.huge and n ~= -math.huge
 end
 
@@ -456,7 +812,7 @@ local function cframeIsFinite(value, precision)
 		and isFiniteNumber(r20) and isFiniteNumber(r21) and isFiniteNumber(r22)
 end
 
-local function clampInteger(n, minValue, maxValue)
+clampInteger = function(n, minValue, maxValue)
 	if n < minValue then
 		return minValue
 	elseif n > maxValue then
@@ -647,6 +1003,28 @@ function Writer:finish()
 	return out
 end
 
+function Internal.acquireScratchWriter(minCapacity)
+	local writer = scratchWriterPool[#scratchWriterPool]
+	if writer then
+		scratchWriterPool[#scratchWriterPool] = nil
+		writer.maxBytes = Config.MaxOutgoingBatchBytes
+		writer:reset()
+		Stats.ScratchWriterPoolHits += 1
+	else
+		writer = Writer.new(math.max(128, minCapacity or 128), Config.MaxOutgoingBatchBytes)
+	end
+	if minCapacity and minCapacity > 0 then
+		writer:ensure(minCapacity)
+	end
+	return writer
+end
+
+function Internal.releaseScratchWriter(writer)
+	if writer and writer.capacity <= Config.MaxPooledWriterBytes and #scratchWriterPool < Config.MaxScratchWriterPoolSize then
+		scratchWriterPool[#scratchWriterPool + 1] = writer
+	end
+end
+
 local Reader = {}
 Reader.__index = Reader
 
@@ -769,6 +1147,181 @@ function Reader:varInt()
 	return -((value + 1) / 2)
 end
 
+
+-- v2.1 continuous BitFrame writer/reader. All byte-shaped legacy values are
+-- written through BufferUtil at the current bit position, so they no longer
+-- force byte alignment between fields.
+Internal.BitFrameScratch = buffer.create(8)
+Internal.BitFrameWriter = {}
+Internal.BitFrameWriter.__index = Internal.BitFrameWriter
+
+function Internal.BitFrameWriter.new(initialBytes)
+	local capacity = math.max(16, initialBytes or 256)
+	return setmetatable({
+		buffer = Internal.BufferUtil.new(capacity),
+		capacity = capacity,
+		bitPosition = 0,
+		strings = {},
+		stringToIndex = {},
+	}, Internal.BitFrameWriter)
+end
+
+function Internal.BitFrameWriter:ensureBits(additionalBits)
+	local neededBits = self.bitPosition + additionalBits
+	local maxBits = Config.BitFrameMaxBytes * 8
+	if neededBits > maxBits then error("NetStream BitFrame exceeds BitFrameMaxBytes", 0) end
+	if neededBits <= self.capacity * 8 then return end
+	local nextCapacity = self.capacity
+	while nextCapacity * 8 < neededBits do nextCapacity *= 2 end
+	nextCapacity = math.min(nextCapacity, Config.BitFrameMaxBytes)
+	local nextBuffer = Internal.BufferUtil.new(nextCapacity)
+	local usedBytes = math.ceil(self.bitPosition / 8)
+	if usedBytes > 0 then buffer.copy(nextBuffer, 0, self.buffer, 0, usedBytes) end
+	self.buffer = nextBuffer
+	self.capacity = nextCapacity
+end
+
+function Internal.BitFrameWriter:ensure(bytes) self:ensureBits(bytes * 8) end
+function Internal.BitFrameWriter:bits(value, count)
+	self:ensureBits(count)
+	Internal.BufferUtil.writeBits(self.buffer, self.bitPosition, count, value)
+	self.bitPosition += count
+end
+function Internal.BitFrameWriter:adaptiveUInt(value)
+	if value == 0 then self:bits(0, 1); return end
+	if value <= 8 then self:bits(1, 2); self:bits(value - 1, 3); return end
+	if value <= 40 then self:bits(3, 3); self:bits(value - 9, 5); return end
+	self:bits(7, 3)
+	repeat
+		local byte = value % 128
+		value = math.floor(value / 128)
+		if value > 0 then byte += 128 end
+		self:bits(byte, 8)
+	until value == 0
+end
+function Internal.BitFrameWriter:u8(value) self:bits(value, 8) end
+function Internal.BitFrameWriter:u16(value) self:bits(value, 16) end
+function Internal.BitFrameWriter:i16(value) self:bits(if value < 0 then value + 65536 else value, 16) end
+function Internal.BitFrameWriter:u32(value) self:bits(value, 32) end
+function Internal.BitFrameWriter:i32(value) self:bits(if value < 0 then value + 4294967296 else value, 32) end
+function Internal.BitFrameWriter:f32(value)
+	buffer.writef32(Internal.BitFrameScratch, 0, value)
+	self:bits(buffer.readu32(Internal.BitFrameScratch, 0), 32)
+end
+function Internal.BitFrameWriter:f64(value)
+	buffer.writef64(Internal.BitFrameScratch, 0, value)
+	self:bits(buffer.readu32(Internal.BitFrameScratch, 0), 32)
+	self:bits(buffer.readu32(Internal.BitFrameScratch, 4), 32)
+end
+function Internal.BitFrameWriter:rawString(value)
+	self:ensureBits(#value * 8)
+	for i = 1, #value do self:bits(string.byte(value, i), 8) end
+end
+function Internal.BitFrameWriter:rawBuffer(value)
+	local length = buffer.len(value)
+	self:ensureBits(length * 8)
+	for i = 0, length - 1 do self:bits(buffer.readu8(value, i), 8) end
+end
+function Internal.BitFrameWriter:varUInt(value)
+	assert(value >= 0 and value <= MAX_SAFE_INTEGER and isInteger(value), "NetStream BitFrame varuint expects a non-negative safe integer")
+	repeat
+		local byte = value % 128
+		value = math.floor(value / 128)
+		if value > 0 then byte += 128 end
+		self:bits(byte, 8)
+	until value == 0
+end
+function Internal.BitFrameWriter:varInt(value)
+	self:varUInt(if value >= 0 then value * 2 else -value * 2 - 1)
+end
+function Internal.BitFrameWriter:finish()
+	return Internal.BufferUtil.cloneBits(self.buffer, self.bitPosition)
+end
+
+Internal.BitFrameReader = {}
+Internal.BitFrameReader.__index = Internal.BitFrameReader
+
+function Internal.BitFrameReader.new(data)
+	return setmetatable({
+		buffer = data,
+		bitPosition = 0,
+		bitLength = buffer.len(data) * 8,
+		strings = {},
+	}, Internal.BitFrameReader)
+end
+function Internal.BitFrameReader:needBits(count)
+	if self.bitPosition + count > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
+end
+function Internal.BitFrameReader:bits(count)
+	self:needBits(count)
+	local value = Internal.BufferUtil.readBits(self.buffer, self.bitPosition, count)
+	self.bitPosition += count
+	return value
+end
+function Internal.BitFrameReader:adaptiveUInt()
+	if self:bits(1) == 0 then return 0 end
+	if self:bits(1) == 0 then return self:bits(3) + 1 end
+	if self:bits(1) == 0 then return self:bits(5) + 9 end
+	local result, multiplier = 0, 1
+	for _ = 1, 8 do
+		local byte = self:bits(8)
+		result += (byte % 128) * multiplier
+		if result > MAX_SAFE_INTEGER then error("NetStream BitFrame adaptive UInt exceeds safe range", 0) end
+		if byte < 128 then return result end
+		multiplier *= 128
+	end
+	error("NetStream BitFrame adaptive UInt overflow", 0)
+end
+function Internal.BitFrameReader:u8() return self:bits(8) end
+function Internal.BitFrameReader:u16() return self:bits(16) end
+function Internal.BitFrameReader:i16()
+	local value = self:bits(16)
+	return if value >= 32768 then value - 65536 else value
+end
+function Internal.BitFrameReader:u32() return self:bits(32) end
+function Internal.BitFrameReader:i32()
+	local value = self:bits(32)
+	return if value >= 2147483648 then value - 4294967296 else value
+end
+function Internal.BitFrameReader:f32()
+	buffer.writeu32(Internal.BitFrameScratch, 0, self:bits(32))
+	return buffer.readf32(Internal.BitFrameScratch, 0)
+end
+function Internal.BitFrameReader:f64()
+	buffer.writeu32(Internal.BitFrameScratch, 0, self:bits(32))
+	buffer.writeu32(Internal.BitFrameScratch, 4, self:bits(32))
+	return buffer.readf64(Internal.BitFrameScratch, 0)
+end
+function Internal.BitFrameReader:rawString(length)
+	if length > Config.MaxStringBytes then error("NetStream BitFrame string exceeds MaxStringBytes", 0) end
+	self:needBits(length * 8)
+	local chars = table.create(length)
+	for i = 1, length do chars[i] = string.char(self:bits(8)) end
+	return table.concat(chars)
+end
+function Internal.BitFrameReader:rawBuffer(length)
+	if length > Config.MaxBufferBytes and length > Config.MaxIncomingPacketBytes then error("NetStream BitFrame buffer is too large", 0) end
+	self:needBits(length * 8)
+	local out = buffer.create(length)
+	for i = 0, length - 1 do buffer.writeu8(out, i, self:bits(8)) end
+	return out
+end
+function Internal.BitFrameReader:varUInt()
+	local result, multiplier = 0, 1
+	for _ = 1, 8 do
+		local byte = self:bits(8)
+		result += (byte % 128) * multiplier
+		if result > MAX_SAFE_INTEGER then error("NetStream BitFrame varuint exceeds safe range", 0) end
+		if byte < 128 then return result end
+		multiplier *= 128
+	end
+	error("NetStream BitFrame varuint overflow", 0)
+end
+function Internal.BitFrameReader:varInt()
+	local value = self:varUInt()
+	return if value % 2 == 0 then value / 2 else -((value + 1) / 2)
+end
+
 local function writeMeta(writer, typeId, value)
 	if value < 15 then
 		writer:u8(typeId * 16 + value)
@@ -861,6 +1414,20 @@ end
 local acquireArgsCount
 local releaseMessage
 
+function Internal.schemaFixedBytes(field)
+	local kind = field.Kind
+	if kind == SCHEMA_BOOL or kind == SCHEMA_U8 then return 1 end
+	if kind == SCHEMA_U16 or kind == SCHEMA_I16 or kind == SCHEMA_EXT.BRICK_COLOR then return 2 end
+	if kind == SCHEMA_U32 or kind == SCHEMA_I32 or kind == SCHEMA_F32 then return 4 end
+	if kind == SCHEMA_F64 or kind == SCHEMA_EXT.DATETIME then return 8 end
+	if kind == SCHEMA_COLOR3 then return 3 end
+	if kind == SCHEMA_EXT.UDIM then return 12 end
+	if kind == SCHEMA_EXT.NUMBER_RANGE then return 16 end
+	if kind == SCHEMA_EXT.UDIM2 then return 24 end
+	if kind == SCHEMA_EXT.RECT then return 32 end
+	return nil
+end
+
 function Internal.compileSchema(spec, label)
 	if spec == nil then
 		return nil
@@ -875,9 +1442,17 @@ function Internal.compileSchema(spec, label)
 			fields[i] = spec[i]
 		end
 	end
+	local fixedBytes = 0
+	local isFixed = true
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
+		local fieldBytes = Internal.schemaFixedBytes(field)
+		if fieldBytes then
+			fixedBytes += fieldBytes
+		else
+			isFixed = false
+		end
 	end
 	local signatureParts = table.create(#fields)
 	for i = 1, #fields do
@@ -887,7 +1462,9 @@ function Internal.compileSchema(spec, label)
 	return {
 		fields = fields,
 		count = #fields,
-		signature = table.concat(signatureParts, "|")
+		signature = table.concat(signatureParts, "|"),
+		fixedBytes = if isFixed then fixedBytes else nil,
+		isFixed = isFixed,
 	}
 end
 
@@ -1269,10 +1846,224 @@ local function readSchemaValue(reader, field)
 	error("Unknown NetStream schema type", 0)
 end
 
+function Internal.writeFixedSchemaPayload(data, position, schema, args)
+	local fields = schema.fields
+	local pos = position
+	for i = 1, schema.count do
+		local field = fields[i]
+		local kind = field.Kind
+		local value = args[i]
+		if kind == SCHEMA_BOOL then
+			buffer.writeu8(data, pos, if value then 1 else 0)
+			pos += 1
+		elseif kind == SCHEMA_U8 then
+			buffer.writeu8(data, pos, value)
+			pos += 1
+		elseif kind == SCHEMA_U16 then
+			buffer.writeu16(data, pos, value)
+			pos += 2
+		elseif kind == SCHEMA_I16 then
+			buffer.writei16(data, pos, value)
+			pos += 2
+		elseif kind == SCHEMA_U32 then
+			buffer.writeu32(data, pos, value)
+			pos += 4
+		elseif kind == SCHEMA_I32 then
+			buffer.writei32(data, pos, value)
+			pos += 4
+		elseif kind == SCHEMA_F32 then
+			buffer.writef32(data, pos, value)
+			pos += 4
+		elseif kind == SCHEMA_F64 then
+			buffer.writef64(data, pos, value)
+			pos += 8
+		elseif kind == SCHEMA_COLOR3 then
+			buffer.writeu8(data, pos, clampInteger(math.floor(value.R * 255 + 0.5), 0, 255))
+			buffer.writeu8(data, pos + 1, clampInteger(math.floor(value.G * 255 + 0.5), 0, 255))
+			buffer.writeu8(data, pos + 2, clampInteger(math.floor(value.B * 255 + 0.5), 0, 255))
+			pos += 3
+		elseif kind == SCHEMA_EXT.UDIM then
+			buffer.writef64(data, pos, value.Scale)
+			buffer.writei32(data, pos + 8, value.Offset)
+			pos += 12
+		elseif kind == SCHEMA_EXT.UDIM2 then
+			buffer.writef64(data, pos, value.X.Scale)
+			buffer.writei32(data, pos + 8, value.X.Offset)
+			buffer.writef64(data, pos + 12, value.Y.Scale)
+			buffer.writei32(data, pos + 20, value.Y.Offset)
+			pos += 24
+		elseif kind == SCHEMA_EXT.RECT then
+			buffer.writef64(data, pos, value.Min.X)
+			buffer.writef64(data, pos + 8, value.Min.Y)
+			buffer.writef64(data, pos + 16, value.Max.X)
+			buffer.writef64(data, pos + 24, value.Max.Y)
+			pos += 32
+		elseif kind == SCHEMA_EXT.NUMBER_RANGE then
+			buffer.writef64(data, pos, value.Min)
+			buffer.writef64(data, pos + 8, value.Max)
+			pos += 16
+		elseif kind == SCHEMA_EXT.BRICK_COLOR then
+			buffer.writeu16(data, pos, value.Number)
+			pos += 2
+		elseif kind == SCHEMA_EXT.DATETIME then
+			buffer.writef64(data, pos, value.UnixTimestampMillis)
+			pos += 8
+		else
+			error("NetStream fixed schema contained a variable-width field", 0)
+		end
+	end
+	return pos
+end
+
+function Internal.writeFixedSchemaFlatPayload(data, position, schema, values, base)
+	local fields = schema.fields
+	local pos = position
+	for i = 1, schema.count do
+		local field = fields[i]
+		local kind = field.Kind
+		local value = values[base + i]
+		if kind == SCHEMA_BOOL then
+			buffer.writeu8(data, pos, if value then 1 else 0)
+			pos += 1
+		elseif kind == SCHEMA_U8 then
+			buffer.writeu8(data, pos, value)
+			pos += 1
+		elseif kind == SCHEMA_U16 then
+			buffer.writeu16(data, pos, value)
+			pos += 2
+		elseif kind == SCHEMA_I16 then
+			buffer.writei16(data, pos, value)
+			pos += 2
+		elseif kind == SCHEMA_U32 then
+			buffer.writeu32(data, pos, value)
+			pos += 4
+		elseif kind == SCHEMA_I32 then
+			buffer.writei32(data, pos, value)
+			pos += 4
+		elseif kind == SCHEMA_F32 then
+			buffer.writef32(data, pos, value)
+			pos += 4
+		elseif kind == SCHEMA_F64 then
+			buffer.writef64(data, pos, value)
+			pos += 8
+		elseif kind == SCHEMA_COLOR3 then
+			buffer.writeu8(data, pos, clampInteger(math.floor(value.R * 255 + 0.5), 0, 255))
+			buffer.writeu8(data, pos + 1, clampInteger(math.floor(value.G * 255 + 0.5), 0, 255))
+			buffer.writeu8(data, pos + 2, clampInteger(math.floor(value.B * 255 + 0.5), 0, 255))
+			pos += 3
+		elseif kind == SCHEMA_EXT.UDIM then
+			buffer.writef64(data, pos, value.Scale)
+			buffer.writei32(data, pos + 8, value.Offset)
+			pos += 12
+		elseif kind == SCHEMA_EXT.UDIM2 then
+			buffer.writef64(data, pos, value.X.Scale)
+			buffer.writei32(data, pos + 8, value.X.Offset)
+			buffer.writef64(data, pos + 12, value.Y.Scale)
+			buffer.writei32(data, pos + 20, value.Y.Offset)
+			pos += 24
+		elseif kind == SCHEMA_EXT.RECT then
+			buffer.writef64(data, pos, value.Min.X)
+			buffer.writef64(data, pos + 8, value.Min.Y)
+			buffer.writef64(data, pos + 16, value.Max.X)
+			buffer.writef64(data, pos + 24, value.Max.Y)
+			pos += 32
+		elseif kind == SCHEMA_EXT.NUMBER_RANGE then
+			buffer.writef64(data, pos, value.Min)
+			buffer.writef64(data, pos + 8, value.Max)
+			pos += 16
+		elseif kind == SCHEMA_EXT.BRICK_COLOR then
+			buffer.writeu16(data, pos, value.Number)
+			pos += 2
+		elseif kind == SCHEMA_EXT.DATETIME then
+			buffer.writef64(data, pos, value.UnixTimestampMillis)
+			pos += 8
+		else
+			error("NetStream packed schema run contained a variable-width field", 0)
+		end
+	end
+	return pos
+end
+
 local function writeSchemaArgs(writer, schema, args)
+	if schema.fixedBytes ~= nil then
+		writer:ensure(schema.fixedBytes)
+		writer.position = Internal.writeFixedSchemaPayload(writer.buffer, writer.position, schema, args)
+		Stats.FixedSchemaFastWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		writeSchemaValue(writer, schema.fields[i], args[i])
 	end
+end
+
+local function readFixedSchemaArgs(reader, schema)
+	reader:need(schema.fixedBytes)
+	local data = reader.buffer
+	local pos = reader.position
+	local args = acquireArgsCount(schema.count)
+	for i = 1, schema.count do
+		local kind = schema.fields[i].Kind
+		local value
+		if kind == SCHEMA_BOOL then
+			local byte = buffer.readu8(data, pos)
+			if byte > 1 then error("NetStream invalid schema boolean", 0) end
+			value = byte == 1
+			pos += 1
+		elseif kind == SCHEMA_U8 then
+			value = buffer.readu8(data, pos)
+			pos += 1
+		elseif kind == SCHEMA_U16 then
+			value = buffer.readu16(data, pos)
+			pos += 2
+		elseif kind == SCHEMA_I16 then
+			value = buffer.readi16(data, pos)
+			pos += 2
+		elseif kind == SCHEMA_U32 then
+			value = buffer.readu32(data, pos)
+			pos += 4
+		elseif kind == SCHEMA_I32 then
+			value = buffer.readi32(data, pos)
+			pos += 4
+		elseif kind == SCHEMA_F32 then
+			value = buffer.readf32(data, pos)
+			if not isFiniteNumber(value) or math.abs(value) > MAX_FLOAT32 then error("NetStream incoming F32 is not finite", 0) end
+			pos += 4
+		elseif kind == SCHEMA_F64 then
+			value = buffer.readf64(data, pos)
+			if not isFiniteNumber(value) then error("NetStream incoming F64 is not finite", 0) end
+			pos += 8
+		elseif kind == SCHEMA_COLOR3 then
+			value = Color3.fromRGB(buffer.readu8(data, pos), buffer.readu8(data, pos + 1), buffer.readu8(data, pos + 2))
+			pos += 3
+		elseif kind == SCHEMA_EXT.UDIM then
+			value = UDim.new(buffer.readf64(data, pos), buffer.readi32(data, pos + 8))
+			pos += 12
+		elseif kind == SCHEMA_EXT.UDIM2 then
+			value = UDim2.new(buffer.readf64(data, pos), buffer.readi32(data, pos + 8), buffer.readf64(data, pos + 12), buffer.readi32(data, pos + 20))
+			pos += 24
+		elseif kind == SCHEMA_EXT.RECT then
+			value = Rect.new(buffer.readf64(data, pos), buffer.readf64(data, pos + 8), buffer.readf64(data, pos + 16), buffer.readf64(data, pos + 24))
+			pos += 32
+		elseif kind == SCHEMA_EXT.NUMBER_RANGE then
+			value = NumberRange.new(buffer.readf64(data, pos), buffer.readf64(data, pos + 8))
+			pos += 16
+		elseif kind == SCHEMA_EXT.BRICK_COLOR then
+			value = BrickColor.new(buffer.readu16(data, pos))
+			pos += 2
+		elseif kind == SCHEMA_EXT.DATETIME then
+			local millis = buffer.readf64(data, pos)
+			if not isFiniteNumber(millis) then error("NetStream incoming DateTime timestamp is not finite", 0) end
+			value = DateTime.fromUnixTimestampMillis(millis)
+			pos += 8
+		else
+			error("NetStream fixed schema contained a variable-width field", 0)
+		end
+		args[i] = value
+	end
+	reader.position = pos
+	args.n = schema.count
+	Stats.FixedSchemaFastReads += 1
+	return args
 end
 
 local function readSchemaArgs(reader, schema)
@@ -1286,9 +2077,44 @@ local function readSchemaArgs(reader, schema)
 		end
 		return if value == 1 then TRUE_ARGS else FALSE_ARGS
 	end
+	if schema.fixedBytes ~= nil then
+		return readFixedSchemaArgs(reader, schema)
+	end
 	local args = acquireArgsCount(schema.count)
 	for i = 1, schema.count do
 		args[i] = readSchemaValue(reader, schema.fields[i])
+	end
+	args.n = schema.count
+	return args
+end
+
+
+function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
+	local offset = base or 0
+	for i = 1, schema.count do
+		local field = schema.fields[i]
+		local value = args[offset + i]
+		if field.Kind == SCHEMA_BOOL then
+			writer:bits(value and 1 or 0, 1)
+		else
+			writeSchemaValue(writer, field, value)
+		end
+	end
+end
+
+function Internal.bitFrameReadSchemaArgs(reader, schema)
+	if schema.count == 0 then return EMPTY_ARGS end
+	if schema.count == 1 and schema.fields[1].Kind == SCHEMA_BOOL then
+		return if reader:bits(1) ~= 0 then TRUE_ARGS else FALSE_ARGS
+	end
+	local args = acquireArgsCount(schema.count)
+	for i = 1, schema.count do
+		local field = schema.fields[i]
+		if field.Kind == SCHEMA_BOOL then
+			args[i] = reader:bits(1) ~= 0
+		else
+			args[i] = readSchemaValue(reader, field)
+		end
 	end
 	args.n = schema.count
 	return args
@@ -1529,6 +2355,192 @@ writeValue = function(writer, value, depth, seen)
 	end
 end
 
+
+-- Exact byte-cost estimator for the native dynamic codec. This mirrors writeValue
+-- without touching a scratch buffer, so compression decisions no longer serialize
+-- the same payload twice just to learn its native byte count.
+Internal._nativeMeasurePool = {}
+
+function Internal.nativeMetaByteLength(value)
+	if value < 15 then
+		return 1
+	end
+	return 1 + Internal.varUIntByteLength(value)
+end
+
+function Internal.nativeVarIntByteLength(value)
+	local zigzag
+	if value >= 0 then
+		zigzag = value * 2
+	else
+		zigzag = -value * 2 - 1
+	end
+	return Internal.varUIntByteLength(zigzag)
+end
+
+function Internal.acquireNativeMeasureState(writer)
+	local pool = Internal._nativeMeasurePool
+	local state = pool[#pool]
+	if state then
+		pool[#pool] = nil
+	else
+		state = { strings = {}, seen = {}, nextStringIndex = 0 }
+	end
+	table.clear(state.strings)
+	table.clear(state.seen)
+	state.nextStringIndex = writer and #writer.strings or 0
+	return state
+end
+
+function Internal.releaseNativeMeasureState(state)
+	if not state then
+		return
+	end
+	table.clear(state.strings)
+	table.clear(state.seen)
+	state.nextStringIndex = 0
+	local pool = Internal._nativeMeasurePool
+	if #pool < Config.MaxScratchWriterPoolSize then
+		pool[#pool + 1] = state
+	end
+end
+
+function Internal.nativeValueByteLength(writer, value, state)
+	if value == nil then
+		return 1
+	end
+	local luaType = type(value)
+	local robloxType = typeof(value)
+	if luaType == "boolean" then
+		return 1
+	elseif luaType == "number" then
+		local canVarInt = isInteger(value)
+			and ((value >= 0 and value <= MAX_SAFE_INTEGER)
+				or (value < 0 and -value <= MAX_SAFE_VARINT_MAGNITUDE))
+		if not canVarInt then
+			return 9
+		end
+		if value >= 0 then
+			if value < 15 then
+				return 1
+			end
+			return 1 + Internal.varUIntByteLength(value)
+		end
+		local zigzag = -value * 2 - 1
+		if zigzag < 15 then
+			return 1
+		end
+		return 1 + Internal.varUIntByteLength(zigzag)
+	elseif luaType == "string" then
+		local index = writer and writer.stringToIndex[value] or nil
+		if index == nil then
+			index = state.strings[value]
+		end
+		if index ~= nil then
+			return Internal.nativeMetaByteLength(index)
+		end
+		local length = #value
+		state.strings[value] = state.nextStringIndex
+		state.nextStringIndex += 1
+		return Internal.nativeMetaByteLength(length) + length
+	elseif robloxType == "Vector3" then
+		local precision = Config.VectorPrecision
+		return 1
+			+ Internal.nativeVarIntByteLength(roundScaled(value.X, precision))
+			+ Internal.nativeVarIntByteLength(roundScaled(value.Y, precision))
+			+ Internal.nativeVarIntByteLength(roundScaled(value.Z, precision))
+	elseif robloxType == "Vector2" then
+		local precision = Config.VectorPrecision
+		return 1
+			+ Internal.nativeVarIntByteLength(roundScaled(value.X, precision))
+			+ Internal.nativeVarIntByteLength(roundScaled(value.Y, precision))
+	elseif robloxType == "Color3" then
+		return 4
+	elseif robloxType == "CFrame" then
+		local position = value.Position
+		local precision = Config.VectorPrecision
+		return 9
+			+ Internal.nativeVarIntByteLength(roundScaled(position.X, precision))
+			+ Internal.nativeVarIntByteLength(roundScaled(position.Y, precision))
+			+ Internal.nativeVarIntByteLength(roundScaled(position.Z, precision))
+	elseif robloxType == "buffer" then
+		local length = buffer.len(value)
+		return Internal.nativeMetaByteLength(length) + length
+	elseif robloxType == "UDim" then
+		return 13
+	elseif robloxType == "UDim2" then
+		return 25
+	elseif robloxType == "Rect" then
+		return 33
+	elseif robloxType == "NumberRange" then
+		return 17
+	elseif robloxType == "BrickColor" then
+		return 3
+	elseif robloxType == "DateTime" then
+		return 9
+	elseif luaType == "table" then
+		local mt = getmetatable(value)
+		if mt == Float32Tag then
+			return 5
+		elseif mt == RawStringTag then
+			local raw = value[1]
+			return 1 + Internal.varUIntByteLength(#raw) + #raw
+		end
+		if state.seen[value] then
+			error("NetStream cannot estimate circular tables", 0)
+		end
+		state.seen[value] = true
+		local count = 0
+		local maxIndex = 0
+		local arrayCandidate = true
+		for key in pairs(value) do
+			count += 1
+			if type(key) ~= "number" or not isInteger(key) or key < 1 then
+				arrayCandidate = false
+			elseif key > maxIndex then
+				maxIndex = key
+			end
+		end
+		local bytes
+		if arrayCandidate and count == maxIndex then
+			bytes = Internal.nativeMetaByteLength(maxIndex)
+			for i = 1, maxIndex do
+				bytes += Internal.nativeValueByteLength(writer, value[i], state)
+			end
+		else
+			bytes = Internal.nativeMetaByteLength(count)
+			for key, item in pairs(value) do
+				bytes += Internal.nativeValueByteLength(writer, key, state)
+				bytes += Internal.nativeValueByteLength(writer, item, state)
+			end
+		end
+		state.seen[value] = nil
+		return bytes
+	end
+	error("NetStream unsupported value type during native size estimate: " .. robloxType, 0)
+end
+
+function Internal.nativeDynamicArgsByteLength(writer, args)
+	local state = Internal.acquireNativeMeasureState(writer)
+	local bytes = 0
+	for i = 1, args.n do
+		bytes += Internal.nativeValueByteLength(writer, args[i], state)
+	end
+	Internal.releaseNativeMeasureState(state)
+	Stats.CompressionNativeSizeEstimates += 1
+	Stats.CompressionNativeScratchAvoided += 1
+	return bytes
+end
+
+function Internal.nativeSingleValueByteLength(value)
+	local state = Internal.acquireNativeMeasureState(nil)
+	local bytes = Internal.nativeValueByteLength(nil, value, state)
+	Internal.releaseNativeMeasureState(state)
+	Stats.CompressionNativeSizeEstimates += 1
+	Stats.CompressionNativeScratchAvoided += 1
+	return bytes
+end
+
 readValue = function(reader, depth)
 	depth = depth or 0
 	if depth > Config.MaxDepth then
@@ -1658,17 +2670,29 @@ end
 
 local peekTargetBucket
 
+local function messageLogicalCount(item)
+	if item and item.packedRun then
+		return item.runCount or 1
+	end
+	return if item then 1 else 0
+end
+
 function Internal.newQueue()
-	return { items = {}, head = 1, tail = 0 }
+	return { items = {}, head = 1, tail = 0, logicalCount = 0 }
 end
 
 local function queueCount(queue)
 	return queue.tail - queue.head + 1
 end
 
+local function queueLogicalCount(queue)
+	return queue.logicalCount or queueCount(queue)
+end
+
 local function queuePush(queue, item)
 	queue.tail += 1
 	queue.items[queue.tail] = item
+	queue.logicalCount += messageLogicalCount(item)
 end
 
 local function queuePop(queue)
@@ -1678,9 +2702,11 @@ local function queuePop(queue)
 	local item = queue.items[queue.head]
 	queue.items[queue.head] = nil
 	queue.head += 1
+	queue.logicalCount = math.max(0, queue.logicalCount - messageLogicalCount(item))
 	if queue.head > queue.tail then
 		queue.head = 1
 		queue.tail = 0
+		queue.logicalCount = 0
 	end
 	return item
 end
@@ -1731,18 +2757,22 @@ function Internal.queueRemoveRoute(queue, routeId, kind)
 		return 0
 	end
 	local removed = 0
+	local remainingLogical = 0
 	local writeIndex = queue.head
 	for readIndex = queue.head, queue.tail do
 		local message = queue.items[readIndex]
 		queue.items[readIndex] = nil
 		if message and message.id == routeId and message.kind == kind then
+			local logical = messageLogicalCount(message)
 			releaseMessage(message)
-			removed += 1
+			removed += logical
 		elseif message then
 			queue.items[writeIndex] = message
+			remainingLogical += messageLogicalCount(message)
 			writeIndex += 1
 		end
 	end
+	queue.logicalCount = remainingLogical
 	if writeIndex == queue.head then
 		queue.head = 1
 		queue.tail = 0
@@ -1837,6 +2867,27 @@ local function makeArgs(...)
 	return args
 end
 
+
+local function acquirePackedValues(capacity)
+	local values = packedValuePool[#packedValuePool]
+	if values then
+		packedValuePool[#packedValuePool] = nil
+		table.clear(values)
+		Stats.PackedValuePoolHits += 1
+		return values
+	end
+	return table.create(capacity or 8)
+end
+
+local function releasePackedValues(values)
+	if not values then
+		return
+	end
+	table.clear(values)
+	if #packedValuePool < Config.MaxBatchPoolSize then
+		packedValuePool[#packedValuePool + 1] = values
+	end
+end
 local function releaseArgs(args)
 	if not args or args == EMPTY_ARGS or args == TRUE_ARGS or args == FALSE_ARGS then
 		return
@@ -1857,21 +2908,55 @@ local function validateArgs(args)
 	end
 end
 
-local function makeMessage(kind, id, request, args, schema)
+local function acquireMessage()
 	local message = messagePool[#messagePool]
 	if message then
 		messagePool[#messagePool] = nil
 		Stats.MessagePoolHits += 1
-	else
-		message = {}
+		return message
 	end
+	return {}
+end
+
+local function makeMessage(kind, id, request, args, schema, priority)
+	local message = acquireMessage()
 	message.kind = kind
 	message.id = id
 	message.request = request
 	message.args = args
 	message.n = args and args.n or 0
 	message.schema = schema
+	message.priority = priority
 	message.latestKey = nil
+	message.packedRun = false
+	message.packedValues = nil
+	message.runCount = nil
+	message.runLimit = nil
+	message.fieldCount = nil
+	return message
+end
+
+local function makePackedRunMessage(route, valueCount, runLimit, ...)
+	local message = acquireMessage()
+	local values = acquirePackedValues(math.max(8, valueCount * math.min(Config.MaxBatchMessages, 512)))
+	for i = 1, valueCount do
+		values[i] = select(i, ...)
+	end
+	message.kind = KIND_EVENT
+	message.id = route.Id
+	message.request = 0
+	message.args = nil
+	message.n = valueCount
+	message.schema = route._schema
+	message.priority = route.Priority or "Normal"
+	message.latestKey = nil
+	message.packedRun = true
+	message.packedValues = values
+	message.runCount = 1
+	message.runLimit = runLimit
+	message.fieldCount = valueCount
+	Stats.PackedSchemaRunItems += 1
+	Stats.PackedSchemaRunMessages += 1
 	return message
 end
 
@@ -1880,19 +2965,31 @@ releaseMessage = function(message)
 		return
 	end
 	releaseArgs(message.args)
+	if message.packedValues then
+		releasePackedValues(message.packedValues)
+	end
 	message.kind = nil
 	message.id = nil
 	message.request = nil
 	message.args = nil
 	message.n = nil
 	message.schema = nil
+	message.priority = nil
 	message.latestKey = nil
+	message.packedRun = nil
+	message.packedValues = nil
+	message.runCount = nil
+	message.runLimit = nil
+	message.fieldCount = nil
 	if #messagePool < Config.MaxPoolSize then
 		messagePool[#messagePool + 1] = message
 	end
 end
 
 function Internal.messagePriority(message)
+	if message.priority then
+		return message.priority
+	end
 	if message.kind == KIND_RETURN then
 		return "Critical"
 	end
@@ -1959,12 +3056,13 @@ local function enqueue(target, unreliable, message, latestKey)
 		local pressureLimit = if unreliable then Config.BandwidthMaxUnreliableQueue else Config.BandwidthMaxReliableQueue
 		maxQueue = math.min(maxQueue, pressureLimit)
 	end
-	if queueCount(queue) >= maxQueue then
+	if queueLogicalCount(queue) >= maxQueue then
 		if unreliable then
 			local dropped = queuePop(queue)
+			local droppedCount = messageLogicalCount(dropped)
 			releaseMessage(dropped)
-			Stats.DroppedUnreliable += 1
-			Stats.BandwidthQueuePressureDrops += 1
+			Stats.DroppedUnreliable += droppedCount
+			Stats.BandwidthQueuePressureDrops += droppedCount
 		else
 			Stats.RejectedReliable += 1
 			releaseMessage(message)
@@ -1979,18 +3077,93 @@ local function enqueue(target, unreliable, message, latestKey)
 	return true
 end
 
+
+local function packedRunMaxMessages(schema)
+	local maxRun = Config.MaxBatchMessages
+	if Config.BandwidthGovernorEnabled and schema and schema.fixedBytes and schema.fixedBytes > 0 then
+		local payloadBudget = math.max(schema.fixedBytes, Config.BandwidthMaxPacketBytes - 24)
+		maxRun = math.min(maxRun, math.max(1, math.floor(payloadBudget / schema.fixedBytes)))
+	end
+	return maxRun
+end
+
+function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
+	local bucket = getTargetBucket(target)
+	local queue = if unreliable then bucket.unreliable else bucket.reliable
+	local latest = if unreliable then bucket.latestUnreliable else bucket.latestReliable
+	local priority = route.Priority or "Normal"
+	local maxQueue = if unreliable then Config.MaxUnreliableQueue else Config.MaxReliableQueue
+	if Config.BandwidthGovernorEnabled then
+		local pressureLimit = if unreliable then Config.BandwidthMaxUnreliableQueue else Config.BandwidthMaxReliableQueue
+		maxQueue = math.min(maxQueue, pressureLimit)
+	end
+
+	if queueLogicalCount(queue) >= maxQueue then
+		if unreliable then
+			local dropped = queuePop(queue)
+			local droppedCount = messageLogicalCount(dropped)
+			releaseMessage(dropped)
+			Stats.DroppedUnreliable += droppedCount
+			Stats.BandwidthQueuePressureDrops += droppedCount
+		else
+			Stats.RejectedReliable += 1
+			if not overflowWarned then
+				overflowWarned = true
+				warn(LOG_PREFIX, "Reliable queue is full; rejecting new messages. Use Coalesce/Latest for high-frequency state or increase the bandwidth queue limits deliberately.")
+			end
+			return false
+		end
+	end
+
+	local wasEmpty = queueCount(queue) <= 0 and next(latest) == nil
+	local tail = if queue.tail >= queue.head then queue.items[queue.tail] else nil
+	if tail and tail.packedRun and tail.kind == KIND_EVENT and tail.id == route.Id and tail.schema == route._schema
+		and tail.priority == priority and tail.runCount < tail.runLimit then
+		local base = tail.runCount * valueCount
+		local values = tail.packedValues
+		for i = 1, valueCount do
+			values[base + i] = select(i, ...)
+		end
+		tail.runCount += 1
+		queue.logicalCount += 1
+		Stats.PackedSchemaRunMessages += 1
+		Stats.PackedSchemaRunAppends += 1
+	else
+		queuePush(queue, makePackedRunMessage(route, valueCount, packedRunMaxMessages(route._schema), ...))
+	end
+
+	local notBeforeKey = if unreliable then "unreliableNotBefore" else "reliableNotBefore"
+	if wasEmpty then
+		bucket[notBeforeKey] = os.clock() + Internal.transportWindow(priority)
+	elseif priority == "Critical" then
+		bucket[notBeforeKey] = os.clock()
+	end
+	Stats.TransportLogicalMessagesQueued += 1
+	if priority == "Critical" then
+		Stats.TransportCriticalMessagesQueued += 1
+	elseif priority == "Realtime" then
+		Stats.TransportRealtimeMessagesQueued += 1
+	else
+		Stats.TransportNormalMessagesQueued += 1
+	end
+	return true
+end
+function Internal.routeForItem(item)
+	if item.kind == KIND_EVENT then
+		return eventRoutes[item.id]
+	elseif item.kind == KIND_CALL then
+		return functionRoutes[item.id]
+	elseif item.kind == KIND_STATE then
+		return stateRoutes[item.id]
+	end
+	return nil
+end
+
 function Internal.routeCompressionEnabled(item)
 	if not Config.CompressionEnabled then
 		return false
 	end
-	local route = nil
-	if item.kind == KIND_EVENT then
-		route = eventRoutes[item.id]
-	elseif item.kind == KIND_CALL then
-		route = functionRoutes[item.id]
-	elseif item.kind == KIND_STATE then
-		route = stateRoutes[item.id]
-	end
+	local route = Internal.routeForItem(item)
 	if route and route.Compression == false then
 		return false
 	end
@@ -2000,6 +3173,78 @@ function Internal.routeCompressionEnabled(item)
 	return Internal.shouldAttemptCompression(item.args)
 end
 
+function Internal.compressionOptionsForRoute(route)
+	local base = Internal.compressionOptions()
+	if not Config.CompressionRouteStrategyCache or Config.CompressionTableStrategy ~= "Auto" or route == nil then
+		return base, false
+	end
+	local strategy = route._compressionTableStrategy
+	if strategy == nil then
+		Stats.CompressionStrategyCacheMisses += 1
+		return base, false
+	end
+	local remaining = route._compressionStrategyRemaining or 0
+	if remaining <= 0 then
+		Stats.CompressionStrategyCacheResamples += 1
+		return base, false
+	end
+	route._compressionStrategyRemaining = remaining - 1
+	local options = route._compressionStrategyOptions
+	if options == nil or options.TableStrategy ~= strategy then
+		options = table.clone(base)
+		options.TableStrategy = strategy
+		route._compressionStrategyOptions = options
+	end
+	Stats.CompressionStrategyCacheHits += 1
+	return options, true
+end
+
+function Internal.observeCompressionStrategy(route, data, usedCachedStrategy)
+	if not Config.CompressionRouteStrategyCache or Config.CompressionTableStrategy ~= "Auto" or route == nil then
+		return
+	end
+	local selected = if Compression.IsCompactTable(data) then "Compact" else "Dynamic"
+	local locked = route._compressionTableStrategy
+	if locked ~= nil then
+		if usedCachedStrategy then
+			if selected ~= locked then
+				route._compressionTableStrategy = nil
+				route._compressionStrategyOptions = nil
+				route._compressionStrategyCandidate = selected
+				route._compressionStrategyCandidateCount = 1
+				route._compressionStrategyRemaining = 0
+				Stats.CompressionStrategyCacheResets += 1
+			end
+			return
+		end
+		if selected == locked then
+			route._compressionStrategyRemaining = Config.CompressionRouteStrategyResample
+			return
+		end
+		route._compressionTableStrategy = nil
+		route._compressionStrategyOptions = nil
+		route._compressionStrategyCandidate = selected
+		route._compressionStrategyCandidateCount = 1
+		route._compressionStrategyRemaining = 0
+		Stats.CompressionStrategyCacheResets += 1
+		return
+	end
+	if route._compressionStrategyCandidate == selected then
+		route._compressionStrategyCandidateCount = (route._compressionStrategyCandidateCount or 0) + 1
+	else
+		route._compressionStrategyCandidate = selected
+		route._compressionStrategyCandidateCount = 1
+	end
+	if route._compressionStrategyCandidateCount >= Config.CompressionRouteStrategyWarmup then
+		route._compressionTableStrategy = selected
+		route._compressionStrategyOptions = nil
+		route._compressionStrategyRemaining = Config.CompressionRouteStrategyResample
+		route._compressionStrategyCandidate = nil
+		route._compressionStrategyCandidateCount = 0
+		Stats.CompressionStrategyCacheLocks += 1
+	end
+end
+
 function Internal.tryCompressDynamicArgs(writer, item, isTail)
 	if not Internal.routeCompressionEnabled(item) then
 		return nil, nil, false, false
@@ -2007,26 +3252,10 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 
 	Stats.CompressionAttempts += 1
 
-	local temp = Writer.new(128, Config.MaxOutgoingBatchBytes)
-	for i, value in ipairs(writer.strings) do
-		temp.strings[i] = value
-		temp.stringToIndex[value] = i - 1
-	end
-
-	local okRaw, rawErr = pcall(function()
-		for i = 1, item.n do
-			writeValue(temp, item.args[i], 0, nil)
-		end
-	end)
-	if not okRaw then
-		Stats.CompressionRejected += 1
-		Internal.debugWarn("Raw dynamic measurement failed:", rawErr)
-		return nil, nil, false, false
-	end
-
-	local rawPayloadBytes = temp.position
+	local rawPayloadBytes = Internal.nativeDynamicArgsByteLength(writer, item.args)
 	local rawCountBytes = if item.n >= 30 then Internal.varUIntByteLength(item.n * 4) else 0
 	local rawCost = rawCountBytes + rawPayloadBytes
+	if not Internal.hybridCompressionAllowed(item, rawCost * 8) then return nil, nil, false, false end
 
 	local source = item.args
 	local mode = 1
@@ -2035,7 +3264,9 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 		mode = 2
 	end
 
-	local ok, packet = pcall(Compression.Compress, source, Internal.compressionOptions())
+	local route = Internal.routeForItem(item)
+	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local ok, packet = pcall(Compression.Compress, source, compressionOptions)
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -2046,6 +3277,7 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 	end
 
 	local data = packet.Data
+	Internal.observeCompressionStrategy(route, data, usedCachedStrategy)
 	local dataBytes = buffer.len(data)
 	local directSingle = mode == 2
 	local control = if directSingle then nil else item.n * 4 + mode
@@ -2062,6 +3294,7 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 		Stats.CompressionUsed += 1
 		Stats.CompressionInputBytes += rawCost
 		Stats.CompressionOutputBytes += compressedCost
+		Internal.recordCompressionPacketBits(packet, rawCost, compressedCost)
 		local saved = rawCost - compressedCost
 		if saved > 0 then
 			Stats.CompressionSavedBytes += saved
@@ -2088,6 +3321,155 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 	return nil, nil, false, false
 end
 
+
+-- v2.0: BufferUtil tiny-payload fast path.
+function Internal.tryEncodeHybridSmallSingle(item)
+	if not Config.HybridCodecEnabled or not Config.HybridSmallScalarEnabled or item.schema ~= nil then return nil end
+	local route = Internal.routeForItem(item)
+	if route and route.Compression == true then return nil end
+	local scalarBits
+	local rawPayloadBytes
+	local nativeBytes
+	local totalBits
+	local out
+	local bitPosition = 0
+	if item.kind == KIND_EVENT or item.kind == KIND_STATE then
+		if item.n ~= 1 then return nil end
+		scalarBits = Internal.hybridScalarBitLength(item.args[1]); if scalarBits == nil then return nil end
+		rawPayloadBytes = Internal.nativeDynamicArgsByteLength(nil, item.args)
+		totalBits = 3 + 1 + Internal.packetAdaptiveUIntBitLength(item.id) + scalarBits
+		nativeBytes = 2 + Internal.varUIntByteLength(item.id) + rawPayloadBytes
+	elseif item.kind == KIND_CALL then
+		if item.n ~= 1 then return nil end
+		scalarBits = Internal.hybridScalarBitLength(item.args[1]); if scalarBits == nil then return nil end
+		rawPayloadBytes = Internal.nativeDynamicArgsByteLength(nil, item.args)
+		totalBits = 3 + Internal.packetAdaptiveUIntBitLength(item.id) + Internal.packetAdaptiveUIntBitLength(item.request) + scalarBits
+		nativeBytes = 2 + Internal.varUIntByteLength(item.id) + Internal.varUIntByteLength(item.request) + rawPayloadBytes
+	elseif item.kind == KIND_RETURN then
+		if item.n ~= 2 or type(item.args[1]) ~= "boolean" then return nil end
+		scalarBits = Internal.hybridScalarBitLength(item.args[2]); if scalarBits == nil then return nil end
+		rawPayloadBytes = Internal.nativeDynamicArgsByteLength(nil, item.args)
+		totalBits = 3 + Internal.packetAdaptiveUIntBitLength(item.request) + 1 + scalarBits
+		nativeBytes = 2 + Internal.varUIntByteLength(item.request) + rawPayloadBytes
+	else
+		return nil
+	end
+	if totalBits > Config.HybridSmallPacketMaxBits then return nil end
+	local totalBytes = math.ceil(totalBits / 8)
+	if nativeBytes - totalBytes < Config.HybridMinPhysicalSavingsBytes then return nil end
+	out = Internal.BufferUtil.new(totalBytes)
+	if item.kind == KIND_EVENT or item.kind == KIND_STATE then
+		bitPosition = Internal.packetWriteBits(out, bitPosition, Internal.HYBRID_EVENT_STATE_MARKER, 3)
+		bitPosition = Internal.packetWriteBits(out, bitPosition, item.kind == KIND_STATE and 1 or 0, 1)
+		bitPosition = Internal.packetWriteAdaptiveUInt(out, bitPosition, item.id)
+		bitPosition = Internal.hybridWriteScalar(out, bitPosition, item.args[1])
+	elseif item.kind == KIND_CALL then
+		bitPosition = Internal.packetWriteBits(out, bitPosition, Internal.HYBRID_CALL_MARKER, 3)
+		bitPosition = Internal.packetWriteAdaptiveUInt(out, bitPosition, item.id)
+		bitPosition = Internal.packetWriteAdaptiveUInt(out, bitPosition, item.request)
+		bitPosition = Internal.hybridWriteScalar(out, bitPosition, item.args[1])
+	else
+		bitPosition = Internal.packetWriteBits(out, bitPosition, Internal.HYBRID_RETURN_MARKER, 3)
+		bitPosition = Internal.packetWriteAdaptiveUInt(out, bitPosition, item.request)
+		bitPosition = Internal.packetWriteBits(out, bitPosition, item.args[1] and 1 or 0, 1)
+		bitPosition = Internal.hybridWriteScalar(out, bitPosition, item.args[2])
+	end
+	Internal.recordHybridPacket(bitPosition, totalBytes, nativeBytes)
+	Stats.SingleMessagePackets += 1
+	Stats.DynamicMessages += 1
+	return out
+end
+
+-- v1.8: packs a single dynamic Function call header at bit granularity.
+-- Format (LSB-first):
+--   3 bits marker (000)
+--   adaptive UInt route id
+--   adaptive UInt request id
+--   compressed payload bytes shifted directly into the same bitstream
+-- Only the final packet tail is byte-rounded.
+function Internal.tryEncodeBitCallSingle(item)
+	if not Config.BitPacketEnabled
+		or not Config.BitPacketCompressedCalls
+		or item.schema ~= nil
+		or item.kind ~= KIND_CALL
+		or item.n ~= 1
+		or typeof(item.args[1]) ~= "table"
+		or item.id <= 0
+		or item.request <= 0
+		or not Internal.routeCompressionEnabled(item)
+	then
+		return nil, false
+	end
+
+	Stats.CompressionAttempts += 1
+	local rawPayloadBytes = Internal.nativeSingleValueByteLength(item.args[1])
+	if not Internal.hybridCompressionAllowed(item, rawPayloadBytes * 8) then return nil, true end
+	local route = Internal.routeForItem(item)
+	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local ok, packet = pcall(Compression.Compress, item.args[1], compressionOptions)
+	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
+		Stats.CompressionRejected += 1
+		Stats.CompressionErrors += 1
+		if not ok then Internal.debugWarn("Bit-call compression rejected:", packet) end
+		return nil, true
+	end
+
+	local data = packet.Data
+	Internal.observeCompressionStrategy(route, data, usedCachedStrategy)
+	local dataBytes = buffer.len(data)
+	local headerBits = 3
+		+ Internal.packetAdaptiveUIntBitLength(item.id)
+		+ Internal.packetAdaptiveUIntBitLength(item.request)
+	local totalBits = headerBits + dataBytes * 8
+	local totalBytes = math.ceil(totalBits / 8)
+	local nativePacketBytes = 2
+		+ Internal.varUIntByteLength(item.id)
+		+ Internal.varUIntByteLength(item.request)
+		+ rawPayloadBytes
+	local netSaved = nativePacketBytes - totalBytes
+
+	if netSaved < Config.CompressionMinSavingsBytes then
+		Stats.CompressionRejected += 1
+		Stats.CompressionNoGain += 1
+		return nil, true
+	end
+
+	local out = buffer.create(totalBytes)
+	local bitPosition = 0
+	bitPosition = Internal.packetWriteBits(out, bitPosition, Internal.BIT_CALL_MARKER, 3)
+	bitPosition = Internal.packetWriteAdaptiveUInt(out, bitPosition, item.id)
+	bitPosition = Internal.packetWriteAdaptiveUInt(out, bitPosition, item.request)
+	bitPosition = Internal.packetAppendBufferBits(out, bitPosition, data)
+
+	local paddingBits = totalBytes * 8 - bitPosition
+	Stats.CompressionUsed += 1
+	Stats.CompressionInputBytes += rawPayloadBytes
+	Stats.CompressionOutputBytes += dataBytes
+	Internal.recordCompressionPacketBits(packet, rawPayloadBytes, dataBytes)
+	local payloadSaved = rawPayloadBytes - dataBytes
+	if payloadSaved > 0 then Stats.CompressionSavedBytes += payloadSaved end
+	Stats.CompressionEstimatedNetBytesSaved += netSaved
+	Stats.BitPacketCallsSent += 1
+	Stats.BitPacketHeaderBits += headerBits
+	local oldHeaderBits = (2
+		+ Internal.varUIntByteLength(item.id)
+		+ Internal.varUIntByteLength(item.request)) * 8
+	Stats.BitPacketHeaderBitsSaved += math.max(0, oldHeaderBits - headerBits)
+	Stats.BitPacketPaddingBits += paddingBits
+	Stats.SingleMessagePackets += 1
+	Stats.CompressionDirectTableUsed += 1
+	Stats.CompressionTailLengthElisions += 1
+	if Compression.IsCompactTable(data) then
+		Stats.CompressionCompactTableUsed += 1
+		local tableMode = Compression.TableMode(data)
+		if string.find(tableMode, "Mapped", 1, true) ~= nil then Stats.CompressionMappedTableUsed += 1 end
+	else
+		Stats.CompressionDynamicTableUsed += 1
+	end
+
+	return out, true
+end
+
 function Internal.tryEncodeCompactSingle(item)
 	if item.schema ~= nil
 		or item.n ~= 1
@@ -2102,16 +3484,11 @@ function Internal.tryEncodeCompactSingle(item)
 
 	Stats.CompressionAttempts += 1
 
-	local rawWriter = Writer.new(128, Config.MaxOutgoingBatchBytes)
-	local okRaw, rawErr = pcall(writeValue, rawWriter, item.args[1], 0, nil)
-	if not okRaw then
-		Stats.CompressionRejected += 1
-		Internal.debugWarn("Compact single raw measurement failed:", rawErr)
-		return nil, true
-	end
-
-	local rawPayloadBytes = rawWriter.position
-	local ok, packet = pcall(Compression.Compress, item.args[1], Internal.compressionOptions())
+	local rawPayloadBytes = Internal.nativeSingleValueByteLength(item.args[1])
+	if not Internal.hybridCompressionAllowed(item, rawPayloadBytes * 8) then return nil, true end
+	local route = Internal.routeForItem(item)
+	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local ok, packet = pcall(Compression.Compress, item.args[1], compressionOptions)
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -2122,6 +3499,7 @@ function Internal.tryEncodeCompactSingle(item)
 	end
 
 	local data = packet.Data
+	Internal.observeCompressionStrategy(route, data, usedCachedStrategy)
 	local dataBytes = buffer.len(data)
 	local nativePacketBytes = 1 + 1 + Internal.varUIntByteLength(item.id) + rawPayloadBytes
 	local compactPacketBytes = 2 + dataBytes
@@ -2133,14 +3511,17 @@ function Internal.tryEncodeCompactSingle(item)
 		return nil, true
 	end
 
-	local writer = Writer.new(math.max(16, compactPacketBytes), Config.MaxOutgoingBatchBytes)
-	writer:u8(PROTOCOL_COMPACT_TABLE)
-	writer:u8(item.id * 4 + item.kind)
-	writer:rawBuffer(data)
+	local compactOut = buffer.create(compactPacketBytes)
+	buffer.writeu8(compactOut, 0, Internal.LEGACY_PROTOCOL_COMPACT_TABLE)
+	buffer.writeu8(compactOut, 1, item.id * 4 + item.kind)
+	if dataBytes > 0 then
+		buffer.copy(compactOut, 2, data, 0, dataBytes)
+	end
 
 	Stats.CompressionUsed += 1
 	Stats.CompressionInputBytes += rawPayloadBytes
 	Stats.CompressionOutputBytes += dataBytes
+	Internal.recordCompressionPacketBits(packet, rawPayloadBytes, dataBytes)
 	local payloadSaved = rawPayloadBytes - dataBytes
 	if payloadSaved > 0 then
 		Stats.CompressionSavedBytes += payloadSaved
@@ -2160,7 +3541,7 @@ function Internal.tryEncodeCompactSingle(item)
 		Stats.CompressionDynamicTableUsed += 1
 	end
 
-	return writer:finish(), true
+	return compactOut, true
 end
 
 local function writeMessage(writer, item, isTail, skipCompression)
@@ -2230,6 +3611,84 @@ local function writeMessage(writer, item, isTail, skipCompression)
 	end
 end
 
+local function writePackedSchemaSingle(writer, item)
+	local reuseRoute = writer.lastEventRoute == item.id
+	writer.lastEventRoute = item.id
+	writer:u8(KIND_EVENT + 4 + (if reuseRoute then 8 else 0))
+	if not reuseRoute then
+		writer:varUInt(item.id)
+	end
+	writer:ensure(item.schema.fixedBytes)
+	writer.position = Internal.writeFixedSchemaFlatPayload(writer.buffer, writer.position, item.schema, item.packedValues, 0)
+	Stats.SchemaMessages += 1
+	Stats.FixedSchemaFastWrites += 1
+end
+
+local function writePackedSchemaRun(writer, item)
+	local reuseRoute = writer.lastEventRoute == item.id
+	writer.lastEventRoute = item.id
+	writer:u8(KIND_EVENT + 4 + (if reuseRoute then 8 else 0) + 16)
+	if not reuseRoute then
+		writer:varUInt(item.id)
+	end
+	local runCount = item.runCount
+	writer:varUInt(runCount)
+	local schema = item.schema
+	local values = item.packedValues
+	if schema.count == 1 then
+		local kind = schema.fields[1].Kind
+		if kind == SCHEMA_BOOL then
+			local bit = 0
+			local packed = 0
+			for index = 1, runCount do
+				if values[index] then packed += bit32.lshift(1, bit) end
+				bit += 1
+				if bit == 8 then
+					writer:u8(packed)
+					bit = 0
+					packed = 0
+				end
+			end
+			if bit > 0 then writer:u8(packed) end
+		elseif kind == SCHEMA_U8 then
+			writer:ensure(runCount)
+			local data = writer.buffer
+			local pos = writer.position
+			for index = 1, runCount do
+				buffer.writeu8(data, pos, values[index])
+				pos += 1
+			end
+			writer.position = pos
+		elseif kind == SCHEMA_U16 then
+			writer:ensure(runCount * 2)
+			local data = writer.buffer
+			local pos = writer.position
+			for index = 1, runCount do
+				buffer.writeu16(data, pos, values[index])
+				pos += 2
+			end
+			writer.position = pos
+		else
+			writer:ensure(schema.fixedBytes * runCount)
+			local pos = writer.position
+			for index = 0, runCount - 1 do
+				pos = Internal.writeFixedSchemaFlatPayload(writer.buffer, pos, schema, values, index)
+			end
+			writer.position = pos
+		end
+	else
+		writer:ensure(schema.fixedBytes * runCount)
+		local pos = writer.position
+		local fieldCount = item.fieldCount
+		for index = 0, runCount - 1 do
+			pos = Internal.writeFixedSchemaFlatPayload(writer.buffer, pos, schema, values, index * fieldCount)
+		end
+		writer.position = pos
+	end
+	Stats.SchemaMessages += runCount
+	Stats.FixedSchemaFastWrites += runCount
+end
+
 local function writeSchemaEventRun(writer, items, startIndex, runCount)
 	local first = items[startIndex]
 	local reuseRoute = writer.lastEventRoute == first.id
@@ -2265,13 +3724,25 @@ local function writeSchemaEventRun(writer, items, startIndex, runCount)
 				writer:u8(packed)
 			end
 		elseif kind == SCHEMA_U8 then
+			writer:ensure(runCount)
+			local data = writer.buffer
+			local pos = writer.position
 			for offset = 0, runCount - 1 do
-				writer:u8(items[startIndex + offset].args[1])
+				buffer.writeu8(data, pos, items[startIndex + offset].args[1])
+				pos += 1
 			end
+			writer.position = pos
+			Stats.FixedSchemaFastWrites += runCount
 		elseif kind == SCHEMA_U16 then
+			writer:ensure(runCount * 2)
+			local data = writer.buffer
+			local pos = writer.position
 			for offset = 0, runCount - 1 do
-				writer:u16(items[startIndex + offset].args[1])
+				buffer.writeu16(data, pos, items[startIndex + offset].args[1])
+				pos += 2
 			end
+			writer.position = pos
+			Stats.FixedSchemaFastWrites += runCount
 		elseif kind == SCHEMA_VARUINT then
 			for offset = 0, runCount - 1 do
 				writer:varUInt(items[startIndex + offset].args[1])
@@ -2288,17 +3759,112 @@ local function writeSchemaEventRun(writer, items, startIndex, runCount)
 				writer:varInt(roundScaled(value.Y, precision))
 				writer:varInt(roundScaled(value.Z, precision))
 			end
+		elseif schema.fixedBytes ~= nil then
+			writer:ensure(schema.fixedBytes * runCount)
+			for offset = 0, runCount - 1 do
+				writer.position = Internal.writeFixedSchemaPayload(writer.buffer, writer.position, schema, items[startIndex + offset].args)
+			end
+			Stats.FixedSchemaFastWrites += runCount
 		else
 			for offset = 0, runCount - 1 do
 				writeSchemaValue(writer, field, items[startIndex + offset].args[1])
 			end
 		end
+	elseif schema.fixedBytes ~= nil then
+		writer:ensure(schema.fixedBytes * runCount)
+		for offset = 0, runCount - 1 do
+			writer.position = Internal.writeFixedSchemaPayload(writer.buffer, writer.position, schema, items[startIndex + offset].args)
+		end
+		Stats.FixedSchemaFastWrites += runCount
 	else
 		for offset = 0, runCount - 1 do
 			writeSchemaArgs(writer, schema, items[startIndex + offset].args)
 		end
 	end
 	Stats.SchemaMessages += runCount
+end
+
+function Internal.tryEncodeFastSchemaSingle(item)
+	if not Config.FastSchemaEnabled
+		or item.schema == nil
+		or item.schema.fixedBytes == nil
+		or item.schema.fixedBytes > Config.FastSchemaMaxBytes
+		or (item.kind ~= KIND_EVENT and item.kind ~= KIND_STATE)
+	then
+		return nil
+	end
+
+	local routeTag = item.id * 4 + item.kind
+	local fastHeaderBytes = 1 + Internal.varUIntByteLength(routeTag)
+	local regularHeaderBytes = 2 + Internal.varUIntByteLength(item.id)
+	if not Config.FastSchemaAllowHeaderExpansion and fastHeaderBytes > regularHeaderBytes then
+		return nil
+	end
+
+	local totalBytes = fastHeaderBytes + item.schema.fixedBytes
+	if totalBytes > Config.MaxOutgoingBatchBytes then
+		return nil
+	end
+	local out = buffer.create(totalBytes)
+	buffer.writeu8(out, 0, Internal.LEGACY_PROTOCOL_FAST_SCHEMA)
+	local pos = 1
+	local value = routeTag
+	repeat
+		local byte = value % 128
+		value = math.floor(value / 128)
+		if value > 0 then byte += 128 end
+		buffer.writeu8(out, pos, byte)
+		pos += 1
+	until value == 0
+	pos = Internal.writeFixedSchemaPayload(out, pos, item.schema, item.args)
+	if pos ~= totalBytes then
+		error("NetStream fast schema encoder size mismatch", 0)
+	end
+
+	Stats.SchemaMessages += 1
+	Stats.FastSchemaSent += 1
+	Stats.FastSchemaBytes += totalBytes
+	Stats.FastSchemaHeaderBytesSaved += math.max(0, regularHeaderBytes - fastHeaderBytes)
+	Stats.FixedSchemaFastWrites += 1
+	Stats.SingleMessagePackets += 1
+	Stats.SingleMessageHeaderBytesSaved += math.max(0, regularHeaderBytes - fastHeaderBytes)
+	return out
+end
+
+function Internal.tryEncodeFastPackedSingle(item)
+	if not Config.FastSchemaEnabled or not item.packedRun or item.runCount ~= 1
+		or item.schema == nil or item.schema.fixedBytes == nil or item.schema.fixedBytes > Config.FastSchemaMaxBytes then
+		return nil
+	end
+	local routeTag = item.id * 4 + KIND_EVENT
+	local fastHeaderBytes = 1 + Internal.varUIntByteLength(routeTag)
+	local regularHeaderBytes = 2 + Internal.varUIntByteLength(item.id)
+	if not Config.FastSchemaAllowHeaderExpansion and fastHeaderBytes > regularHeaderBytes then
+		return nil
+	end
+	local totalBytes = fastHeaderBytes + item.schema.fixedBytes
+	if totalBytes > Config.MaxOutgoingBatchBytes then return nil end
+	local out = buffer.create(totalBytes)
+	buffer.writeu8(out, 0, Internal.LEGACY_PROTOCOL_FAST_SCHEMA)
+	local pos = 1
+	local value = routeTag
+	repeat
+		local byte = value % 128
+		value = math.floor(value / 128)
+		if value > 0 then byte += 128 end
+		buffer.writeu8(out, pos, byte)
+		pos += 1
+	until value == 0
+	pos = Internal.writeFixedSchemaFlatPayload(out, pos, item.schema, item.packedValues, 0)
+	if pos ~= totalBytes then error("NetStream packed fast schema encoder size mismatch", 0) end
+	Stats.SchemaMessages += 1
+	Stats.FastSchemaSent += 1
+	Stats.FastSchemaBytes += totalBytes
+	Stats.FastSchemaHeaderBytesSaved += math.max(0, regularHeaderBytes - fastHeaderBytes)
+	Stats.FixedSchemaFastWrites += 1
+	Stats.SingleMessagePackets += 1
+	Stats.SingleMessageHeaderBytesSaved += math.max(0, regularHeaderBytes - fastHeaderBytes)
+	return out
 end
 
 local function acquireWriter()
@@ -2310,44 +3876,179 @@ local function acquireWriter()
 		Stats.WriterPoolHits += 1
 		return writer
 	end
-	return Writer.new(512, Config.MaxOutgoingBatchBytes)
+	return Writer.new(math.min(Config.InitialWriterBytes, Config.MaxOutgoingBatchBytes), Config.MaxOutgoingBatchBytes)
 end
 
 local function releaseWriter(writer)
-	if writer.capacity <= Config.MaxPooledWriterBytes and #writerPool < 16 then
+	if writer.capacity <= Config.MaxPooledWriterBytes and #writerPool < Config.MaxWriterPoolSize then
 		writerPool[#writerPool + 1] = writer
 	end
 end
 
+local function batchLogicalCount(items)
+	local total = 0
+	for i = 1, #items do
+		total += messageLogicalCount(items[i])
+	end
+	return total
+end
+
+
+-- v2.1 universal BitFrame transport.
+-- No packet protocol byte and no batch-count field are emitted. The frame is:
+--   1 bit message-present, message..., repeated, then a single 0 end bit.
+-- Message kind is 2 bits; route/request ids use adaptive bit UInts. Route lookup
+-- tells the receiver whether a schema is present, so schema packets need no codec id.
+function Internal.bitFrameWriteDynamic(writer, item)
+	local route = Internal.routeForItem(item)
+	if item.kind == KIND_RETURN then
+		local ok = item.args[1] == true
+		writer:bits(ok and 1 or 0, 1)
+		local resultCount = math.max(0, item.n - 1)
+		writer:adaptiveUInt(resultCount)
+		for i = 2, item.n do writeValue(writer, item.args[i], 0, nil) end
+		Stats.BitFrameNativeValues += resultCount
+		return
+	end
+
+	local forceCompression = route and route.Compression == true
+	if Config.BitFrameTinyScalarEnabled and not forceCompression and item.n == 1 then
+		local scalarBits = Internal.hybridScalarBitLength(item.args[1])
+		if scalarBits ~= nil and scalarBits <= Config.HybridSmallPacketMaxBits then
+			writer:bits(0, 2) -- tiny scalar
+			writer:ensureBits(scalarBits)
+			Internal.hybridWriteScalar(writer.buffer, writer.bitPosition, item.args[1])
+			-- hybridWriteScalar operates on a raw buffer position; advance explicitly.
+			writer.bitPosition += scalarBits
+			Stats.BitFrameTinyValues += 1
+			return
+		end
+	end
+
+	local compressedData, _, compressedDirect = Internal.tryCompressDynamicArgs(nil, item, false)
+	if compressedData then
+		writer:bits(compressedDirect and 2 or 3, 2)
+		writer:adaptiveUInt(buffer.len(compressedData))
+		writer:rawBuffer(compressedData)
+		Stats.BitFrameCompressedValues += 1
+		return
+	end
+
+	writer:bits(1, 2) -- native dynamic
+	writer:adaptiveUInt(item.n)
+	for i = 1, item.n do writeValue(writer, item.args[i], 0, nil) end
+	Stats.BitFrameNativeValues += item.n
+end
+
+function Internal.bitFrameWriteOne(writer, item)
+	writer:bits(1, 1) -- another message follows
+	writer:bits(item.kind, 2)
+	if item.kind ~= KIND_RETURN then writer:adaptiveUInt(item.id) end
+	if item.kind == KIND_CALL or item.kind == KIND_RETURN then writer:adaptiveUInt(item.request) end
+
+	if item.schema then
+		if item.kind == KIND_EVENT then
+			local isRun = item.packedRun == true and item.runCount and item.runCount > 1
+			writer:bits(isRun and 1 or 0, 1)
+			if isRun then
+				writer:adaptiveUInt(item.runCount)
+				for index = 0, item.runCount - 1 do
+					Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.packedValues, index * item.fieldCount)
+				end
+				Stats.SchemaMessages += item.runCount
+			else
+				if item.packedRun then
+					Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.packedValues, 0)
+				else
+					Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.args, 0)
+				end
+				Stats.SchemaMessages += 1
+			end
+		else
+			Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.args, 0)
+			Stats.SchemaMessages += 1
+		end
+	else
+		Internal.bitFrameWriteDynamic(writer, item)
+		Stats.DynamicMessages += 1
+	end
+	Stats.BitFrameMessagesEncoded += messageLogicalCount(item)
+end
+
+function Internal.encodeBitFrame(items)
+	local writer = Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
+	writer:bits(0, 1) -- end-of-frame marker; remaining physical tail bits stay zero
+	local usefulBits = writer.bitPosition
+	local out = writer:finish()
+	local physicalBits = buffer.len(out) * 8
+	Internal._lastEncodedUsefulBits = usefulBits
+	Internal._lastEncodedCodec = "BitFrame"
+	Stats.BitFramePacketsEncoded += 1
+	-- Every old v2 packet paid one protocol byte. Multi-message packets also paid
+	-- at least one byte for logicalCount; BitFrame needs neither.
+	Internal._lastEncodedProtocolBytesElided = 1
+	local logicalCount = batchLogicalCount(items)
+	Internal._lastEncodedBatchCountBytesElided = if logicalCount > 1 then Internal.varUIntByteLength(logicalCount) else 0
+	return out
+end
+
 local function encodeBatch(items)
+	if Config.BitFrameEnabled then
+		return Internal.encodeBitFrame(items)
+	end
+	local logicalCount = batchLogicalCount(items)
 	local compactAttempted = false
-	if #items == 1 then
-		local compact, attempted = Internal.tryEncodeCompactSingle(items[1])
-		compactAttempted = attempted
-		if compact then
-			Stats.DynamicMessages += 1
-			return compact
+	if logicalCount == 1 and #items == 1 then
+		if items[1].packedRun then
+			local fastPacked = Internal.tryEncodeFastPackedSingle(items[1])
+			if fastPacked then return fastPacked end
+		else
+			local fastSchema = Internal.tryEncodeFastSchemaSingle(items[1])
+			if fastSchema then
+				return fastSchema
+			end
+			local hybridSmall = Internal.tryEncodeHybridSmallSingle(items[1])
+			if hybridSmall then return hybridSmall end
+			local bitCall, bitAttempted = Internal.tryEncodeBitCallSingle(items[1])
+			if bitCall then
+				Stats.DynamicMessages += 1
+				return bitCall
+			end
+			local compact, attempted = Internal.tryEncodeCompactSingle(items[1])
+			compactAttempted = bitAttempted or attempted
+			if compact then
+				Stats.DynamicMessages += 1
+				return compact
+			end
 		end
 	end
 
 	local writer = acquireWriter()
 	local ok, result = pcall(function()
-		if #items == 1 then
-			writer:u8(PROTOCOL_SINGLE)
+		if logicalCount == 1 then
+			writer:u8(Internal.LEGACY_PROTOCOL_SINGLE)
 			Stats.SingleMessagePackets += 1
 			Stats.SingleMessageHeaderBytesSaved += 1
 		else
-			writer:u8(PROTOCOL)
-			writer:varUInt(#items)
+			writer:u8(Internal.LEGACY_PROTOCOL)
+			writer:varUInt(logicalCount)
 		end
 		local index = 1
 		while index <= #items do
 			local item = items[index]
-			if item.kind == KIND_EVENT and item.schema then
+			if item.packedRun then
+				if item.runCount >= 2 then
+					writePackedSchemaRun(writer, item)
+				else
+					writePackedSchemaSingle(writer, item)
+				end
+				index += 1
+			elseif item.kind == KIND_EVENT and item.schema then
 				local runCount = 1
 				while index + runCount <= #items do
 					local nextItem = items[index + runCount]
-					if nextItem.kind ~= KIND_EVENT or nextItem.id ~= item.id or nextItem.schema ~= item.schema then
+					if nextItem.packedRun or nextItem.kind ~= KIND_EVENT or nextItem.id ~= item.id or nextItem.schema ~= item.schema then
 						break
 					end
 					runCount += 1
@@ -2356,11 +4057,11 @@ local function encodeBatch(items)
 					writeSchemaEventRun(writer, items, index, runCount)
 					index += runCount
 				else
-					writeMessage(writer, item, index == #items, compactAttempted and #items == 1)
+					writeMessage(writer, item, index == #items, compactAttempted and logicalCount == 1)
 					index += 1
 				end
 			else
-				writeMessage(writer, item, index == #items, compactAttempted and #items == 1)
+				writeMessage(writer, item, index == #items, compactAttempted and logicalCount == 1)
 				index += 1
 			end
 		end
@@ -2453,8 +4154,9 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable)
 				end
 				latest[item.latestKey] = item
 			elseif unreliable and Config.BandwidthDropUnreliableOnPressure then
+				local droppedCount = messageLogicalCount(item)
 				releaseMessage(item)
-				Stats.BandwidthDroppedUnreliableMessages += 1
+				Stats.BandwidthDroppedUnreliableMessages += droppedCount
 			else
 				normal[#normal + 1] = item
 			end
@@ -2463,6 +4165,7 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable)
 	for i = #normal, 1, -1 do
 		queue.head -= 1
 		queue.items[queue.head] = normal[i]
+		queue.logicalCount += messageLogicalCount(normal[i])
 	end
 end
 
@@ -2478,7 +4181,40 @@ local function fireRemote(remote, target, data)
 	end
 end
 
+
+function Internal.clearLastSendStats()
+	lastPacketBytes = 0
+	local stats = Internal.LastSendStats
+	stats.Bytes = 0
+	stats.PhysicalBits = 0
+	stats.UsefulBits = 0
+	stats.PaddingBits = 0
+	stats.Codec = "None"
+end
+
+function Internal.commitLastSendStats(bytes)
+	local physicalBits = bytes * 8
+	local usefulBits = Internal._lastEncodedUsefulBits
+	if type(usefulBits) ~= "number" or usefulBits <= 0 or usefulBits > physicalBits then usefulBits = physicalBits end
+	local stats = Internal.LastSendStats
+	stats.Bytes = bytes
+	stats.PhysicalBits = physicalBits
+	stats.UsefulBits = usefulBits
+	stats.PaddingBits = math.max(0, physicalBits - usefulBits)
+	stats.Codec = Internal._lastEncodedCodec or "Unknown"
+	lastPacketBytes = bytes
+	if stats.Codec == "BitFrame" then
+		Stats.BitFramePacketsSent += 1
+		Stats.BitFrameUsefulBits += usefulBits
+		Stats.BitFramePhysicalBits += physicalBits
+		Stats.BitFramePaddingBits += stats.PaddingBits
+		Stats.BitFrameProtocolBytesElided += Internal._lastEncodedProtocolBytesElided or 0
+		Stats.BitFrameBatchCountBytesElided += Internal._lastEncodedBatchCountBytesElided or 0
+	end
+end
+
 local function sendBatch(target, unreliable, data)
+	Internal.clearLastSendStats()
 	if IS_SERVER and target ~= ALL and (not target or target.Parent ~= Players) then
 		return false, "invalid"
 	end
@@ -2516,7 +4252,7 @@ local function sendBatch(target, unreliable, data)
 	Stats.SentBytes += bytes
 	trafficWindowSentBatches += 1
 	trafficWindowSentBytes += bytes
-	lastPacketBytes = bytes
+	Internal.commitLastSendStats(bytes)
 	return true, "sent"
 end
 
@@ -2540,18 +4276,26 @@ end
 
 local function collectBatch(queue, latest, limit)
 	local items = acquireBatch(limit)
-	while #items < limit do
+	local logical = 0
+	while logical < limit and queueCount(queue) > 0 do
+		local nextItem = queue.items[queue.head]
+		local nextCount = messageLogicalCount(nextItem)
+		if logical > 0 and logical + nextCount > limit then
+			break
+		end
 		local item = queuePop(queue)
 		if not item then
 			break
 		end
 		items[#items + 1] = item
+		logical += nextCount
 	end
-	if #items < limit and next(latest) ~= nil then
+	if logical < limit and next(latest) ~= nil then
 		for key, item in pairs(latest) do
 			items[#items + 1] = item
 			latest[key] = nil
-			if #items >= limit then
+			logical += 1
+			if logical >= limit then
 				break
 			end
 		end
@@ -2587,8 +4331,9 @@ function Internal.sendIsolatedMessages(target, unreliable, items)
 		if ok then
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
-				Stats.SentMessages += 1
-				trafficWindowSentMessages += 1
+				local logical = messageLogicalCount(item)
+				Stats.SentMessages += logical
+				trafficWindowSentMessages += logical
 				releaseMessage(item)
 				items[i] = nil
 			elseif reason == "defer" then
@@ -2645,8 +4390,9 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		else
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
-				Stats.SentMessages += #items
-				trafficWindowSentMessages += #items
+				local logical = batchLogicalCount(items)
+				Stats.SentMessages += logical
+				trafficWindowSentMessages += logical
 				for i = 1, #items do
 					releaseMessage(items[i])
 				end
@@ -2666,7 +4412,7 @@ end
 
 local function flushBucket(target, bucket, deadline, force)
 	local now = os.clock()
-	local reliableCount = math.max(0, queueCount(bucket.reliable)) + Internal.mapCount(bucket.latestReliable)
+	local reliableCount = math.max(0, queueLogicalCount(bucket.reliable)) + Internal.mapCount(bucket.latestReliable)
 	local reliablePending = reliableCount > 0
 	if reliablePending then
 		local targetReady = reliableCount >= Config.TransportTargetMessagesPerPacket
@@ -2684,7 +4430,7 @@ local function flushBucket(target, bucket, deadline, force)
 	end
 	if os.clock() < deadline then
 		now = os.clock()
-		local unreliableCount = math.max(0, queueCount(bucket.unreliable)) + Internal.mapCount(bucket.latestUnreliable)
+		local unreliableCount = math.max(0, queueLogicalCount(bucket.unreliable)) + Internal.mapCount(bucket.latestUnreliable)
 		local unreliablePending = unreliableCount > 0
 		if unreliablePending then
 			local targetReady = unreliableCount >= Config.TransportTargetMessagesPerPacket
@@ -2862,6 +4608,28 @@ function BaseRoute:GetPriority()
 	return self.Priority or "Normal"
 end
 
+function BaseRoute:GetOptimizationLevel()
+	local schema = self._schema
+	if not schema then return "Dynamic" end
+	if schema.fixedBytes ~= nil then
+		if Config.FastSchemaEnabled and schema.fixedBytes <= Config.FastSchemaMaxBytes then return "FastFixed" end
+		return "Fixed"
+	end
+	return "Schema"
+end
+
+function BaseRoute:GetSchemaInfo()
+	local schema = self._schema
+	if not schema then return nil end
+	return {
+		Count = schema.count,
+		Signature = schema.signature,
+		FixedBytes = schema.fixedBytes,
+		IsFixed = schema.isFixed,
+		OptimizationLevel = self:GetOptimizationLevel(),
+	}
+end
+
 function BaseRoute:Wait(timeout)
 	local thread = coroutine.running()
 	assert(thread, "NetStream Wait must be called from a yielding thread")
@@ -2935,6 +4703,31 @@ local function dispatchRoute(route, player, args)
 	end
 end
 
+local function dispatchRouteScalar(route, player, value)
+	if not route then
+		return
+	end
+	local node = route._head
+	while node do
+		local nextNode = node.next
+		if node.connected then
+			if node.once then
+				Internal.disconnectNode(route, node)
+			end
+			local ok, err
+			if IS_SERVER then
+				ok, err = pcall(node.callback, player, value)
+			else
+				ok, err = pcall(node.callback, value)
+			end
+			if not ok then
+				warn(LOG_PREFIX, "event callback error:", err)
+			end
+		end
+		node = nextNode
+	end
+end
+
 local function runDispatch()
 	local processed = 0
 	local startedAt = os.clock()
@@ -2943,13 +4736,21 @@ local function runDispatch()
 		local route = dispatchRoutes[index]
 		local player = dispatchPlayers[index]
 		local args = dispatchArgs[index]
+		local scalar = dispatchScalarFlags[index] == true
+		local scalarValue = dispatchScalarValues[index]
 		dispatchRoutes[index] = nil
 		dispatchPlayers[index] = nil
 		dispatchArgs[index] = nil
+		dispatchScalarFlags[index] = nil
+		dispatchScalarValues[index] = nil
 		dispatchHead += 1
 		processed += 1
-		dispatchRoute(route, player, args)
-		releaseArgs(args)
+		if scalar then
+			dispatchRouteScalar(route, player, scalarValue)
+		else
+			dispatchRoute(route, player, args)
+			releaseArgs(args)
+		end
 		if processed % 32 == 0 and os.clock() - startedAt >= Config.DispatchBudgetSeconds then
 			break
 		end
@@ -2978,6 +4779,25 @@ local function enqueueDispatch(route, player, args)
 	return true
 end
 
+local function enqueueDispatchScalar(route, player, value)
+	if not route or route._listenerCount == 0 then
+		return false
+	end
+	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
+	if backlog >= Config.MaxDispatchBacklog then
+		Stats.DroppedDispatch += 1
+		return false
+	end
+	dispatchCount += 1
+	dispatchRoutes[dispatchCount] = route
+	dispatchPlayers[dispatchCount] = player
+	dispatchArgs[dispatchCount] = nil
+	dispatchScalarFlags[dispatchCount] = true
+	dispatchScalarValues[dispatchCount] = value
+	Stats.ScalarDispatches += 1
+	return true
+end
+
 local function enqueueReturn(player, id, ok, results)
 	local args = acquireArgsCount(results.n + 1)
 	args[1] = ok
@@ -2985,7 +4805,7 @@ local function enqueueReturn(player, id, ok, results)
 		args[i + 1] = results[i]
 	end
 	args.n = results.n + 1
-	enqueue(if IS_SERVER then player else nil, false, makeMessage(KIND_RETURN, 0, id, args), nil)
+	enqueue(if IS_SERVER then player else nil, false, makeMessage(KIND_RETURN, 0, id, args, nil, "Critical"), nil)
 end
 
 function Internal.handleCall(player, routeId, id, args)
@@ -3227,71 +5047,41 @@ local function decodeSchemaEventRun(reader, schema, repeatCount, route, player, 
 					packed = reader:u8()
 					bit = 0
 				end
-				local args = if bit32.band(packed, bit32.lshift(1, bit)) ~= 0 then TRUE_ARGS else FALSE_ARGS
+				local value = bit32.band(packed, bit32.lshift(1, bit)) ~= 0
 				bit += 1
-				if index <= allowedCount then
-					enqueueDispatch(route, player, args)
-				end
+				if index <= allowedCount then enqueueDispatchScalar(route, player, value) end
 			end
 			return
-		end
-		if kind == SCHEMA_U8 then
+		elseif kind == SCHEMA_U8 then
+			reader:need(repeatCount)
+			local data = reader.buffer
+			local pos = reader.position
 			for index = 1, repeatCount do
-				local args = acquireArgsCount(1)
-				args[1] = reader:u8()
-				if index <= allowedCount then
-					enqueueDispatch(route, player, args)
-				else
-					releaseArgs(args)
-				end
+				local value = buffer.readu8(data, pos)
+				pos += 1
+				if index <= allowedCount then enqueueDispatchScalar(route, player, value) end
 			end
+			reader.position = pos
+			Stats.FixedSchemaFastReads += repeatCount
 			return
 		elseif kind == SCHEMA_U16 then
+			reader:need(repeatCount * 2)
+			local data = reader.buffer
+			local pos = reader.position
 			for index = 1, repeatCount do
-				local args = acquireArgsCount(1)
-				args[1] = reader:u16()
-				if index <= allowedCount then
-					enqueueDispatch(route, player, args)
-				else
-					releaseArgs(args)
-				end
+				local value = buffer.readu16(data, pos)
+				pos += 2
+				if index <= allowedCount then enqueueDispatchScalar(route, player, value) end
 			end
-			return
-		elseif kind == SCHEMA_VARUINT then
-			for index = 1, repeatCount do
-				local args = acquireArgsCount(1)
-				args[1] = reader:varUInt()
-				if index <= allowedCount then
-					enqueueDispatch(route, player, args)
-				else
-					releaseArgs(args)
-				end
-			end
-			return
-		elseif kind == SCHEMA_VARINT then
-			for index = 1, repeatCount do
-				local args = acquireArgsCount(1)
-				args[1] = reader:varInt()
-				if index <= allowedCount then
-					enqueueDispatch(route, player, args)
-				else
-					releaseArgs(args)
-				end
-			end
-			return
-		elseif kind == SCHEMA_VECTOR3Q then
-			local inv = 1 / field.Precision
-			for index = 1, repeatCount do
-				local args = acquireArgsCount(1)
-				args[1] = Vector3.new(reader:varInt() * inv, reader:varInt() * inv, reader:varInt() * inv)
-				if index <= allowedCount then
-					enqueueDispatch(route, player, args)
-				else
-					releaseArgs(args)
-				end
-			end
+			reader.position = pos
+			Stats.FixedSchemaFastReads += repeatCount
 			return
 		end
+		for index = 1, repeatCount do
+			local value = readSchemaValue(reader, field)
+			if index <= allowedCount then enqueueDispatchScalar(route, player, value) end
+		end
+		return
 	end
 	for index = 1, repeatCount do
 		local args = readSchemaArgs(reader, schema)
@@ -3301,6 +5091,76 @@ local function decodeSchemaEventRun(reader, schema, repeatCount, route, player, 
 			releaseArgs(args)
 		end
 	end
+end
+
+function Internal.decodeFastSchemaSingle(player, data, reader)
+	if not canAcceptIncomingMessages(player, 1) then
+		Stats.RateLimitedBatches += 1
+		Stats.ReceivedBatches += 1
+		Stats.ReceivedBytes += buffer.len(data)
+		return
+	end
+
+	local routeTag = reader:varUInt()
+	local kind = routeTag % 4
+	local routeId = math.floor(routeTag / 4)
+	if kind ~= KIND_EVENT and kind ~= KIND_STATE then
+		error("NetStream fast schema packet only supports Event or State", 0)
+	end
+	local route = if kind == KIND_EVENT then eventRoutes[routeId] else stateRoutes[routeId]
+	if not route or not route._schema or route._schema.fixedBytes == nil then
+		error("NetStream fast schema packet referenced an unknown or variable-width schema route", 0)
+	end
+	if reader.length - reader.position ~= route._schema.fixedBytes then
+		error("NetStream fast schema payload size mismatch", 0)
+	end
+
+	local schema = route._schema
+	if schema.count == 1 then
+		local value = readSchemaValue(reader, schema.fields[1])
+		Stats.FixedSchemaFastReads += 1
+		if kind == KIND_EVENT then
+			if consumeRouteAllowance(route, player, 1) > 0 then
+				enqueueDispatchScalar(route, player, value)
+			end
+		else
+			if consumeRouteAllowance(route, player, 1) > 0 then
+				local state = Internal.getPeerState(player)
+				state[routeId] = value
+				enqueueDispatchScalar(route, player, value)
+			end
+		end
+	else
+		local args = readSchemaArgs(reader, schema)
+		if kind == KIND_EVENT then
+			if consumeRouteAllowance(route, player, 1) > 0 then
+				enqueueDispatch(route, player, args)
+			else
+				releaseArgs(args)
+			end
+		else
+			if consumeRouteAllowance(route, player, 1) > 0 then
+				local state = Internal.getPeerState(player)
+				state[routeId] = args[1]
+				enqueueDispatch(route, player, args)
+			else
+				releaseArgs(args)
+			end
+		end
+	end
+
+	if reader.position ~= reader.length then
+		error("NetStream fast schema packet contains trailing bytes", 0)
+	end
+	commitIncomingMessages(player, 1)
+	local receivedBytes = buffer.len(data)
+	Stats.FastSchemaReceived += 1
+	Stats.ReceivedBatches += 1
+	Stats.ReceivedBytes += receivedBytes
+	Stats.ReceivedMessages += 1
+	trafficWindowReceivedBatches += 1
+	trafficWindowReceivedBytes += receivedBytes
+	trafficWindowReceivedMessages += 1
 end
 
 function Internal.decodeCompactSingleTable(player, data, reader)
@@ -3371,19 +5231,302 @@ function Internal.decodeCompactSingleTable(player, data, reader)
 	trafficWindowReceivedMessages += 1
 end
 
+
+function Internal.validateHybridTail(data, bitPosition)
+	local totalBits = buffer.len(data) * 8
+	while bitPosition < totalBits do
+		local bit; bit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+		if bit ~= 0 then error("NetStream hybrid packet has non-zero tail padding", 0) end
+	end
+end
+
+function Internal.commitHybridReceive(player, data)
+	commitIncomingMessages(player, 1)
+	local bytes = buffer.len(data)
+	Stats.HybridBufferUtilReceived += 1
+	Stats.ReceivedBatches += 1; Stats.ReceivedBytes += bytes; Stats.ReceivedMessages += 1
+	trafficWindowReceivedBatches += 1; trafficWindowReceivedBytes += bytes; trafficWindowReceivedMessages += 1
+end
+
+function Internal.decodeHybridSmallSingle(player, data, markerValue)
+	if not canAcceptIncomingMessages(player, 1) then Stats.RateLimitedBatches += 1; Stats.ReceivedBatches += 1; Stats.ReceivedBytes += buffer.len(data); return end
+	local bitPosition = 3
+	if markerValue == Internal.HYBRID_EVENT_STATE_MARKER then
+		local stateBit; stateBit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+		local routeId; routeId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+		local value; value, bitPosition = Internal.hybridReadScalar(data, bitPosition)
+		Internal.validateHybridTail(data, bitPosition)
+		local kind = if stateBit == 1 then KIND_STATE else KIND_EVENT
+		local route = if kind == KIND_STATE then stateRoutes[routeId] else eventRoutes[routeId]
+		if not route or route._schema then error("NetStream invalid hybrid route", 0) end
+		if consumeRouteAllowance(route, player, 1) > 0 then
+			if kind == KIND_STATE then local state = Internal.getPeerState(player); state[routeId] = value end
+			enqueueDispatchScalar(route, player, value)
+		end
+	elseif markerValue == Internal.HYBRID_CALL_MARKER then
+		local routeId; routeId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+		local requestId; requestId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+		local value; value, bitPosition = Internal.hybridReadScalar(data, bitPosition)
+		Internal.validateHybridTail(data, bitPosition)
+		local route = functionRoutes[routeId]
+		if not route or route._schema then error("NetStream invalid hybrid call route", 0) end
+		local args = acquireArgsCount(1); args[1] = value
+		if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) else releaseArgs(args) end
+	elseif markerValue == Internal.HYBRID_RETURN_MARKER then
+		local requestId; requestId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+		local okBit; okBit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+		local value; value, bitPosition = Internal.hybridReadScalar(data, bitPosition)
+		Internal.validateHybridTail(data, bitPosition)
+		local args = acquireArgsCount(2); args[1] = okBit ~= 0; args[2] = value
+		Internal.processReturn(player, requestId, args)
+	else
+		error("NetStream unknown hybrid marker", 0)
+	end
+	Internal.commitHybridReceive(player, data)
+end
+
+function Internal.decodeBitCallSingle(player, data)
+	if not canAcceptIncomingMessages(player, 1) then
+		Stats.RateLimitedBatches += 1
+		Stats.ReceivedBatches += 1
+		Stats.ReceivedBytes += buffer.len(data)
+		return
+	end
+
+	local bitPosition = 0
+	local marker
+	marker, bitPosition = Internal.packetReadBits(data, bitPosition, 3)
+	if marker ~= Internal.BIT_CALL_MARKER then
+		error("NetStream invalid bit-call marker", 0)
+	end
+
+	local routeId
+	routeId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+	local callId
+	callId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
+
+	local route = functionRoutes[routeId]
+	if not route then error("NetStream bit-call packet referenced an unknown function route", 0) end
+	if route._schema then error("NetStream bit-call packet is only valid for dynamic function routes", 0) end
+
+	local totalBits = buffer.len(data) * 8
+	local remainingBits = totalBits - bitPosition
+	local compressedBytes = math.floor(remainingBits / 8)
+	if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then
+		error("NetStream bit-call payload has an invalid size", 0)
+	end
+
+	local compressedData
+	compressedData, bitPosition = Internal.packetReadBufferBits(data, bitPosition, compressedBytes)
+
+	-- Any tail bits exist only because the final Roblox buffer must be whole-byte sized.
+	while bitPosition < totalBits do
+		local tailBit
+		tailBit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
+		if tailBit ~= 0 then error("NetStream bit-call packet has non-zero tail padding", 0) end
+	end
+
+	local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
+	if typeof(decoded) ~= "table" then
+		error("NetStream bit-call payload did not decode to a table", 0)
+	end
+	validateValue(decoded, 0, nil)
+
+	local args = acquireArgsCount(1)
+	args[1] = decoded
+	Stats.CompressionDecodeCount += 1
+	Stats.BitPacketCallsReceived += 1
+
+	if Internal.chargeIncomingCall(player) then
+		task.spawn(Internal.handleCall, player, routeId, callId, args)
+	else
+		releaseArgs(args)
+	end
+
+	commitIncomingMessages(player, 1)
+	local receivedBytes = buffer.len(data)
+	Stats.ReceivedBatches += 1
+	Stats.ReceivedBytes += receivedBytes
+	Stats.ReceivedMessages += 1
+	trafficWindowReceivedBatches += 1
+	trafficWindowReceivedBytes += receivedBytes
+	trafficWindowReceivedMessages += 1
+end
+
+
+function Internal.bitFrameCommitReceive(player, data, logicalCount)
+	commitIncomingMessages(player, logicalCount)
+	local receivedBytes = buffer.len(data)
+	Stats.BitFramePacketsReceived += 1
+	Stats.BitFrameMessagesDecoded += logicalCount
+	Stats.ReceivedBatches += 1
+	Stats.ReceivedBytes += receivedBytes
+	Stats.ReceivedMessages += logicalCount
+	trafficWindowReceivedBatches += 1
+	trafficWindowReceivedBytes += receivedBytes
+	trafficWindowReceivedMessages += logicalCount
+end
+
+function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, route, allowMessage)
+	if kind == KIND_RETURN then
+		local ok = reader:bits(1) ~= 0
+		local resultCount = reader:adaptiveUInt()
+		if resultCount > Config.MaxTableEntries then error("NetStream BitFrame return result count too large", 0) end
+		local args = acquireArgsCount(resultCount + 1)
+		args[1] = ok
+		for i = 1, resultCount do args[i + 1] = readValue(reader, 0) end
+		args.n = resultCount + 1
+		if allowMessage then Internal.processReturn(player, requestId, args) else releaseArgs(args) end
+		return 1
+	end
+
+	local mode = reader:bits(2)
+	local args
+	if mode == 0 then
+		local value
+		value, reader.bitPosition = Internal.hybridReadScalar(reader.buffer, reader.bitPosition)
+		args = acquireArgsCount(1); args[1] = value; args.n = 1
+	elseif mode == 1 then
+		local argc = reader:adaptiveUInt()
+		if argc > Config.MaxTableEntries then error("NetStream BitFrame argument count too large", 0) end
+		args = acquireArgsCount(argc)
+		for i = 1, argc do args[i] = readValue(reader, 0) end
+		args.n = argc
+	else
+		local compressedBytes = reader:adaptiveUInt()
+		if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then error("NetStream BitFrame compressed payload size invalid", 0) end
+		local compressedData = reader:rawBuffer(compressedBytes)
+		local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
+		Stats.CompressionDecodeCount += 1
+		if mode == 2 then
+			if typeof(decoded) ~= "table" then error("NetStream BitFrame compressed single payload invalid", 0) end
+			validateValue(decoded, 0, nil)
+			args = acquireArgsCount(1); args[1] = decoded; args.n = 1
+		elseif mode == 3 then
+			if typeof(decoded) ~= "table" or type(decoded.n) ~= "number" or not isInteger(decoded.n) or decoded.n < 0 then error("NetStream BitFrame compressed args invalid", 0) end
+			local argc = decoded.n
+			if argc > Config.MaxTableEntries then error("NetStream BitFrame compressed argc too large", 0) end
+			args = acquireArgsCount(argc)
+			for i = 1, argc do
+				validateValue(decoded[i], 0, nil)
+				args[i] = decoded[i]
+			end
+			args.n = argc
+		else
+			error("NetStream BitFrame payload mode invalid", 0)
+		end
+	end
+
+	if not allowMessage then
+		releaseArgs(args)
+	elseif kind == KIND_EVENT then
+		if consumeRouteAllowance(route, player, 1) > 0 then enqueueDispatch(route, player, args) else releaseArgs(args) end
+	elseif kind == KIND_CALL then
+		if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) else releaseArgs(args) end
+	elseif kind == KIND_STATE then
+		local state = Internal.getPeerState(player)
+		state[routeId] = args[1]
+		if consumeRouteAllowance(route, player, 1) > 0 then enqueueDispatch(route, player, args) else releaseArgs(args) end
+	else
+		releaseArgs(args)
+		error("NetStream BitFrame invalid message kind", 0)
+	end
+	return 1
+end
+
+function Internal.decodeBitFrame(player, data)
+	local reader = Internal.BitFrameReader.new(data)
+	local logicalCount = 0
+	while true do
+		local present = reader:bits(1)
+		if present == 0 then break end
+		local kind = reader:bits(2)
+		local routeId = 0
+		local requestId = 0
+		local route = nil
+		if kind ~= KIND_RETURN then
+			routeId = reader:adaptiveUInt()
+			if kind == KIND_EVENT then route = eventRoutes[routeId]
+			elseif kind == KIND_CALL then route = functionRoutes[routeId]
+			elseif kind == KIND_STATE then route = stateRoutes[routeId]
+			else error("NetStream BitFrame invalid kind", 0) end
+			if not route then error("NetStream BitFrame referenced unknown route " .. tostring(routeId), 0) end
+		end
+		if kind == KIND_CALL or kind == KIND_RETURN then requestId = reader:adaptiveUInt() end
+
+		if route and route._schema then
+			if kind == KIND_EVENT then
+				local run = reader:bits(1) ~= 0
+				local count = if run then reader:adaptiveUInt() else 1
+				if count < 1 or count > Config.MaxIncomingMessages then error("NetStream BitFrame schema run count invalid", 0) end
+				if not canAcceptIncomingMessages(player, logicalCount + count) then
+					Stats.RateLimitedBatches += 1
+					-- Decode to keep framing valid, but do not dispatch.
+					for _ = 1, count do local dropped = Internal.bitFrameReadSchemaArgs(reader, route._schema); if dropped ~= EMPTY_ARGS and dropped ~= TRUE_ARGS and dropped ~= FALSE_ARGS then releaseArgs(dropped) end end
+				else
+					local allowance = consumeRouteAllowance(route, player, count)
+					for index = 1, count do
+						local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
+						if index <= allowance then enqueueDispatch(route, player, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+					end
+				end
+				logicalCount += count
+			else
+				local allowMessage = canAcceptIncomingMessages(player, logicalCount + 1)
+				if not allowMessage then Stats.RateLimitedBatches += 1 end
+				local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
+				if not allowMessage then
+					if args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+				elseif kind == KIND_CALL then
+					if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+				elseif kind == KIND_STATE then
+					local state = Internal.getPeerState(player); state[routeId] = args[1]
+					if consumeRouteAllowance(route, player, 1) > 0 then enqueueDispatch(route, player, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+				end
+				logicalCount += 1
+			end
+		else
+			local allowMessage = canAcceptIncomingMessages(player, logicalCount + 1)
+			if not allowMessage then Stats.RateLimitedBatches += 1 end
+			logicalCount += Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, route, allowMessage)
+		end
+		if logicalCount > Config.MaxIncomingMessages then error("NetStream BitFrame exceeds MaxIncomingMessages", 0) end
+	end
+
+	-- All remaining bits are physical tail padding and must be zero.
+	while reader.bitPosition < reader.bitLength do
+		if reader:bits(1) ~= 0 then error("NetStream BitFrame has non-zero tail padding", 0) end
+	end
+	Internal.bitFrameCommitReceive(player, data, logicalCount)
+end
+
 local function decodeBatch(player, data, reader)
+	if Config.BitFrameEnabled then
+		Internal.decodeBitFrame(player, data)
+		return
+	end
+	if buffer.len(data) > 0 then
+		local lowMarker = bit32.band(buffer.readu8(data, 0), 7)
+		if lowMarker == Internal.BIT_CALL_MARKER then Internal.decodeBitCallSingle(player, data); return end
+		if lowMarker == Internal.HYBRID_EVENT_STATE_MARKER or lowMarker == Internal.HYBRID_CALL_MARKER or lowMarker == Internal.HYBRID_RETURN_MARKER then
+			Internal.decodeHybridSmallSingle(player, data, lowMarker); return
+		end
+	end
 	local packetProtocol = reader:u8()
-	if packetProtocol == PROTOCOL_COMPACT_TABLE then
+	if packetProtocol == Internal.LEGACY_PROTOCOL_COMPACT_TABLE then
 		Internal.decodeCompactSingleTable(player, data, reader)
+		return
+	elseif packetProtocol == Internal.LEGACY_PROTOCOL_FAST_SCHEMA then
+		Internal.decodeFastSchemaSingle(player, data, reader)
 		return
 	end
 	local count
-	if packetProtocol == PROTOCOL_SINGLE then
+	if packetProtocol == Internal.LEGACY_PROTOCOL_SINGLE then
 		count = 1
-	elseif packetProtocol == PROTOCOL then
+	elseif packetProtocol == Internal.LEGACY_PROTOCOL then
 		count = reader:varUInt()
 	else
-		error(string.format("%s protocol mismatch: received 0x%02X, expected 0x%02X, 0x%02X, or 0x%02X. Make sure both peers use the same NetStream version.", LOG_PREFIX, packetProtocol, PROTOCOL, PROTOCOL_SINGLE, PROTOCOL_COMPACT_TABLE), 0)
+		error(string.format("%s protocol mismatch: received 0x%02X, expected 0x%02X, 0x%02X, 0x%02X, or 0x%02X. Make sure both peers use the same NetStream version (v2.1 BitFrameEnabled=false legacy fallback).", LOG_PREFIX, packetProtocol, Internal.LEGACY_PROTOCOL, Internal.LEGACY_PROTOCOL_SINGLE, Internal.LEGACY_PROTOCOL_COMPACT_TABLE, Internal.LEGACY_PROTOCOL_FAST_SCHEMA), 0)
 	end
 	if count > Config.MaxIncomingMessages then
 		error("NetStream batch exceeds MaxIncomingMessages", 0)
@@ -3493,7 +5636,13 @@ local function decodeBatch(player, data, reader)
 			decodeSchemaEventRun(reader, schema, repeatCount, route, player, consumeRouteAllowance(route, player, repeatCount))
 		else
 			local args
-			if schemaEncoded then
+			local scalarFast = false
+			local scalarValue = nil
+			if schemaEncoded and schema.count == 1 and (kind == KIND_EVENT or kind == KIND_STATE) then
+				scalarValue = readSchemaValue(reader, schema.fields[1])
+				scalarFast = true
+				if schema.fixedBytes ~= nil then Stats.FixedSchemaFastReads += 1 end
+			elseif schemaEncoded then
 				args = readSchemaArgs(reader, schema)
 			elseif compressedDynamic or compressedSingle then
 				local isTail = processed + 1 == count
@@ -3530,16 +5679,16 @@ local function decodeBatch(player, data, reader)
 
 			if kind == KIND_EVENT then
 				if consumeRouteAllowance(route, player, 1) > 0 then
-					enqueueDispatch(route, player, args)
-				else
+					if scalarFast then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
+				elseif not scalarFast then
 					releaseArgs(args)
 				end
 			elseif kind == KIND_STATE then
 				if route and consumeRouteAllowance(route, player, 1) > 0 then
 					local state = Internal.getPeerState(player)
-					state[routeId] = args[1]
-					enqueueDispatch(route, player, args)
-				else
+					state[routeId] = if scalarFast then scalarValue else args[1]
+					if scalarFast then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
+				elseif not scalarFast then
 					releaseArgs(args)
 				end
 			elseif kind == KIND_CALL then
@@ -3881,6 +6030,14 @@ function EventRoute:_send(target, unreliable, latest, ...)
 	local args
 	local schema = self._schema
 	local argCount = select("#", ...)
+	if self._packedEligible and not unreliable and not latest and argCount == schema.count then
+		if not self._trusted then
+			for i = 1, schema.count do
+				Internal.validateSchemaValue(schema.fields[i], select(i, ...), 5)
+			end
+		end
+		return Internal.enqueuePackedEvent(target, unreliable, self, schema.count, ...)
+	end
 	if schema and schema.count == 0 and argCount == 0 then
 		args = EMPTY_ARGS
 	elseif schema and schema.count == 1 and argCount == 1 and schema.fields[1].Kind == SCHEMA_BOOL then
@@ -3899,7 +6056,7 @@ function EventRoute:_send(target, unreliable, latest, ...)
 			validateArgs(args)
 		end
 	end
-	local message = makeMessage(KIND_EVENT, self.Id, 0, args, schema)
+	local message = makeMessage(KIND_EVENT, self.Id, 0, args, schema, self.Priority)
 	return enqueue(target, unreliable, message, if latest then self.Id * 4 + KIND_EVENT else nil)
 end
 
@@ -4063,6 +6220,19 @@ function FunctionRoute:GetPriority()
 	return self.Priority or "Critical"
 end
 
+function FunctionRoute:GetOptimizationLevel()
+	local schema = self._schema
+	if not schema then return "Dynamic" end
+	if schema.fixedBytes ~= nil then return "Fixed" end
+	return "Schema"
+end
+
+function FunctionRoute:GetSchemaInfo()
+	local schema = self._schema
+	if not schema then return nil end
+	return { Count = schema.count, Signature = schema.signature, FixedBytes = schema.fixedBytes, IsFixed = schema.isFixed, OptimizationLevel = self:GetOptimizationLevel() }
+end
+
 function FunctionRoute:SetCallback(callback)
 	assert(type(callback) == "function" or callback == nil, "SetCallback expects a function or nil")
 	ensureStarted()
@@ -4089,7 +6259,7 @@ function FunctionRoute:_invoke(target, immediate, ...)
 		target = if IS_SERVER then target else nil,
 		deadline = os.clock() + Config.CallTimeout,
 	}
-	local message = makeMessage(KIND_CALL, self.Id, id, args, self._schema)
+	local message = makeMessage(KIND_CALL, self.Id, id, args, self._schema, self.Priority)
 	local queued = enqueue(target, false, message, nil)
 	if not queued then
 		pending[id] = nil
@@ -4145,13 +6315,19 @@ StateRoute.__index = StateRoute
 
 function StateRoute:_send(target, value, unreliable, latest)
 	ensureStarted()
-	local args = makeArgs(value)
-	if self._schema then
-		validateSchemaArgs(self._schema, args, self._trusted)
+	local schema = self._schema
+	local args
+	if schema and schema.count == 1 and schema.fields[1].Kind == SCHEMA_BOOL and type(value) == "boolean" then
+		args = if value then TRUE_ARGS else FALSE_ARGS
+	else
+		args = makeArgs(value)
+	end
+	if schema then
+		validateSchemaArgs(schema, args, self._trusted)
 	else
 		validateValue(value, 0, nil)
 	end
-	local message = makeMessage(KIND_STATE, self.Id, 0, args, self._schema)
+	local message = makeMessage(KIND_STATE, self.Id, 0, args, schema, self.Priority)
 	return enqueue(target, unreliable, message, if latest then self.Id * 4 + KIND_STATE else nil)
 end
 
@@ -4275,10 +6451,18 @@ end
 local NetStream = {}
 NetStream.Types = Types
 NetStream.Version = VERSION
-NetStream.Protocol = PROTOCOL
-NetStream.ProtocolSingle = PROTOCOL_SINGLE
-NetStream.ProtocolCompactTable = PROTOCOL_COMPACT_TABLE
-NetStream.RequiredCompressionVersion = "2.3.2"
+NetStream.Protocol = Internal.LEGACY_PROTOCOL
+NetStream.ProtocolSingle = Internal.LEGACY_PROTOCOL_SINGLE
+NetStream.ProtocolCompactTable = Internal.LEGACY_PROTOCOL_COMPACT_TABLE
+NetStream.ProtocolFastSchema = Internal.LEGACY_PROTOCOL_FAST_SCHEMA
+NetStream.BitCallMarker = Internal.BIT_CALL_MARKER
+NetStream.RequiredCompressionVersion = "2.9.0"
+NetStream.RequiredBufferUtilVersion = "1.1.0"
+NetStream.BitFrameVersion = 1
+NetStream.ProtocolHeaderBytes = 0
+NetStream.HybridEventStateMarker = Internal.HYBRID_EVENT_STATE_MARKER
+NetStream.HybridCallMarker = Internal.HYBRID_CALL_MARKER
+NetStream.HybridReturnMarker = Internal.HYBRID_RETURN_MARKER
 
 function Internal.validateConfig(config)
 	assert(type(config.Namespace) == "string" and #config.Namespace > 0, "Namespace must be a non-empty string")
@@ -4326,9 +6510,10 @@ function Internal.validateConfig(config)
 			or config.CompressionStringStrategy == "Raw"
 			or config.CompressionStringStrategy == "LZ"
 			or config.CompressionStringStrategy == "ASCII7"
+			or config.CompressionStringStrategy == "LowASCII5"
 			or config.CompressionStringStrategy == "Identifier6"
 			or config.CompressionStringStrategy == "Numeric4",
-		"CompressionStringStrategy must be Auto, Raw, LZ, ASCII7, Identifier6, or Numeric4"
+		"CompressionStringStrategy must be Auto, Raw, LZ, ASCII7, LowASCII5, Identifier6, or Numeric4"
 	)
 	assert(type(config.CompressionUseStringDictionary) == "boolean", "CompressionUseStringDictionary must be a boolean")
 	assert(type(config.CompressionTableCompression) == "boolean", "CompressionTableCompression must be a boolean")
@@ -4348,6 +6533,14 @@ function Internal.validateConfig(config)
 	assert(type(config.CompressionCompressBuffers) == "boolean", "CompressionCompressBuffers must be a boolean")
 	assert(type(config.CompressionMinBufferBytes) == "number" and isInteger(config.CompressionMinBufferBytes) and config.CompressionMinBufferBytes >= 0, "CompressionMinBufferBytes must be a non-negative integer")
 	assert(config.CompressionBufferStrategy == "Auto" or config.CompressionBufferStrategy == "Raw" or config.CompressionBufferStrategy == "LZ" or config.CompressionBufferStrategy == "Sparse" or config.CompressionBufferStrategy == "Nibble", "CompressionBufferStrategy must be Auto, Raw, LZ, Sparse, or Nibble")
+	assert(type(config.CompressionEntropyCoding) == "boolean", "CompressionEntropyCoding must be a boolean")
+	assert(config.CompressionEntropyStrategy == "Auto" or config.CompressionEntropyStrategy == "Huffman" or config.CompressionEntropyStrategy == "None", "CompressionEntropyStrategy must be Auto, Huffman, or None")
+	assert(type(config.CompressionHuffmanMinBytes) == "number" and isInteger(config.CompressionHuffmanMinBytes) and config.CompressionHuffmanMinBytes >= 1, "CompressionHuffmanMinBytes must be an integer >= 1")
+	assert(type(config.CompressionHuffmanMinSavings) == "number" and isInteger(config.CompressionHuffmanMinSavings) and config.CompressionHuffmanMinSavings >= 0, "CompressionHuffmanMinSavings must be a non-negative integer")
+	assert(type(config.CompressionHuffmanMaxCodeBits) == "number" and isInteger(config.CompressionHuffmanMaxCodeBits) and config.CompressionHuffmanMaxCodeBits >= 4 and config.CompressionHuffmanMaxCodeBits <= 32, "CompressionHuffmanMaxCodeBits must be an integer from 4 to 32")
+	assert(type(config.CompressionRouteStrategyCache) == "boolean", "CompressionRouteStrategyCache must be a boolean")
+	assert(type(config.CompressionRouteStrategyWarmup) == "number" and isInteger(config.CompressionRouteStrategyWarmup) and config.CompressionRouteStrategyWarmup >= 1 and config.CompressionRouteStrategyWarmup <= 16, "CompressionRouteStrategyWarmup must be an integer from 1 to 16")
+	assert(type(config.CompressionRouteStrategyResample) == "number" and isInteger(config.CompressionRouteStrategyResample) and config.CompressionRouteStrategyResample >= 1 and config.CompressionRouteStrategyResample <= 4096, "CompressionRouteStrategyResample must be an integer from 1 to 4096")
 	assert(type(config.CompressionAllowExpansion) == "boolean", "CompressionAllowExpansion must be a boolean")
 	assert(type(config.BandwidthGovernorEnabled) == "boolean", "BandwidthGovernorEnabled must be a boolean")
 	assert(type(config.BandwidthLimitBytesPerSecond) == "number" and isFiniteNumber(config.BandwidthLimitBytesPerSecond) and config.BandwidthLimitBytesPerSecond >= 64, "BandwidthLimitBytesPerSecond must be a finite number >= 64")
@@ -4362,6 +6555,25 @@ function Internal.validateConfig(config)
 	assert(type(config.TransportRealtimeBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportRealtimeBatchWindowSeconds) and config.TransportRealtimeBatchWindowSeconds >= 0 and config.TransportRealtimeBatchWindowSeconds <= 1, "TransportRealtimeBatchWindowSeconds must be from 0 to 1")
 	assert(type(config.TransportEstimatedPacketOverheadBytes) == "number" and isFiniteNumber(config.TransportEstimatedPacketOverheadBytes) and config.TransportEstimatedPacketOverheadBytes >= 0, "TransportEstimatedPacketOverheadBytes must be >= 0")
 	assert(type(config.TransportTargetMessagesPerPacket) == "number" and isInteger(config.TransportTargetMessagesPerPacket) and config.TransportTargetMessagesPerPacket >= 1, "TransportTargetMessagesPerPacket must be an integer >= 1")
+	assert(type(config.MaxWriterPoolSize) == "number" and isInteger(config.MaxWriterPoolSize) and config.MaxWriterPoolSize >= 0, "MaxWriterPoolSize must be a non-negative integer")
+	assert(type(config.MaxScratchWriterPoolSize) == "number" and isInteger(config.MaxScratchWriterPoolSize) and config.MaxScratchWriterPoolSize >= 0, "MaxScratchWriterPoolSize must be a non-negative integer")
+	assert(type(config.InitialWriterBytes) == "number" and isInteger(config.InitialWriterBytes) and config.InitialWriterBytes >= 64, "InitialWriterBytes must be an integer >= 64")
+	assert(type(config.FastSchemaEnabled) == "boolean", "FastSchemaEnabled must be a boolean")
+	assert(type(config.FastSchemaMaxBytes) == "number" and isInteger(config.FastSchemaMaxBytes) and config.FastSchemaMaxBytes >= 0, "FastSchemaMaxBytes must be a non-negative integer")
+	assert(type(config.FastSchemaAllowHeaderExpansion) == "boolean", "FastSchemaAllowHeaderExpansion must be a boolean")
+	assert(type(config.PackedSchemaRunEnabled) == "boolean", "PackedSchemaRunEnabled must be a boolean")
+	assert(type(config.PackedSchemaRunMaxFields) == "number" and isInteger(config.PackedSchemaRunMaxFields) and config.PackedSchemaRunMaxFields >= 1 and config.PackedSchemaRunMaxFields <= 32, "PackedSchemaRunMaxFields must be an integer from 1 to 32")
+	assert(type(config.BitPacketEnabled) == "boolean", "BitPacketEnabled must be boolean")
+	assert(type(config.BitPacketCompressedCalls) == "boolean", "BitPacketCompressedCalls must be boolean")
+	assert(type(config.HybridCodecEnabled) == "boolean", "HybridCodecEnabled must be boolean")
+	assert(type(config.HybridSmallScalarEnabled) == "boolean", "HybridSmallScalarEnabled must be boolean")
+	assert(type(config.HybridSmallPacketMaxBits) == "number" and isInteger(config.HybridSmallPacketMaxBits) and config.HybridSmallPacketMaxBits >= 8, "HybridSmallPacketMaxBits must be integer >= 8")
+	assert(type(config.HybridSmallStringMaxBytes) == "number" and isInteger(config.HybridSmallStringMaxBytes) and config.HybridSmallStringMaxBytes >= 0 and config.HybridSmallStringMaxBytes <= config.MaxStringBytes, "HybridSmallStringMaxBytes invalid")
+	assert(type(config.HybridCompressionThresholdBits) == "number" and isInteger(config.HybridCompressionThresholdBits) and config.HybridCompressionThresholdBits >= 0, "HybridCompressionThresholdBits invalid")
+	assert(type(config.HybridMinPhysicalSavingsBytes) == "number" and isInteger(config.HybridMinPhysicalSavingsBytes) and config.HybridMinPhysicalSavingsBytes >= 0, "HybridMinPhysicalSavingsBytes invalid")
+	assert(type(config.BitFrameEnabled) == "boolean", "BitFrameEnabled must be boolean")
+	assert(type(config.BitFrameMaxBytes) == "number" and isInteger(config.BitFrameMaxBytes) and config.BitFrameMaxBytes >= 16 and config.BitFrameMaxBytes <= config.MaxOutgoingBatchBytes, "BitFrameMaxBytes invalid")
+	assert(type(config.BitFrameTinyScalarEnabled) == "boolean", "BitFrameTinyScalarEnabled must be boolean")
 	assert(type(config.Debug) == "boolean", "Debug must be a boolean")
 end
 
@@ -4381,6 +6593,7 @@ function NetStream.Configure(options, colonOptions)
 	end
 	Internal.validateConfig(nextConfig)
 	Config = nextConfig
+	Internal._compressionOptionsCache = nil
 	return NetStream
 end
 
@@ -4488,6 +6701,8 @@ function NetStream.Event(nameOrId, options, colonOptions)
 	base.Priority = options and options.Priority or "Normal"
 	base._schema = Internal.compileSchema(options and options.Schema, "Event " .. name .. " Schema")
 	base._trusted = options and options.Trusted == true or false
+	base._packedEligible = Config.PackedSchemaRunEnabled and base._schema ~= nil and base._schema.fixedBytes ~= nil
+		and base._schema.count > 0 and base._schema.count <= Config.PackedSchemaRunMaxFields
 	route = setmetatable(base, EventRoute)
 	Internal.applyRouteHandlingOptions(route, options, "Event " .. name)
 	eventRoutes[id] = route
@@ -4616,11 +6831,11 @@ function NetStream.Define(schema, colonSchema)
 		elseif type(spec) == "table" then
 			local kind = spec.Type or spec.Kind or "Event"
 			if kind == "Function" or kind == "function" then
-				routes[name] = NetStream.Function(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Compression = spec.Compression })
+				routes[name] = NetStream.Function(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Compression = spec.Compression, Priority = spec.Priority })
 			elseif kind == "State" or kind == "state" then
-				routes[name] = NetStream.State(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst, Compression = spec.Compression })
+				routes[name] = NetStream.State(name, { Id = spec.Id, Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst, Compression = spec.Compression, Priority = spec.Priority })
 			else
-				routes[name] = NetStream.Event(name, { Id = spec.Id, Unreliable = spec.Unreliable == true or kind == "Unreliable" or kind == "unreliable", Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst, Compression = spec.Compression })
+				routes[name] = NetStream.Event(name, { Id = spec.Id, Unreliable = spec.Unreliable == true or kind == "Unreliable" or kind == "unreliable", Schema = spec.Schema, Trusted = spec.Trusted, Immediate = spec.Immediate, Coalesce = spec.Coalesce, Latest = spec.Latest, Mode = spec.Mode, MaxPerSecond = spec.MaxPerSecond, Burst = spec.Burst, Compression = spec.Compression, Priority = spec.Priority })
 			end
 		else
 			error("Invalid NetStream.Define entry for " .. tostring(name), 2)
@@ -4762,12 +6977,46 @@ function NetStream.GetLastPacketBytes()
 	return lastPacketBytes
 end
 
+function NetStream.GetLastSendStats()
+	return table.clone(Internal.LastSendStats)
+end
+
+function NetStream.ConsumeLastSendStats()
+	local copy = table.clone(Internal.LastSendStats)
+	Internal.clearLastSendStats()
+	return copy
+end
+
+function NetStream.GetBitFrameStats()
+	local physical = Stats.BitFramePhysicalBits
+	return {
+		PacketsEncoded = Stats.BitFramePacketsEncoded,
+		PacketsSent = Stats.BitFramePacketsSent,
+		PacketsReceived = Stats.BitFramePacketsReceived,
+		MessagesEncoded = Stats.BitFrameMessagesEncoded,
+		MessagesDecoded = Stats.BitFrameMessagesDecoded,
+		UsefulBits = Stats.BitFrameUsefulBits,
+		PhysicalBits = physical,
+		PaddingBits = Stats.BitFramePaddingBits,
+		ProtocolBytesElided = Stats.BitFrameProtocolBytesElided,
+		BatchCountBytesElided = Stats.BitFrameBatchCountBytesElided,
+		TinyValues = Stats.BitFrameTinyValues,
+		NativeValues = Stats.BitFrameNativeValues,
+		CompressedValues = Stats.BitFrameCompressedValues,
+		EfficiencyPercent = if physical > 0 then Stats.BitFrameUsefulBits / physical * 100 else 100,
+	}
+end
+
 function NetStream.ResetStats()
 	for key in pairs(Stats) do
 		Stats[key] = 0
 	end
 	overflowWarned = false
-	lastPacketBytes = 0
+	Internal.clearLastSendStats()
+	Internal._lastEncodedUsefulBits = 0
+	Internal._lastEncodedCodec = "None"
+	Internal._lastEncodedProtocolBytesElided = 0
+	Internal._lastEncodedBatchCountBytesElided = 0
 	trafficWindowStarted = os.clock()
 	trafficWindowSentBytes = 0
 	trafficWindowReceivedBytes = 0
@@ -4789,16 +7038,16 @@ function NetStream.GetStats()
 	local queuedUnreliable = 0
 	if IS_SERVER then
 		if broadcastBucket then
-			queuedReliable += math.max(0, queueCount(broadcastBucket.reliable)) + Internal.mapCount(broadcastBucket.latestReliable)
-			queuedUnreliable += math.max(0, queueCount(broadcastBucket.unreliable)) + Internal.mapCount(broadcastBucket.latestUnreliable)
+			queuedReliable += math.max(0, queueLogicalCount(broadcastBucket.reliable)) + Internal.mapCount(broadcastBucket.latestReliable)
+			queuedUnreliable += math.max(0, queueLogicalCount(broadcastBucket.unreliable)) + Internal.mapCount(broadcastBucket.latestUnreliable)
 		end
 		for _, bucket in pairs(targetBuckets) do
-			queuedReliable += math.max(0, queueCount(bucket.reliable)) + Internal.mapCount(bucket.latestReliable)
-			queuedUnreliable += math.max(0, queueCount(bucket.unreliable)) + Internal.mapCount(bucket.latestUnreliable)
+			queuedReliable += math.max(0, queueLogicalCount(bucket.reliable)) + Internal.mapCount(bucket.latestReliable)
+			queuedUnreliable += math.max(0, queueLogicalCount(bucket.unreliable)) + Internal.mapCount(bucket.latestUnreliable)
 		end
 	elseif clientBucket then
-		queuedReliable = math.max(0, queueCount(clientBucket.reliable)) + Internal.mapCount(clientBucket.latestReliable)
-		queuedUnreliable = math.max(0, queueCount(clientBucket.unreliable)) + Internal.mapCount(clientBucket.latestUnreliable)
+		queuedReliable = math.max(0, queueLogicalCount(clientBucket.reliable)) + Internal.mapCount(clientBucket.latestReliable)
+		queuedUnreliable = math.max(0, queueLogicalCount(clientBucket.unreliable)) + Internal.mapCount(clientBucket.latestUnreliable)
 	end
 	copy.QueuedReliable = queuedReliable
 	copy.QueuedUnreliable = queuedUnreliable
@@ -4819,10 +7068,14 @@ function NetStream.GetStats()
 	copy.MessagePoolSize = #messagePool
 	copy.ArgsPoolSize = #argsPool
 	copy.WriterPoolSize = #writerPool
+	copy.ScratchWriterPoolSize = #scratchWriterPool
 	copy.ReaderPoolSize = #readerPool
 	copy.BatchPoolSize = #batchPool
+	copy.PackedValuePoolSize = #packedValuePool
 	copy.CompressionRatio = if copy.CompressionInputBytes > 0 then copy.CompressionOutputBytes / copy.CompressionInputBytes else 1
 	copy.CompressionSavingsPercent = if copy.CompressionInputBytes > 0 then (copy.CompressionInputBytes - copy.CompressionOutputBytes) / copy.CompressionInputBytes * 100 else 0
+	copy.CompressionBitSavingsPercent = if copy.CompressionInputBits > 0 then copy.CompressionUsefulBitsSaved / copy.CompressionInputBits * 100 else 0
+	copy.CompressionPaddingPercent = if copy.CompressionPhysicalBits > 0 then copy.CompressionPaddingBits / copy.CompressionPhysicalBits * 100 else 0
 	copy.CompressionVersion = Compression.Version()
 	return copy
 end
@@ -4830,6 +7083,43 @@ end
 function NetStream.GetRateStats()
 	updateTrafficSnapshot()
 	return table.clone(trafficSnapshot)
+end
+
+function NetStream.GetPerformanceStats()
+	local stats = NetStream.GetStats()
+	return {
+		Version = VERSION,
+		FastSchemaEnabled = Config.FastSchemaEnabled,
+		FastSchemaSent = stats.FastSchemaSent,
+		FastSchemaReceived = stats.FastSchemaReceived,
+		FastSchemaBytes = stats.FastSchemaBytes,
+		FastSchemaHeaderBytesSaved = stats.FastSchemaHeaderBytesSaved,
+		FixedSchemaFastWrites = stats.FixedSchemaFastWrites,
+		FixedSchemaFastReads = stats.FixedSchemaFastReads,
+		WriterPoolHits = stats.WriterPoolHits,
+		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
+		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
+		CompressionNativeScratchAvoided = stats.CompressionNativeScratchAvoided,
+		CompressionOptionsCacheHits = stats.CompressionOptionsCacheHits,
+		CompressionStrategyCacheHits = stats.CompressionStrategyCacheHits,
+		CompressionStrategyCacheMisses = stats.CompressionStrategyCacheMisses,
+		CompressionStrategyCacheLocks = stats.CompressionStrategyCacheLocks,
+		CompressionStrategyCacheResamples = stats.CompressionStrategyCacheResamples,
+		CompressionStrategyCacheResets = stats.CompressionStrategyCacheResets,
+		ReaderPoolHits = stats.ReaderPoolHits,
+		ArgsPoolHits = stats.ArgsPoolHits,
+		MessagePoolHits = stats.MessagePoolHits,
+		PackedSchemaRunEnabled = Config.PackedSchemaRunEnabled,
+		BitPacketEnabled = Config.BitPacketEnabled,
+		BitPacketCompressedCalls = Config.BitPacketCompressedCalls,
+		PackedSchemaRunItems = stats.PackedSchemaRunItems,
+		PackedSchemaRunMessages = stats.PackedSchemaRunMessages,
+		PackedSchemaRunAppends = stats.PackedSchemaRunAppends,
+		PackedValuePoolHits = stats.PackedValuePoolHits,
+		ScalarDispatches = stats.ScalarDispatches,
+		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
+		AverageBatchBytes = stats.AverageBatchBytes,
+	}
 end
 
 function NetStream.GetBandwidthStats()
@@ -4886,6 +7176,11 @@ function NetStream.GetTransportStats()
 		DroppedUnreliableMessages = Stats.BandwidthDroppedUnreliableMessages + Stats.DroppedUnreliable,
 		DeferredBatches = Stats.BandwidthDeferredBatches,
 		BatchSplits = Stats.BandwidthBatchSplits,
+		FastSchemaSent = Stats.FastSchemaSent,
+		FastSchemaReceived = Stats.FastSchemaReceived,
+		FastSchemaHeaderBytesSaved = Stats.FastSchemaHeaderBytesSaved,
+		FixedSchemaFastWrites = Stats.FixedSchemaFastWrites,
+		FixedSchemaFastReads = Stats.FixedSchemaFastReads,
 	}
 end
 
@@ -4941,6 +7236,30 @@ function NetStream.GetCompressionStats()
 		AverageSavedBytes = if stats.CompressionUsed > 0 then stats.CompressionSavedBytes / stats.CompressionUsed else 0,
 		SavingsPercent = stats.CompressionSavingsPercent,
 		Ratio = stats.CompressionRatio,
+		InputBits = stats.CompressionInputBits,
+		UsefulBits = stats.CompressionUsefulBits,
+		PhysicalBits = stats.CompressionPhysicalBits,
+		PaddingBits = stats.CompressionPaddingBits,
+		UsefulBitsSaved = stats.CompressionUsefulBitsSaved,
+		BitSavingsPercent = stats.CompressionBitSavingsPercent,
+		PaddingPercent = stats.CompressionPaddingPercent,
+		BitPackedPackets = stats.CompressionBitPackedPackets,
+		EntropyCoding = Config.CompressionEntropyCoding,
+		EntropyStrategy = Config.CompressionEntropyStrategy,
+		HuffmanMinBytes = Config.CompressionHuffmanMinBytes,
+		HuffmanMinSavings = Config.CompressionHuffmanMinSavings,
+		HuffmanMaxCodeBits = Config.CompressionHuffmanMaxCodeBits,
+		RouteStrategyCache = Config.CompressionRouteStrategyCache,
+		RouteStrategyWarmup = Config.CompressionRouteStrategyWarmup,
+		RouteStrategyResample = Config.CompressionRouteStrategyResample,
+		NativeSizeEstimates = stats.CompressionNativeSizeEstimates,
+		NativeScratchAvoided = stats.CompressionNativeScratchAvoided,
+		OptionsCacheHits = stats.CompressionOptionsCacheHits,
+		StrategyCacheHits = stats.CompressionStrategyCacheHits,
+		StrategyCacheMisses = stats.CompressionStrategyCacheMisses,
+		StrategyCacheLocks = stats.CompressionStrategyCacheLocks,
+		StrategyCacheResamples = stats.CompressionStrategyCacheResamples,
+		StrategyCacheResets = stats.CompressionStrategyCacheResets,
 		AllowExpansion = Config.CompressionAllowExpansion,
 		StringStrategy = Config.CompressionStringStrategy,
 		BufferStrategy = Config.CompressionBufferStrategy,
@@ -4961,11 +7280,42 @@ function NetStream.GetCompressionStats()
 		SchemaStringBytesSaved = stats.SchemaStringBytesSaved,
 		CompressedSchemaBuffers = stats.CompressedSchemaBuffers,
 		SchemaBufferBytesSaved = stats.SchemaBufferBytesSaved,
+		BitPacketCallsSent = stats.BitPacketCallsSent,
+		BitPacketCallsReceived = stats.BitPacketCallsReceived,
+		BitPacketHeaderBits = stats.BitPacketHeaderBits,
+		BitPacketHeaderBitsSaved = stats.BitPacketHeaderBitsSaved,
+		BitPacketPaddingBits = stats.BitPacketPaddingBits,
 	}
 end
 
+function NetStream.GetCompressionBitStats()
+	local stats = NetStream.GetStats()
+	return {
+		InputBits = stats.CompressionInputBits,
+		UsefulBits = stats.CompressionUsefulBits,
+		PhysicalBits = stats.CompressionPhysicalBits,
+		PaddingBits = stats.CompressionPaddingBits,
+		UsefulBitsSaved = stats.CompressionUsefulBitsSaved,
+		SavingsPercent = stats.CompressionBitSavingsPercent,
+		PaddingPercent = stats.CompressionPaddingPercent,
+		BitPackedPackets = stats.CompressionBitPackedPackets,
+		PacketHeaderBits = stats.BitPacketHeaderBits,
+		PacketHeaderBitsSaved = stats.BitPacketHeaderBitsSaved,
+		PacketPaddingBits = stats.BitPacketPaddingBits,
+		BitPacketCalls = stats.BitPacketCallsSent,
+	}
+end
+
+function NetStream.UIntBitLength(value)
+	return Compression.UIntBitLength(value)
+end
+
+function NetStream.IntBitLength(value)
+	return Compression.IntBitLength(value)
+end
+
 function NetStream.GetCompressionOptions()
-	return Internal.compressionOptions()
+	return table.clone(Internal.compressionOptions())
 end
 
 function NetStream.GetSupportedTypes()
@@ -4993,15 +7343,50 @@ function NetStream.GetCompatibilityInfo()
 	return {
 		Version = VERSION,
 		CompressionVersion = Compression.Version(),
-		Protocol = PROTOCOL,
-		ProtocolSingle = PROTOCOL_SINGLE,
-		ProtocolCompactTable = PROTOCOL_COMPACT_TABLE,
+		BufferUtilVersion = Internal.BufferUtil.VERSION,
+		BitFrameEnabled = Config.BitFrameEnabled,
+		BitFrameVersion = 1,
+		ProtocolHeaderBytes = if Config.BitFrameEnabled then 0 else 1,
+		Protocol = Internal.LEGACY_PROTOCOL,
+		ProtocolSingle = Internal.LEGACY_PROTOCOL_SINGLE,
+		ProtocolCompactTable = Internal.LEGACY_PROTOCOL_COMPACT_TABLE,
+		ProtocolFastSchema = Internal.LEGACY_PROTOCOL_FAST_SCHEMA,
+		FastSchemaEnabled = Config.FastSchemaEnabled,
+		PackedSchemaRunEnabled = Config.PackedSchemaRunEnabled,
+		CompressionBitFirst = true,
+		CompressionEntropyCoding = Config.CompressionEntropyCoding,
+		CompressionFormat = "v2.9-bit-first",
+		PacketFormat = if Config.BitFrameEnabled then "v2.1-protocolless-bitframe" else "v2.1-legacy-byte-fallback",
+		HybridCodec = "BufferUtil-BitFrame-small/Native-bitstream-medium/Compression-large",
+		HybridSmallPacketMaxBits = Config.HybridSmallPacketMaxBits,
+		HybridCompressionThresholdBits = Config.HybridCompressionThresholdBits,
+		FastDynamicEstimator = true,
+		RouteCompressionStrategyCache = Config.CompressionRouteStrategyCache,
 		SupportedTypes = 16,
 	}
 end
 
 function NetStream.AnalyzeCompression(value, options)
 	return Compression.Analyze(value, options or Internal.compressionOptions())
+end
+
+NetStream.AnalyzeBits = NetStream.AnalyzeCompression
+
+function NetStream.GetHybridCodecStats()
+	local physicalBits = Stats.HybridBufferUtilPhysicalBits
+	return {
+		BufferUtilVersion = Internal.BufferUtil.VERSION,
+		Enabled = Config.HybridCodecEnabled,
+		BufferUtilSent = Stats.HybridBufferUtilSent,
+		BufferUtilReceived = Stats.HybridBufferUtilReceived,
+		UsefulBits = Stats.HybridBufferUtilUsefulBits,
+		PhysicalBits = physicalBits,
+		PaddingBits = Stats.HybridBufferUtilPaddingBits,
+		BytesSavedVsNative = Stats.HybridBufferUtilBytesSaved,
+		CompressionThresholdSkips = Stats.HybridCompressionThresholdSkips,
+		CompressionThresholdAttempts = Stats.HybridCompressionThresholdAttempts,
+		BitEfficiencyPercent = if physicalBits > 0 then Stats.HybridBufferUtilUsefulBits / physicalBits * 100 else 0,
+	}
 end
 
 function NetStream.FormatBytes(bytes)
@@ -5042,11 +7427,15 @@ function NetStream.Destroy()
 		task.spawn(entry.thread, false, "NetStream destroyed")
 	end
 	for index = dispatchHead, dispatchCount do
-		releaseArgs(dispatchArgs[index])
+		if dispatchScalarFlags[index] ~= true then
+			releaseArgs(dispatchArgs[index])
+		end
 	end
 	table.clear(dispatchRoutes)
 	table.clear(dispatchPlayers)
 	table.clear(dispatchArgs)
+	table.clear(dispatchScalarFlags)
+	table.clear(dispatchScalarValues)
 	dispatchCount = 0
 	dispatchHead = 1
 
@@ -5086,8 +7475,12 @@ function NetStream.Destroy()
 	table.clear(messagePool)
 	table.clear(argsPool)
 	table.clear(writerPool)
+	table.clear(scratchWriterPool)
+	table.clear(Internal._nativeMeasurePool)
+	Internal._compressionOptionsCache = nil
 	table.clear(readerPool)
 	table.clear(batchPool)
+	table.clear(packedValuePool)
 	globalIncomingRate = nil
 	trafficWindowStarted = os.clock()
 	trafficWindowSentBytes = 0
@@ -5158,6 +7551,7 @@ end
 
 NetStream.Codec = Codec
 NetStream.Compression = Compression
+NetStream.BufferUtil = Internal.BufferUtil
 NetStream.CompressionVersion = Compression.Version()
 
 
