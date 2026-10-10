@@ -1,6 +1,6 @@
 # NetStream
 
-![Version](https://img.shields.io/badge/version-v1.3.0-4c8bf5)
+![Version](https://img.shields.io/badge/version-v2.3.1-4c8bf5)
 ![Language](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Platform](https://img.shields.io/badge/platform-Roblox-111111)
 ![Compression](https://img.shields.io/badge/Compression-v2.3.2-2ea44f)
@@ -10,11 +10,26 @@
 
 It provides typed routes, schema encoding, dynamic binary encoding, Compression v2.3.2 integration, adaptive batching, coalescing, RPC, replicated state, queue protection, inbound rate limiting, an outbound bandwidth governor, pooled encoders/decoders, and detailed transport/compression diagnostics through one API.
 
-> **Current release:** `v1.3.0`
+> **Source release:** `v2.3.1` (proposed patch)
 >
 > **Required dependency:** `Compression v2.3.2`
 >
-> NetStream v1.3.0 requires a child ModuleScript named `Compression` under the NetStream ModuleScript.
+> NetStream v2.3.1 requires a child ModuleScript named `Compression` under the NetStream ModuleScript.
+
+---
+
+## v2.3.1 — decoder hardening (proposed patch)
+
+This maintenance patch fixes **variable-length integer validation** and packet-batch limits without changing the bytes produced by valid encoders:
+
+- BitFrame `adaptiveUInt` decoding now detects truncated inputs before reading the next byte.
+- Both BitFrame and legacy `varUInt` decoding reject noncanonical encodings such as `0x80 0x00` for zero. The existing writer always emits canonical encodings, so standard packets remain compatible.
+- BitFrame rejects a packet with more than `MaxIncomingMessages` before parsing another message or oversized schema run, instead of discovering it only after processing the extra message.
+- A Studio-only regression verifies canonical variable-length integers, safe-integer round trips, truncated inputs, and malformed encodings.
+
+**Source release:** `2.3.1`, **required child Compression module:** v2.3.x (included version v2.3.2; codec 230). **Wire compatibility:** BitFrame v2.3 framing is unchanged.
+
+**Validation required:** Run `tests/VarUIntRegression.server.lua` in Studio with `Netstream` and its `Compression` child ModuleScripts. Repeat multiplayer RPC/State/Event tests with both peers configured identically. No performance gain or complete `--!strict` typecheck is claimed. There is no cross-version compatibility guarantee for `BitFrameEnabled` mismatches.
 
 ---
 
