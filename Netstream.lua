@@ -64,21 +64,26 @@ function Internal.writeAdaptiveUIntBits(target, bitPosition, value)
 end
 
 function Internal.readAdaptiveUIntBits(source, bitPosition)
-	local value = 0
-	local multiplier = 1
-	for _ = 1, 8 do
-		local byte = buffer.readbits(source, bitPosition, 8)
-		bitPosition += 8
-		value += (byte % 128) * multiplier
-		if value > 9007199254740991 then
-			error("NetStream adaptive uint exceeds safe integer range", 0)
-		end
-		if byte < 128 then
-			return value, bitPosition
-		end
-		multiplier *= 128
-	end
-	error("NetStream adaptive uint overflow", 0)
+    local value = 0
+    local multiplier = 1
+    local totalBits = buffer.len(source) * 8
+    for byteIndex = 1, 8 do
+        if bitPosition + 8 > totalBits then error("NetStream adaptive uint truncated", 0) end
+        local byte = buffer.readbits(source, bitPosition, 8)
+        bitPosition += 8
+        value += (byte % 128) * multiplier
+        if value > 9007199254740991 then
+            error("NetStream adaptive uint exceeds safe integer range", 0)
+        end
+        if byte < 128 then
+            -- The encoder never emits a leading zero group. Reject ambiguous
+            -- encodings (e.g. 0x80 0x00) while retaining the wire format.
+            if byteIndex > 1 and byte == 0 then error("NetStream adaptive uint noncanonical encoding", 0) end
+            return value, bitPosition
+        end
+        multiplier *= 128
+    end
+    error("NetStream adaptive uint overflow", 0)
 end
 
 local Compression = {}
@@ -194,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.0"
+local VERSION = "2.3.1"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1325,7 +1330,7 @@ function Reader:varUInt()
 	local limit = self.length
 	local result = 0
 	local multiplier = 1
-	for _ = 1, 8 do
+	for byteIndex = 1, 8 do
 		if position >= limit then
 			error("NetStream decode overflow", 0)
 		end
@@ -1336,6 +1341,9 @@ function Reader:varUInt()
 			error("NetStream varuint exceeds safe integer range", 0)
 		end
 		if byte < 128 then
+            if byteIndex > 1 and byte == 0 then
+                error("NetStream varuint noncanonical encoding", 0)
+            end
 			self.position = position
 			return result
 		end
@@ -5602,6 +5610,11 @@ function Internal.decodeBitFrame(player, data)
 	while true do
 		local present = reader:bits(1)
 		if present == 0 then break end
+        -- Enforce the packet-wide message limit before parsing or dispatching
+        -- the next message, instead of only detecting the overrun afterward.
+        if logicalCount >= Config.MaxIncomingMessages then
+            error("NetStream BitFrame exceeds MaxIncomingMessages", 0)
+        end
 		local kind = reader:bits(2)
 		local routeId = 0
 		local requestId = 0
@@ -5620,7 +5633,9 @@ function Internal.decodeBitFrame(player, data)
 			if kind == KIND_EVENT then
 				local run = reader:bits(1) ~= 0
 				local count = if run then reader:adaptiveUInt() else 1
-				if count < 1 or count > Config.MaxIncomingMessages then error("NetStream BitFrame schema run count invalid", 0) end
+				if count < 1 or logicalCount + count > Config.MaxIncomingMessages then
+                    error("NetStream BitFrame schema run count invalid", 0)
+                end
 				if not canAcceptIncomingMessages(player, logicalCount + count) then
 					Stats.RateLimitedBatches += 1
 					-- Decode to keep framing valid, but do not dispatch.
