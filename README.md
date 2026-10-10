@@ -1,20 +1,35 @@
 # NetStream
 
-![Version](https://img.shields.io/badge/version-v1.3.0-4c8bf5)
+![Version](https://img.shields.io/badge/version-v2.3.1-4c8bf5)
 ![Language](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Platform](https://img.shields.io/badge/platform-Roblox-111111)
-![Compression](https://img.shields.io/badge/Compression-v2.3.2-2ea44f)
+![Compression](https://img.shields.io/badge/Compression-v2.3.3-2ea44f)
 ![Protocol](https://img.shields.io/badge/protocol-0x18%20%7C%200x19%20%7C%200x1A-6f42c1)
 
 **NetStream** is a compact, production-oriented networking layer for Roblox that sits on top of `RemoteEvent` and `UnreliableRemoteEvent`.
 
-It provides typed routes, schema encoding, dynamic binary encoding, Compression v2.3.2 integration, adaptive batching, coalescing, RPC, replicated state, queue protection, inbound rate limiting, an outbound bandwidth governor, pooled encoders/decoders, and detailed transport/compression diagnostics through one API.
+It provides typed routes, schema encoding, dynamic binary encoding, Compression v2.3.3 integration, adaptive batching, coalescing, RPC, replicated state, queue protection, inbound rate limiting, an outbound bandwidth governor, pooled encoders/decoders, and detailed transport/compression diagnostics through one API.
 
-> **Current release:** `v1.3.0`
+> **Source release:** `v2.3.1` (proposed patch)
 >
-> **Required dependency:** `Compression v2.3.2`
+> **Required dependency:** `Compression v2.3.3`
 >
-> NetStream v1.3.0 requires a child ModuleScript named `Compression` under the NetStream ModuleScript.
+> NetStream v2.3.1 requires a child ModuleScript named `Compression` under the NetStream ModuleScript.
+
+---
+
+## v2.3.1 — decoder hardening (proposed patch)
+
+This maintenance patch fixes **variable-length integer validation** and packet-batch limits without changing the bytes produced by valid encoders:
+
+- BitFrame `adaptiveUInt` decoding now detects truncated inputs before reading the next byte.
+- Both BitFrame and legacy `varUInt` decoding reject noncanonical encodings such as `0x80 0x00` for zero. The existing writer always emits canonical encodings, so standard packets remain compatible.
+- BitFrame rejects a packet with more than `MaxIncomingMessages` before parsing another message or oversized schema run, instead of discovering it only after processing the extra message.
+- A Studio-only regression verifies canonical variable-length integers, safe-integer round trips, truncated inputs, and malformed encodings.
+
+**Source release:** `2.3.1`, **required child Compression module:** v2.3.x (included version v2.3.3; codec 230). **Wire compatibility:** BitFrame v2.3 framing is unchanged.
+
+**Validation required:** Run `tests/VarUIntRegression.server.lua` in Studio with `Netstream` and its `Compression` child ModuleScripts. Repeat multiplayer RPC/State/Event tests with both peers configured identically. No performance gain or complete `--!strict` typecheck is claimed. There is no cross-version compatibility guarantee for `BitFrameEnabled` mismatches.
 
 ---
 
@@ -34,7 +49,7 @@ It provides typed routes, schema encoding, dynamic binary encoding, Compression 
 - [Functions / RPC](#functions--rpc)
 - [Schemas](#schemas)
 - [Dynamic Encoding](#dynamic-encoding)
-- [Compression v2.3.2 Integration](#compression-v232-integration)
+- [Compression v2.3.3 Integration](#compression-v232-integration)
 - [Compact Single-Table Packets](#compact-single-table-packets)
 - [Schema String and Buffer Compression](#schema-string-and-buffer-compression)
 - [Batching and Transport Windows](#batching-and-transport-windows)
@@ -100,7 +115,7 @@ Route validation
     ▼
 Schema or dynamic encoding
     │
-    ├── optional Compression v2.3.2
+    ├── optional Compression v2.3.3
     │
     ▼
 Queue / Latest slot
@@ -126,9 +141,9 @@ The receiver performs the reverse operation and dispatches the decoded arguments
 
 NetStream v1.3.0 is a major step beyond the older v1.0.0 README.
 
-## Compression v2.3.2 integration
+## Compression v2.3.3 integration
 
-NetStream now directly integrates **Compression v2.3.2** for:
+NetStream now directly integrates **Compression v2.3.3** for:
 
 - dynamic argument compression;
 - compact table compression;
@@ -235,7 +250,7 @@ wait for transport batching window
 measure native NetStream encoding
     │
     ▼
-try Compression v2.3.2
+try Compression v2.3.3
     │
     ├── compressed result smaller? use it
     │
@@ -261,7 +276,7 @@ It measures whether compression helps and rejects compression when it would wast
 
 ## Required hierarchy
 
-NetStream v1.3.0 requires Compression v2.3.2 as a child of the NetStream ModuleScript.
+NetStream v1.3.0 requires Compression v2.3.3 as a child of the NetStream ModuleScript.
 
 ```text
 ReplicatedStorage
@@ -273,7 +288,7 @@ Where:
 
 ```text
 NetStream     = NetStream v1.3.0 ModuleScript
-Compression   = Compression v2.3.2 ModuleScript
+Compression   = Compression v2.3.3 ModuleScript
 ```
 
 The dependency is checked when NetStream is required.
@@ -281,7 +296,7 @@ The dependency is checked when NetStream is required.
 NetStream expects:
 
 ```lua
-Compression.Version() == "2.3.2"
+Compression.Version() == "2.3.3"
 ```
 
 If the dependency is missing or the version is wrong, NetStream throws an error immediately.
@@ -801,8 +816,8 @@ Damage:FireServer(targetId, damage)
 | `T.VarInt` | Variable-length signed integer |
 | `T.F32` | 32-bit float |
 | `T.F64` | 64-bit float |
-| `T.String` | String with optional Compression v2.3.2 |
-| `T.Buffer` | Buffer with optional Compression v2.3.2 |
+| `T.String` | String with optional Compression v2.3.3 |
+| `T.Buffer` | Buffer with optional Compression v2.3.3 |
 | `T.Vector2Q(precision)` | Quantized Vector2 |
 | `T.Vector3Q(precision)` | Quantized Vector3 |
 | `T.CFrameQ(precision)` | Quantized position + quaternion rotation |
@@ -909,12 +924,12 @@ Schemas are usually better for hot paths.
 
 ---
 
-# Compression v2.3.2 Integration
+# Compression v2.3.3 Integration
 
 NetStream requires:
 
 ```text
-Compression v2.3.2
+Compression v2.3.3
 ```
 
 and exposes it as:
@@ -933,7 +948,7 @@ print(NetStream.RequiredCompressionVersion)
 Both should report:
 
 ```text
-2.3.2
+2.3.3
 ```
 
 ## Compression is selective
@@ -945,7 +960,7 @@ For a candidate dynamic payload it measures:
 ```text
 native NetStream cost
 vs
-Compression v2.3.2 cost
+Compression v2.3.3 cost
 ```
 
 and accepts compression only when:
@@ -979,7 +994,7 @@ CompressionMinStringBytes = 8
 CompressionMinBufferBytes = 6
 ```
 
-## Compression options passed to v2.3.2
+## Compression options passed to v2.3.3
 
 NetStream configures Compression with:
 
@@ -1024,7 +1039,7 @@ A compact single-table packet can be used when:
 - that argument is a table;
 - the route ID is `0..63`;
 - compression is enabled for the route;
-- Compression v2.3.2 produces a smaller total packet.
+- Compression v2.3.3 produces a smaller total packet.
 
 Conceptually:
 
@@ -2050,7 +2065,7 @@ local analysis = NetStream.Codec.Analyze(...)
 
 ## Direct Compression access
 
-The actual Compression v2.3.2 module is exposed as:
+The actual Compression v2.3.3 module is exposed as:
 
 ```lua
 NetStream.Compression
@@ -2426,7 +2441,7 @@ Routes.ProfileSnapshot:SetLatestClient(player, {
 })
 ```
 
-Compression v2.3.2 can then evaluate compact/mapped table encoding for the full profile.
+Compression v2.3.3 can then evaluate compact/mapped table encoding for the full profile.
 
 This gives two different optimizations:
 
@@ -2558,11 +2573,11 @@ NetStream
 └── Compression
 ```
 
-The Compression child must be v2.3.2.
+The Compression child must be v2.3.3.
 
 ---
 
-## `NetStream v1.3.0 requires Compression v2.3.2`
+## `NetStream v1.3.0 requires Compression v2.3.3`
 
 The dependency exists, but:
 
@@ -2573,7 +2588,7 @@ Compression.Version()
 does not equal:
 
 ```text
-2.3.2
+2.3.3
 ```
 
 Update the Compression child.
@@ -3013,7 +3028,7 @@ For production, run the same NetStream version on server and client.
 NetStream v1.3.0 also requires exactly:
 
 ```text
-Compression v2.3.2
+Compression v2.3.3
 ```
 
 Do not mix the v1.3.0 encoder with an older peer or a different Compression wire format.
@@ -3025,7 +3040,7 @@ Do not mix the v1.3.0 encoder with an older peer or a different Compression wire
 When moving from the old v1.0.0 build to v1.3.0:
 
 1. Replace the old NetStream ModuleScript.
-2. Add `Compression v2.3.2` as a child named exactly `Compression`.
+2. Add `Compression v2.3.3` as a child named exactly `Compression`.
 3. Confirm both server and client require the same NetStream v1.3.0 module.
 4. Start NetStream early on the server.
 5. Keep shared route definitions identical.
@@ -3041,7 +3056,7 @@ When moving from the old v1.0.0 build to v1.3.0:
 15. Use coalescing for values where only the newest state matters.
 16. Keep Immediate traffic limited to latency-sensitive actions.
 17. Prefer small route IDs when packet size matters.
-18. Remember that `NetStream.Compression` now refers to Compression v2.3.2 itself, not the Codec wrapper.
+18. Remember that `NetStream.Compression` now refers to Compression v2.3.3 itself, not the Codec wrapper.
 
 ---
 
