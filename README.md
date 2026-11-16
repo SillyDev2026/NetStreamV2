@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v2.3.28-2563eb)
+![Release](https://img.shields.io/badge/release-v2.3.31-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v2.3.28.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level reviews and test scripts exist; Roblox Studio runtime performance, p95/p99 latency, and comparisons to other libraries have **not** been measured.
+> **Current `main` release: NetStream v2.3.31.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.3.31 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -250,7 +250,10 @@ Metrics: `EncodeMs`, `DecodeMs`, `QueueMs`, `DispatchMs`, `PacketBytes`, `RoundT
 
 Run the scripts under `tests/` in **Roblox Studio**. Paired `.server.lua` scripts belong in `ServerScriptService` and `.client.lua` in `StarterPlayerScripts`. Use one pair per Play session to avoid configuration conflicts.
 
-New in v2.3.25:
+Recent regression coverage (v2.3.31):
+- `LegacyFixedFiniteGuard`: three malformed legacy composite F64 payloads plus valid recovery; Studio execution is still required.
+
+Originally added in v2.3.25:
 - `HandshakeRecovery`: confirm retransmitted matching HELLO receives WELCOME and recovers to READY.
 - `U8FastPath`: test 4- and 32-field U8 schemas, boundary values, ordering and fast-path counters.
 - `CompressionEligibility`: validate short-list scanning, repeated strings and round-trips.
@@ -258,6 +261,13 @@ New in v2.3.25:
 Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50/p95/p99 probes remain available. Source-level audits do **not** establish passed Studio tests or measured performance. See [Benchmarks and release checklist](docs/BENCHMARKING.md).
 
 ## Release notes and documentation
+
+| Release | Main change |
+|---|---|
+| **2.3.31** | Validate finite F64 components in legacy fixed composite schema reads |
+| **2.3.30** | Preflight U8 BitFrame schema bounds once and directly read/write packed bytes |
+| **2.3.29** | Remove redundant BitFrame varuint validation on the hot path |
+
 
 | Release | Main change |
 |---|---|
