@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.7"
+local VERSION = "2.3.10"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -871,28 +871,28 @@ function Internal.canCompressionRoundTrip(value, seen)
 end
 
 function Internal.shouldAttemptCompression(args)
-	if not Internal.canCompressionRoundTrip(args, {}) then
-		return false
-	end
-
-	-- Compression v2.3 is structural. A single raw string cannot shrink because
-	-- its bytes are preserved plus packet framing; repeated strings and nested
-	-- tables are the cases where its dictionary/table encoding can win.
+	-- Cheap structural eligibility first: most one-value scalar messages cannot
+	-- benefit from the bundled dictionary/table codec. Defer recursive validation
+	-- until a table or repeated string makes compression plausible.
+	if args.n == 1 and typeof(args[1]) ~= "table" then return false end
 	local repeatedStrings = nil
+	local candidate = false
 	for i = 1, args.n do
 		local value = args[i]
 		local kind = typeof(value)
 		if kind == "table" then
-			return true
+			candidate = true
+			break
 		elseif kind == "string" and #value >= Config.CompressionMinStringBytes then
 			repeatedStrings = repeatedStrings or {}
 			if repeatedStrings[value] then
-				return true
+				candidate = true
+				break
 			end
 			repeatedStrings[value] = true
 		end
 	end
-	return false
+	return candidate and Internal.canCompressionRoundTrip(args, {})
 end
 
 local SCHEMA_BOOL = 1
@@ -1587,8 +1587,8 @@ function Internal.BitFrameReader:rawString(length)
 	self.bitPosition = bitPosition
 	return table.concat(chars)
 end
-function Internal.BitFrameReader:rawBuffer(length)
-	if length > Config.MaxBufferBytes or length > Config.MaxIncomingPacketBytes then error("NetStream BitFrame buffer is too large", 0) end
+function Internal.BitFrameReader:rawBuffer(length, compressed)
+	if length < 0 or length % 1 ~= 0 or length > Config.MaxIncomingPacketBytes or (not compressed and length > Config.MaxBufferBytes) then error("NetStream BitFrame buffer is too large", 0) end
 	local bitPosition = self.bitPosition
 	if bitPosition + length * 8 > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
 	local out = buffer.create(length)
@@ -1878,7 +1878,7 @@ function Internal.readSchemaString(reader)
 		if payload > Config.MaxIncomingPacketBytes then
 			error("NetStream incoming compressed schema string is too large", 0)
 		end
-		local packed = reader:rawBuffer(payload)
+		local packed = reader:rawBuffer(payload, true)
 		local value = Compression.DecompressString(packed)
 		if #value > Config.MaxStringBytes then
 			error("NetStream incoming schema string exceeds MaxStringBytes", 0)
@@ -1911,7 +1911,7 @@ function Internal.readSchemaBuffer(reader)
 	local payload = math.floor(meta / 2)
 	if compressed then
 		if payload > Config.MaxIncomingPacketBytes then error("NetStream incoming compressed schema buffer is too large", 0) end
-		local packed = reader:rawBuffer(payload)
+		local packed = reader:rawBuffer(payload, true)
 		local value = Compression.DecompressBuffer(packed)
 		if buffer.len(value) > Config.MaxBufferBytes then error("NetStream incoming schema buffer exceeds MaxBufferBytes", 0) end
 		Stats.CompressionDecodeCount += 1
@@ -4365,7 +4365,7 @@ function Internal.commitBandwidth(target, bytes)
 	Internal.trafficWindowEstimatedTransportBytes += chargedBytes
 end
 
-function Internal.restoreDeferredItems(queue, latest, items, unreliable)
+function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPressureDrop)
 	local normal = table.create(#items)
 	for i = 1, #items do
 		local item = items[i]
@@ -4377,7 +4377,7 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable)
 					Stats.CoalescedLatest += 1
 				end
 				latest[item.latestKey] = item
-			elseif unreliable and Config.BandwidthDropUnreliableOnPressure then
+			elseif unreliable and allowPressureDrop ~= false and Config.BandwidthDropUnreliableOnPressure then
 				local droppedCount = messageLogicalCount(item)
 				releaseMessage(item)
 				Stats.BandwidthDroppedUnreliableMessages += droppedCount
@@ -4527,23 +4527,30 @@ local function collectBatch(queue, latest, limit)
 	return items
 end
 
+function Internal.packetByteBudget(unreliable)
+	local budget = if Config.BandwidthGovernorEnabled then math.min(Config.BandwidthMaxPacketBytes, Config.MaxOutgoingBatchBytes) else Config.MaxOutgoingBatchBytes
+	if unreliable and unreliableRemote then budget = math.min(budget, Config.UnreliableMaxBytes) end
+	return budget
+end
+
 function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
+	local byteBudget = Internal.packetByteBudget(unreliable)
 	local ok, data = pcall(encodeBatch, items)
-	while ok and Config.BandwidthGovernorEnabled and #items > 1 and buffer.len(data) > Config.BandwidthMaxPacketBytes do
+	while ok and #items > 1 and buffer.len(data) > byteBudget do
 		local originalCount = #items
-		local idealCount = math.floor(originalCount * Config.BandwidthMaxPacketBytes / buffer.len(data))
+		local idealCount = math.floor(originalCount * byteBudget / buffer.len(data))
 		local keepCount = math.max(1, math.min(originalCount - 1, idealCount))
 		local deferred = acquireBatch(originalCount - keepCount)
 		for i = keepCount + 1, originalCount do
 			deferred[#deferred + 1] = items[i]
 			items[i] = nil
 		end
-		Internal.restoreDeferredItems(queue, latest, deferred, unreliable)
+		Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
 		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
 		ok, data = pcall(encodeBatch, items)
 	end
-	if ok and Config.BandwidthGovernorEnabled then
+	if ok and (Config.BandwidthGovernorEnabled or (unreliable and unreliableRemote)) then
 		local logical = batchLogicalCount(items)
 		if logical > 0 then
 			local observed = buffer.len(data) / logical
@@ -4600,8 +4607,8 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		end
 		local messageLimit = Config.MaxBatchMessages
 		local average = queue.estimatedBytesPerMessage
-		if Config.BandwidthGovernorEnabled and average and average > 0 then
-			local predictedLimit = math.max(1, math.floor(Config.BandwidthMaxPacketBytes / average))
+		if (Config.BandwidthGovernorEnabled or (unreliable and unreliableRemote)) and average and average > 0 then
+			local predictedLimit = math.max(1, math.floor(Internal.packetByteBudget(unreliable) / average))
 			if predictedLimit < messageLimit then
 				messageLimit = predictedLimit
 				Stats.TransportPredictedBatchCaps += 1
@@ -5637,7 +5644,7 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 	else
 		local compressedBytes = reader:adaptiveUInt()
 		if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then error("NetStream BitFrame compressed payload size invalid", 0) end
-		local compressedData = reader:rawBuffer(compressedBytes)
+		local compressedData = reader:rawBuffer(compressedBytes, true)
 		local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
 		Stats.CompressionDecodeCount += 1
 		if mode == 2 then

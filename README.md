@@ -3143,3 +3143,22 @@ These three incremental patches build on the still-open v2.3.2–v2.3.4 maintena
 4. Repeat with schema-driven messages, unreliable events, 0- and 1-byte payloads, 32-bit boundary-crossing strings, mixed sizes, 2+ clients, rate limiting, malformed packets, and Disconnect/Destroy. The probe is an integration test, not a load-test or conclusive Jolt comparison.
 
 **Verification note:** code/branch checks have been performed; Luau analyzer, Studio gameplay execution, p95/p99 CPU profiles and measured Jolt comparisons have not been run here. The v2.3.7 packet prediction is a heuristic and does not guarantee fewer packets on every workload.
+
+
+## Maintenance / performance patches v2.3.8 → v2.3.10
+
+These releases are stacked on the unmerged v2.3.7 performance branch and preserve public Event, State, RPC, Codec, and route APIs. Wire encoding remains **BitFrame version 1** and bundled Compression **codec 230**.
+
+| Patch | Change | Why it matters |
+|---|---|---|
+| **2.3.8** | Distinguish compressed byte payloads from uncompressed `buffer` values in the BitFrame reader. Compressed blob length is checked against `MaxIncomingPacketBytes`, while decoded buffers are still checked against `MaxBufferBytes` and decoded strings against `MaxStringBytes`. | Fixes a regression from v2.3.4 that could reject allowed compressed frames solely because the compressed *input* exceeded the uncompressed buffer limit. |
+| **2.3.9** | Check whether structural compression is even plausible before recursively validating candidate argument tables. Single primitive values immediately skip this scan. | Reduces unnecessary CPU for noncompressible traffic without enabling compression for unsupported Roblox values. |
+| **2.3.10** | Apply the active unreliable-lane byte cap to batch prediction and split handling; preserve deferred unreliable messages when splitting for packet size alone. Existing pressure-based dropping still applies to genuine send deferral. | Avoids accidental reliable fallback for oversized multi-message unreliable batches and prevents size-only splitting from being treated as congestion loss. |
+
+### Test procedure
+
+- The earlier `tests/MaintenanceRegression.server.lua` and paired `tests/BitFramePerfProbe.*.lua` now target **2.3.10**.
+- For the dedicated lane test, put `Netstream` ModuleScript (with its `Compression` child) in `ReplicatedStorage`. Place `tests/BatchLaneRegression.server.lua` in `ServerScriptService` and `tests/BatchLaneRegression.client.lua` in `StarterPlayerScripts`. Start at least one client and server in Roblox Studio. The client queues 120 reliable and 120 unreliable messages, requires the UnreliableRemoteEvent lane, asserts full reliable delivery and zero unexpected unreliable-to-reliable fallback, and prints packet, split, and prediction counts.
+- Unreliable delivery is **not guaranteed**. The lane regression intentionally reports the observed unreliable count without asserting 100% delivery. Repeat with 2+ clients, mixed payload sizes and deliberate congestion; use MicroProfiler / network stats to compare real CPU time, GC pressure and packet counts with v2.3.7.
+
+**Validation limits:** Remote source re-reads and static invariants are not equivalent to compiling or executing Luau. The new tests have not been run in Roblox Studio here, and no throughput / latency improvement is being claimed without a controlled benchmark.
