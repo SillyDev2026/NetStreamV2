@@ -3260,3 +3260,60 @@ The compression threshold is **per candidate compression call**, not a hard aggr
 **Validation status**: Remote GitHub source checks can establish the presence of features and preserve version/codec invariants, but they cannot substitute for a Luau typecheck, a Play Test, and measured CPU, memory, latency, packet and roundtrip benchmarks. These tests are written but **not executed in Roblox Studio**. Avoid claiming higher measured FPS or lower ping before running them.
 
 **Deployment dependency**: this branch is based on the unmerged v2.3.13 PR. Merge the earlier stacked pull requests and complete their test suites before deploying v2.3.16.
+
+
+## v2.3.17–v2.3.19: p50/p95/p99 latency, CPU, packet, and memory diagnostics
+
+These three releases add **opt-in, local, bounded telemetry**. They leave the BitFrame v1 packet format, compression codec 230, handshake and existing gameplay route API unchanged.
+
+| Version | Work |
+|---|---|
+| **2.3.17** | Reusable circular sample buffers (default 512 samples per metric) with nearest-rank p50, p95, p99, minimum, maximum and mean; `NetStream.GetLatencyStats()`, `NetStream.ResetPerformanceTelemetry()`, and `NetStream.RecordRoundTripSample(milliseconds)`. Disabled by default. |
+| **2.3.18** | Hook successful packet sizes and measured transport encoder, receiver decoder, and dispatch-cycle execution times. Encoding retries during packet splitting are represented as additional encode samples. |
+| **2.3.19** | Queue-to-successful-send timing samples for normal/latest and packed-schema messages, along with `NetStream.GetMemoryDiagnostics()` for pooled writer capacity and pool counts. Paired Studio p95 benchmarking and deterministic percentile assertions. |
+
+### Enable measurements (both client and server)
+
+```luau
+local NetStream = require(game:GetService("ReplicatedStorage"):WaitForChild("Netstream"))
+NetStream.Configure({
+    PerformanceTelemetryEnabled = true,
+    PerformanceTelemetryCapacity = 512, -- samples retained per category; 16..8192
+    PerformanceTelemetrySampleEvery = 1, -- every Nth observation; 1..1024
+})
+NetStream.Start()
+
+local percentiles = NetStream.GetLatencyStats()
+print(percentiles.EncodeMs.P50, percentiles.EncodeMs.P95, percentiles.EncodeMs.P99)
+print(percentiles.DecodeMs.P95, percentiles.QueueMs.P95, percentiles.PacketBytes.P99)
+print(percentiles.RoundTripMs.P95, percentiles.JitterMs.P95)
+local memory = NetStream.GetMemoryDiagnostics()
+print(memory.PooledWriterBytes, memory.BitFrameReaderPoolSize, memory.LuaHeapKB)
+
+-- After a controlled client-side ping → pong using your routes:
+-- NetStream.RecordRoundTripSample((os.clock() - sentAt) * 1000)
+-- NetStream.ResetPerformanceTelemetry() -- clear prior samples
+```
+
+`NetStream.GetPerformanceStats().Telemetry` also contains these percentile snapshots. Each metric has `Count`, `Observed`, `TotalSamples`, `Min`, `Max`, `Mean`, `P50`, `P95`, and `P99`. A missing sample returns `nil` for numerical statistics; never display it as zero latency.
+
+**Metric definitions and limits**
+
+- `EncodeMs`: one transport batch encoding attempt, including retries when splitting oversized batches.
+- `DecodeMs`: time in a decoder call for one incoming packet; malformed attempts are included.
+- `DispatchMs`: duration of one dispatch processing cycle with at least one dispatched item. Includes user callback execution.
+- `QueueMs`: elapsed local time from creation of an outgoing message to successful remote `Fire*`, including any encoding and scheduling time. This is **not** end-to-end packet latency. Packed-schema batches are represented by their first message's creation time. Unsent/dropped packets are excluded.
+- `PacketBytes`: encoded payload length of successfully sent application batches, excluding unknown engine/UDP transport overhead.
+- `RoundTripMs`: client-observed application-level client→server→client elapsed time, recorded only through an explicit `RecordRoundTripSample` call. It includes both application callbacks and scheduling; it is not geographic/physical ICMP ping.
+- `JitterMs`: absolute difference between consecutive recorded application RTT samples (not RFC 3550 smoothing).
+- `GetMemoryDiagnostics().PooledWriterBytes`: retained *capacity* for NetStream pooled writer backing buffers, not total memory owned by NetStream. `LuaHeapKB` uses `gcinfo()` and represents broad Luau heap activity, including allocations outside the module.
+
+Sampling is opt-in to avoid hot-path overhead during normal play. At the default sample rate of 4, retain every fourth observation (first, fifth, ninth, …); the sample distribution is only an approximation of complete traffic. Sample history is bounded and overwritten in place. Quantiles use nearest-rank `ceil(N*p)`, not linear interpolation or a guarantee about tail network performance.
+
+### Multiplayer Studio p95 test
+
+Run **only** `tests/PerformanceP95.server.lua` in ServerScriptService and `tests/PerformanceP95.client.lua` in StarterPlayerScripts with `Netstream` and its child `Compression` in ReplicatedStorage. The scripts configure identical telemetry flags and bandwidth settings. The client checks 100 known RTT inputs (`P50=50, P95=95, P99=99`), resets counters, then sends 128 sequential reliable Critical packets using `FireServerNow`. The server responds via `FireClientNow`. The client logs real RTT p50/p95/p99, jitter p95, packet sizes, queue delay and local CPU measurements; the server logs receive/dispatch/packet percentiles.
+
+For comparable results: run several trials at fixed player counts, payloads, device load, regions and network conditions; record warmup vs steady-state separately; report min/mean/p50/p95/p99 and actual sample counts; repeat with telemetry disabled to measure observer overhead. Re-run existing maintenance/handshake/BitFrame/CPU tests against 2.3.19.
+
+**Validation:** Source-level checks validate the implementation and preserved wire/version invariants. Roblox Studio compilation, multiplayer runtime, MicroProfiler, measured memory allocation, and benchmarks against Jolt/Blink/Zap have **not** been performed by this change. No throughput or ping improvement is claimed.

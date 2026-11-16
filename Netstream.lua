@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.16"
+local VERSION = "2.3.19"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -267,6 +267,9 @@ local DEFAULTS = {
 	MaxBatchPoolSize = 64,
 	MaxWriterPoolSize = 32,
 	MaxBitFrameReaderPoolSize = 32,
+	PerformanceTelemetryEnabled = false,
+	PerformanceTelemetryCapacity = 512,
+	PerformanceTelemetrySampleEvery = 4,
 	MaxScratchWriterPoolSize = 16,
 	InitialWriterBytes = 1024,
 	MaxTargetsPerFlush = 128,
@@ -577,6 +580,45 @@ local Stats = {
 	BitFrameNativeValues = 0,
 	BitFrameCompressedValues = 0,
 }
+
+
+-- Bounded, opt-in local performance samples; no telemetry is sent on the wire.
+Internal.PerformanceSamples = {}
+Internal.PerformanceNames = {"EncodeMs", "DecodeMs", "QueueMs", "DispatchMs", "PacketBytes", "RoundTripMs", "JitterMs"}
+function Internal.resetPerformanceSamples()
+	Internal._lastRoundTripMs = nil
+	local series = Internal.PerformanceSamples
+	for _, name in ipairs(Internal.PerformanceNames) do series[name] = {samples = {}, nextIndex = 1, count = 0, observed = 0, total = 0} end
+end
+Internal.resetPerformanceSamples()
+function Internal.recordPerformanceSample(name, value)
+	if not Config.PerformanceTelemetryEnabled or type(value) ~= "number" or not math.isfinite(value) or value < 0 then return end
+	local series = Internal.PerformanceSamples[name]
+	if not series then return end
+	series.observed += 1
+	if (series.observed - 1) % Config.PerformanceTelemetrySampleEvery ~= 0 then return end
+	local slot = series.nextIndex
+	series.samples[slot] = value
+	series.nextIndex = if slot >= Config.PerformanceTelemetryCapacity then 1 else slot + 1
+	series.count = math.min(series.count + 1, Config.PerformanceTelemetryCapacity)
+	series.total += 1
+end
+function Internal.performancePercentiles(name)
+	local series = Internal.PerformanceSamples[name]
+	local count = series.count
+	if count == 0 then return {Count = 0, Observed = series.observed, TotalSamples = series.total, Min = nil, Max = nil, Mean = nil, P50 = nil, P95 = nil, P99 = nil} end
+	local values = table.create(count)
+	local sum = 0
+	for i = 1, count do values[i] = series.samples[i]; sum += values[i] end
+	table.sort(values)
+	return {
+		Count = count, Observed = series.observed, TotalSamples = series.total, Min = values[1], Max = values[count],
+		Mean = sum / count,
+		P50 = values[math.max(1, math.ceil(count * 0.50))],
+		P95 = values[math.max(1, math.ceil(count * 0.95))],
+		P99 = values[math.max(1, math.ceil(count * 0.99))],
+	}
+end
 
 local Float32Tag = {}
 local RawStringTag = {}
@@ -3210,6 +3252,7 @@ local function makeMessage(kind, id, request, args, schema, priority)
 	message.schema = schema
 	message.priority = priority
 	message.latestKey = nil
+	message._queuedAt = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	message.packedRun = false
 	message.packedValues = nil
 	message.runCount = nil
@@ -3232,6 +3275,7 @@ local function makePackedRunMessage(route, valueCount, runLimit, ...)
 	message.schema = route._schema
 	message.priority = route.Priority or "Normal"
 	message.latestKey = nil
+	message._queuedAt = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	message.packedRun = true
 	message.packedValues = values
 	message.runCount = 1
@@ -3258,6 +3302,7 @@ releaseMessage = function(message)
 	message.schema = nil
 	message.priority = nil
 	message.latestKey = nil
+	message._queuedAt = nil
 	message.packedRun = nil
 	message.packedValues = nil
 	message.runCount = nil
@@ -4566,6 +4611,7 @@ local function sendBatch(target, unreliable, data)
 	trafficWindowSentBatches += 1
 	trafficWindowSentBytes += bytes
 	Internal.commitLastSendStats(bytes)
+	Internal.recordPerformanceSample("PacketBytes", bytes)
 	return true, "sent"
 end
 
@@ -4622,9 +4668,17 @@ function Internal.packetByteBudget(unreliable)
 	return budget
 end
 
+function Internal.measuredEncodeBatch(items)
+	if not Config.PerformanceTelemetryEnabled then return pcall(encodeBatch, items) end
+	local begin = os.clock()
+	local ok, data = pcall(encodeBatch, items)
+	Internal.recordPerformanceSample("EncodeMs", (os.clock() - begin) * 1000)
+	return ok, data
+end
+
 function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	local byteBudget = Internal.packetByteBudget(unreliable)
-	local ok, data = pcall(encodeBatch, items)
+	local ok, data = Internal.measuredEncodeBatch(items)
 	while ok and #items > 1 and buffer.len(data) > byteBudget do
 		local originalCount = #items
 		local idealCount = math.floor(originalCount * byteBudget / buffer.len(data))
@@ -4637,7 +4691,7 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 		Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
 		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
-		ok, data = pcall(encodeBatch, items)
+		ok, data = Internal.measuredEncodeBatch(items)
 	end
 	if ok and (Config.BandwidthGovernorEnabled or (unreliable and unreliableRemote)) then
 		local logical = batchLogicalCount(items)
@@ -4650,16 +4704,26 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	return ok, data
 end
 
+function Internal.recordQueueAge(items)
+	if not Config.PerformanceTelemetryEnabled then return end
+	local now = os.clock()
+	for i = 1, #items do
+		local item = items[i]
+		if item and item._queuedAt then Internal.recordPerformanceSample("QueueMs", math.max(0, (now - item._queuedAt) * 1000)) end
+	end
+end
+
 function Internal.sendIsolatedMessages(target, unreliable, items)
 	for i = 1, #items do
 		local item = items[i]
 		local single = acquireBatch(1)
 		single[1] = item
-		local ok, data = pcall(encodeBatch, single)
+		local ok, data = Internal.measuredEncodeBatch(single)
 		releaseBatch(single)
 		if ok then
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
+				if Config.PerformanceTelemetryEnabled and item._queuedAt then Internal.recordPerformanceSample("QueueMs", math.max(0, (os.clock() - item._queuedAt) * 1000)) end
 				local logical = messageLogicalCount(item)
 				Stats.SentMessages += logical
 				trafficWindowSentMessages += logical
@@ -4729,6 +4793,7 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		else
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
+				Internal.recordQueueAge(items)
 				local logical = batchLogicalCount(items)
 				Stats.SentMessages += logical
 				trafficWindowSentMessages += logical
@@ -5105,6 +5170,7 @@ local function runDispatch()
 		dispatchCount = 0
 		dispatchHead = 1
 	end
+	if processed > 0 then Internal.recordPerformanceSample("DispatchMs", (os.clock() - startedAt) * 1000) end
 end
 
 local function enqueueDispatch(route, player, args)
@@ -6096,7 +6162,9 @@ local function receive(player, data)
 	end
 	local bitFrame = Config.BitFrameEnabled
 	local reader = if bitFrame then Internal.acquireBitFrameReader(data) else acquireReader(data)
+	local decodeStarted = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	local ok, err = pcall(decodeBatch, player, data, reader)
+	if decodeStarted then Internal.recordPerformanceSample("DecodeMs", (os.clock() - decodeStarted) * 1000) end
 	if bitFrame then Internal.releaseBitFrameReader(reader) else releaseReader(reader) end
 	if not ok then
 		Stats.DecodeErrors += 1
@@ -7102,6 +7170,9 @@ function Internal.validateConfig(config)
 	assert(type(config.TransportTargetMessagesPerPacket) == "number" and isInteger(config.TransportTargetMessagesPerPacket) and config.TransportTargetMessagesPerPacket >= 1, "TransportTargetMessagesPerPacket must be an integer >= 1")
 	assert(type(config.MaxWriterPoolSize) == "number" and isInteger(config.MaxWriterPoolSize) and config.MaxWriterPoolSize >= 0, "MaxWriterPoolSize must be a non-negative integer")
 	assert(type(config.MaxBitFrameReaderPoolSize) == "number" and isInteger(config.MaxBitFrameReaderPoolSize) and config.MaxBitFrameReaderPoolSize >= 0 and config.MaxBitFrameReaderPoolSize <= 256, "MaxBitFrameReaderPoolSize must be an integer from 0 to 256")
+	assert(type(config.PerformanceTelemetryEnabled) == "boolean", "PerformanceTelemetryEnabled must be boolean")
+	assert(type(config.PerformanceTelemetryCapacity) == "number" and isInteger(config.PerformanceTelemetryCapacity) and config.PerformanceTelemetryCapacity >= 16 and config.PerformanceTelemetryCapacity <= 8192, "PerformanceTelemetryCapacity must be an integer from 16 to 8192")
+	assert(type(config.PerformanceTelemetrySampleEvery) == "number" and isInteger(config.PerformanceTelemetrySampleEvery) and config.PerformanceTelemetrySampleEvery >= 1 and config.PerformanceTelemetrySampleEvery <= 1024, "PerformanceTelemetrySampleEvery must be an integer from 1 to 1024")
 	assert(type(config.MaxScratchWriterPoolSize) == "number" and isInteger(config.MaxScratchWriterPoolSize) and config.MaxScratchWriterPoolSize >= 0, "MaxScratchWriterPoolSize must be a non-negative integer")
 	assert(type(config.InitialWriterBytes) == "number" and isInteger(config.InitialWriterBytes) and config.InitialWriterBytes >= 64, "InitialWriterBytes must be an integer >= 64")
 	assert(type(config.FastSchemaEnabled) == "boolean", "FastSchemaEnabled must be a boolean")
@@ -7660,6 +7731,42 @@ function NetStream.GetRateStats()
 	return table.clone(trafficSnapshot)
 end
 
+function NetStream.GetLatencyStats()
+	local result = {Enabled = Config.PerformanceTelemetryEnabled, Capacity = Config.PerformanceTelemetryCapacity, SampleEvery = Config.PerformanceTelemetrySampleEvery}
+	for _, name in ipairs(Internal.PerformanceNames) do result[name] = Internal.performancePercentiles(name) end
+	return result
+end
+
+function NetStream.ResetPerformanceTelemetry()
+	Internal.resetPerformanceSamples()
+end
+
+function NetStream.GetMemoryDiagnostics()
+	local writerBytes = 0
+	for _, writer in ipairs(Internal.BitFrameWriterPool) do writerBytes += writer.capacity end
+	local legacyBytes = 0
+	for _, writer in ipairs(writerPool) do legacyBytes += writer.capacity or 0 end
+	return {
+		BitFrameWriterPooledBytes = writerBytes,
+		LegacyWriterPooledBytes = legacyBytes,
+		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
+		LegacyReaderPoolSize = #readerPool,
+		ArgsPoolSize = #argsPool,
+		MessagePoolSize = #messagePool,
+		BatchPoolSize = #batchPool,
+		PooledWriterBytes = writerBytes + legacyBytes,
+		-- gcinfo() reports the current Luau heap broadly, not NetStream-owned memory.
+		LuaHeapKB = gcinfo(),
+	}
+end
+
+function NetStream.RecordRoundTripSample(milliseconds)
+	assert(type(milliseconds) == "number" and math.isfinite(milliseconds) and milliseconds >= 0 and milliseconds <= 600000, "RecordRoundTripSample expects 0 to 600000 milliseconds")
+	Internal.recordPerformanceSample("RoundTripMs", milliseconds)
+	if Internal._lastRoundTripMs ~= nil then Internal.recordPerformanceSample("JitterMs", math.abs(milliseconds - Internal._lastRoundTripMs)) end
+	Internal._lastRoundTripMs = milliseconds
+end
+
 function NetStream.GetPerformanceStats()
 	local stats = NetStream.GetStats()
 	return {
@@ -7694,6 +7801,7 @@ function NetStream.GetPerformanceStats()
 		ScalarDispatches = stats.ScalarDispatches,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,
+		Telemetry = NetStream.GetLatencyStats(),
 	}
 end
 
@@ -8025,6 +8133,7 @@ function NetStream.Destroy()
 
 	table.clear(Internal.BitFrameWriterPool)
 	table.clear(Internal.BitFrameReaderPool)
+	Internal.resetPerformanceSamples()
 	Internal.releaseBucket(clientBucket)
 	Internal.releaseBucket(broadcastBucket)
 	for _, bucket in pairs(targetBuckets) do
