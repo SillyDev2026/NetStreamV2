@@ -1,6 +1,23 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.28**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.3.31**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.31 — Legacy fixed-schema composite float validation
+
+- Reject NaN and positive/negative infinity in ten legacy fixed-schema composite F64 read sites (UDim, UDim2, Rect, NumberRange and DateTime).
+- Retain fixed field widths and unchanged BitFrame v1 / legacy protocol bytes.
+- Add `LegacyFixedFiniteGuard` paired Studio scripts for three invalid F64 payloads and recovery.
+
+## v2.3.30 — Packed U8 BitFrame read/write preflight
+
+- For 2–32 U8 schema fields, ensure write capacity once and directly write bytes to the BitFrame buffer.
+- Preflight read bounds once and read bytes directly, preserving field order and bit alignment.
+- Source-level randomized checks covered 10,000 U8 tuples and varying initial bit offsets; this is not a Roblox Studio benchmark.
+
+## v2.3.29 — Avoid repeated BitFrame varuint validation
+
+- `BitFrameWriter:varUInt` now validates and sizes its integer once before calling the existing unchecked internal bit writer.
+- Source-level parity checks covered 6,014 valid cases and eight invalid values, without changing the canonical varuint representation.
 
 ## v2.3.28 — Control-remote rebind and varuint hot-path handling
 
