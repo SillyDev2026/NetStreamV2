@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.11"
+local VERSION = "2.3.12"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -287,6 +287,7 @@ local DEFAULTS = {
 	MaxTableEntries = 8192,
 	MaxDepth = 32,
 	CompressionEnabled = true,
+	CompressionSkipRealtime = true,
 	CompressionMinSavingsBytes = 1,
 	CompressionMinStringBytes = 6,
 	CompressionStringStrategy = "Auto",
@@ -461,6 +462,7 @@ local Stats = {
 	RouteRateLimited = 0,
 	TrafficSnapshots = 0,
 	CompressionAttempts = 0,
+	CompressionRealtimeSkips = 0,
 	CompressionUsed = 0,
 	CompressionRejected = 0,
 	CompressionErrors = 0,
@@ -3405,6 +3407,10 @@ function Internal.routeCompressionEnabled(item)
 	end
 	if route and route.Compression == true then
 		return true
+	end
+	if Config.CompressionSkipRealtime and route and route.Priority == "Realtime" then
+		Stats.CompressionRealtimeSkips += 1
+		return false
 	end
 	return Internal.shouldAttemptCompression(item.args)
 end
@@ -6900,6 +6906,7 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxDepth) == "number" and config.MaxDepth >= 1, "MaxDepth must be >= 1")
 	assert(type(config.CompressionEnabled) == "boolean", "CompressionEnabled must be a boolean")
 	assert(type(config.CompressionMinSavingsBytes) == "number" and config.CompressionMinSavingsBytes >= 0, "CompressionMinSavingsBytes must be >= 0")
+	assert(type(config.CompressionSkipRealtime) == "boolean", "CompressionSkipRealtime must be boolean")
 	assert(type(config.CompressionMinStringBytes) == "number" and config.CompressionMinStringBytes >= 0, "CompressionMinStringBytes must be >= 0")
 	assert(
 		config.CompressionStringStrategy == "Auto"
