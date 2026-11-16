@@ -346,6 +346,8 @@ local DEFAULTS = {
 	HandshakeTimeoutSeconds = 12,
 	HandshakeMaxAttempts = 6,
 	HandshakePingIntervalSeconds = 15,
+	HandshakePendingMaxPackets = 32,
+	HandshakePendingMaxBytes = 131072,
 	TransportLatencyAwareBatching = true,
 	TransportHighRTTThresholdMs = 120,
 	TransportHighRTTBatchWindowSeconds = 0.004,
@@ -359,6 +361,8 @@ local reliableRemote = nil
 local unreliableRemote = nil
 Internal.HandshakeRemote = nil
 Internal.HandshakePeers = {}
+Internal.HandshakeBufferedPackets = {}
+Internal.HandshakeBufferedBytes = 0
 Internal.ClientHandshake = { Status = "idle", Attempts = 0, RTTMs = nil }
 local heartbeatConnection = nil
 local playerRemovingConnection = nil
@@ -550,6 +554,8 @@ local Stats = {
 	HandshakeMismatch = 0,
 	HandshakeTimeouts = 0,
 	HandshakePendingData = 0,
+	HandshakeBufferedPackets = 0,
+	HandshakeReplayedPackets = 0,
 	HandshakePingSent = 0,
 	HandshakePingReplies = 0,
 	TransportLatencyWindowCaps = 0,
@@ -6026,11 +6032,22 @@ local function decodeBatch(player, data, reader)
 	trafficWindowReceivedMessages += count
 end
 
-local function receive(player, data)
+local function receive(player, data, unreliable)
 	if destroyed or not started then return end
 	local isBuffer = typeof(data) == "buffer"
 	local bytes = if isBuffer then buffer.len(data) else 0
-	if Config.HandshakeEnabled and not Internal.handshakeReady(player) then Stats.HandshakePendingData += 1; return end
+	if Config.HandshakeEnabled and not Internal.handshakeReady(player) then
+		Stats.HandshakePendingData += 1
+		if not IS_SERVER and not unreliable and isBuffer and bytes <= Config.MaxIncomingPacketBytes
+			and #Internal.HandshakeBufferedPackets < Config.HandshakePendingMaxPackets
+			and Internal.HandshakeBufferedBytes + bytes <= Config.HandshakePendingMaxBytes then
+			local queued = Internal.HandshakeBufferedPackets
+			queued[#queued + 1] = data
+			Internal.HandshakeBufferedBytes += bytes
+			Stats.HandshakeBufferedPackets += 1
+		end
+		return
+	end
 	if not chargeIncomingEnvelope(player, bytes) then
 		Stats.RateLimitedBatches += 1
 		Stats.ReceivedBatches += 1
@@ -6054,6 +6071,17 @@ local function receive(player, data)
 		Stats.DecodeErrors += 1
 		Stats.RejectedMalformedPackets += 1
 		Internal.debugWarn("Decode rejected:", err)
+	end
+end
+
+function Internal.replayHandshakeBuffered()
+	local queued = Internal.HandshakeBufferedPackets
+	Internal.HandshakeBufferedPackets = {}
+	Internal.HandshakeBufferedBytes = 0
+	for i = 1, #queued do
+		if destroyed then return end
+		Stats.HandshakeReplayedPackets += 1
+		receive(nil, queued[i], false)
 	end
 end
 
@@ -6346,6 +6374,7 @@ function Internal.handleHandshakeClient(opcode, nonce, extra, version, codec, bi
 	state.PingSeq = 0
 	Stats.HandshakeReady += 1
 	Internal.HandshakeRemote:FireServer(3, state.Nonce, extra)
+	Internal.replayHandshakeBuffered()
 	if Internal.flushTargetNow then Internal.flushTargetNow(nil) end
 end
 
@@ -6395,11 +6424,11 @@ local function ensureStarted()
 	started = true
 	if IS_SERVER then
 		receiveConnections[#receiveConnections + 1] = reliableRemote.OnServerEvent:Connect(function(player, data)
-			receive(player, data)
+			receive(player, data, false)
 		end)
 		if unreliableRemote then
 			receiveConnections[#receiveConnections + 1] = unreliableRemote.OnServerEvent:Connect(function(player, data)
-				receive(player, data)
+				receive(player, data, true)
 			end)
 		end
 		playerRemovingConnection = Players.PlayerRemoving:Connect(function(player)
@@ -6413,11 +6442,11 @@ local function ensureStarted()
 		end)
 	else
 		receiveConnections[#receiveConnections + 1] = reliableRemote.OnClientEvent:Connect(function(data)
-			receive(nil, data)
+			receive(nil, data, false)
 		end)
 		if unreliableRemote then
 			receiveConnections[#receiveConnections + 1] = unreliableRemote.OnClientEvent:Connect(function(data)
-				receive(nil, data)
+				receive(nil, data, true)
 			end)
 		end
 	end
@@ -7057,6 +7086,8 @@ function Internal.validateConfig(config)
 	assert(type(config.HandshakeTimeoutSeconds) == "number" and isFiniteNumber(config.HandshakeTimeoutSeconds) and config.HandshakeTimeoutSeconds >= 2 and config.HandshakeTimeoutSeconds <= 60, "HandshakeTimeoutSeconds must be 2..60")
 	assert(type(config.HandshakeMaxAttempts) == "number" and isInteger(config.HandshakeMaxAttempts) and config.HandshakeMaxAttempts >= 1 and config.HandshakeMaxAttempts <= 32, "HandshakeMaxAttempts must be integer 1..32")
 	assert(type(config.HandshakePingIntervalSeconds) == "number" and isFiniteNumber(config.HandshakePingIntervalSeconds) and (config.HandshakePingIntervalSeconds == 0 or (config.HandshakePingIntervalSeconds >= 2 and config.HandshakePingIntervalSeconds <= 300)), "HandshakePingIntervalSeconds must be 0 or 2..300")
+	assert(type(config.HandshakePendingMaxPackets) == "number" and isInteger(config.HandshakePendingMaxPackets) and config.HandshakePendingMaxPackets >= 0 and config.HandshakePendingMaxPackets <= 256, "HandshakePendingMaxPackets must be 0..256")
+	assert(type(config.HandshakePendingMaxBytes) == "number" and isInteger(config.HandshakePendingMaxBytes) and config.HandshakePendingMaxBytes >= 0 and config.HandshakePendingMaxBytes <= 1048576, "HandshakePendingMaxBytes must be 0..1048576")
 	assert(type(config.TransportLatencyAwareBatching) == "boolean", "TransportLatencyAwareBatching must be boolean")
 	assert(type(config.TransportHighRTTThresholdMs) == "number" and isFiniteNumber(config.TransportHighRTTThresholdMs) and config.TransportHighRTTThresholdMs >= 20 and config.TransportHighRTTThresholdMs <= 2000, "TransportHighRTTThresholdMs must be 20..2000")
 	assert(type(config.TransportHighRTTBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportHighRTTBatchWindowSeconds) and config.TransportHighRTTBatchWindowSeconds >= 0 and config.TransportHighRTTBatchWindowSeconds <= 0.1, "TransportHighRTTBatchWindowSeconds must be 0..0.1")
@@ -7983,6 +8014,8 @@ function NetStream.Destroy()
 	table.clear(incomingRates)
 	table.clear(peerStates)
 	table.clear(Internal.HandshakePeers)
+	table.clear(Internal.HandshakeBufferedPackets)
+	Internal.HandshakeBufferedBytes = 0
 	Internal.HandshakeRemote = nil
 	Internal.ClientHandshake = { Status = "destroyed", Attempts = 0, RTTMs = nil }
 	table.clear(messagePool)
