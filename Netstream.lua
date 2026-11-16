@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.21"
+local VERSION = "2.3.22"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -571,6 +571,8 @@ local Stats = {
 	BitFrameReaderPoolHits = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
+	TransportDeferredRestoreCalls = 0,
+	TransportDeferredRestoredMessages = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
 	BitFrameMessagesEncoded = 0,
@@ -4535,7 +4537,9 @@ function Internal.commitBandwidth(target, bytes)
 end
 
 function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPressureDrop)
-	local normal = table.create(#items)
+	Stats.TransportDeferredRestoreCalls += 1
+	local dropOnPressure = unreliable and allowPressureDrop ~= false and Config.BandwidthDropUnreliableOnPressure
+	-- Apply latest-key overwrites in original order, retaining only the newest value.
 	for i = 1, #items do
 		local item = items[i]
 		if item then
@@ -4546,19 +4550,25 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPr
 					Stats.CoalescedLatest += 1
 				end
 				latest[item.latestKey] = item
-			elseif unreliable and allowPressureDrop ~= false and Config.BandwidthDropUnreliableOnPressure then
+			elseif dropOnPressure then
 				local droppedCount = messageLogicalCount(item)
 				releaseMessage(item)
 				Stats.BandwidthDroppedUnreliableMessages += droppedCount
-			else
-				normal[#normal + 1] = item
 			end
 		end
 	end
-	for i = #normal, 1, -1 do
-		queue.head -= 1
-		queue.items[queue.head] = normal[i]
-		queue.logicalCount += messageLogicalCount(normal[i])
+	-- Reverse the surviving FIFO items directly into the queue; no scratch array.
+	if not dropOnPressure then
+		for i = #items, 1, -1 do
+			local item = items[i]
+			if item and item.latestKey == nil then
+				queue.head -= 1
+				queue.items[queue.head] = item
+				local restored = messageLogicalCount(item)
+				queue.logicalCount += restored
+				Stats.TransportDeferredRestoredMessages += restored
+			end
+		end
 	end
 end
 
@@ -7840,6 +7850,8 @@ function NetStream.GetPerformanceStats()
 		ScalarDispatches = stats.ScalarDispatches,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,
+		DeferredRestoreCalls = stats.TransportDeferredRestoreCalls,
+		DeferredRestoredMessages = stats.TransportDeferredRestoredMessages,
 		Telemetry = NetStream.GetLatencyStats(),
 	}
 end
