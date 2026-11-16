@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.13"
+local VERSION = "2.3.14"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -431,6 +431,8 @@ local Stats = {
 	HandshakeRetries = 0,
 	HandshakeTimeouts = 0,
 	HandshakeRejected = 0,
+	HandshakeReplayRejected = 0,
+	HandshakeLateRemoteRecovered = 0,
 	HandshakeTrafficHeld = 0,
 	HandshakeTrafficRejected = 0,
 	SentBytes = 0,
@@ -6122,29 +6124,40 @@ function Internal.hsServer(player, data)
 	local n = buffer.len(data)
 	if n ~= 9 and n ~= 13 then Stats.HandshakeRejected += 1; return end
 	local op = buffer.readu8(data, 0)
+	if (op == 1 and n ~= 9) or (op == 3 and n ~= 13) or (op ~= 1 and op ~= 3) then Stats.HandshakeRejected += 1; return end
 	local nonce = buffer.readu32(data, 5)
 	if nonce == 0 then Stats.HandshakeRejected += 1; return end
 	local state = handshakePeers[player]
 	local now = os.clock()
 	if op == 1 and state and now - (state.lastAt or 0) < 0.05 then Stats.HandshakeRejected += 1; return end
-	if not state then state = {}; handshakePeers[player] = state end
-	if op == 1 then state.lastAt = now end
 	if buffer.readu8(data, 1) ~= Internal.HS_PROTOCOL or buffer.readu16(data, 2) ~= Internal.HS_CODEC
 		or buffer.readu8(data, 4) ~= (if Config.BitFrameEnabled then 1 else 0) then
-		state.state = "incompatible"
 		Stats.HandshakeRejected += 1
-		if op == 1 and n == 9 then pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(5, nonce)) end) end
+		if op == 1 then pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(5, nonce)) end) end
 		return
 	end
-	if op == 1 and n == 9 then
+	if op == 1 then
+		if not state then state = {recentNonces = {}}; handshakePeers[player] = state end
+		state.lastAt = now
 		if state.clientNonce ~= nonce then
+			local history = state.recentNonces
+			if not history then history = {}; state.recentNonces = history end
+			for i = 1, #history do
+				if history[i] == nonce then Stats.HandshakeReplayRejected += 1; return end
+			end
+			if state.clientNonce then
+				if #history >= 8 then table.remove(history, 1) end
+				history[#history + 1] = state.clientNonce
+			end
 			state.clientNonce = nonce
 			state.serverNonce = Internal.HS_RANDOM:NextInteger(1, 2147483647)
 			state.state = "confirm"
 		end
-		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(2, nonce, state.serverNonce)) end)
-		if ok then Stats.HandshakeWelcomes += 1 end
-	elseif op == 3 and n == 13 and state.clientNonce == nonce and state.serverNonce == buffer.readu32(data, 9) then
+		local response = if state.state == "ready" then 4 else 2
+		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(response, nonce, state.serverNonce)) end)
+		if ok and response == 2 then Stats.HandshakeWelcomes += 1 end
+	elseif state and state.clientNonce == nonce and state.serverNonce == buffer.readu32(data, 9)
+		and (state.state == "confirm" or state.state == "ready") then
 		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
 		state.state = "ready"
 		pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(4, nonce, state.serverNonce)) end)
@@ -6171,7 +6184,8 @@ function Internal.hsClient(data)
 	end
 	if buffer.readu8(data, 1) ~= Internal.HS_PROTOCOL or buffer.readu16(data, 2) ~= Internal.HS_CODEC
 		or buffer.readu8(data, 4) ~= (if Config.BitFrameEnabled then 1 else 0) then
-		state.state = "incompatible"; Stats.HandshakeRejected += 1; return
+		if state.state ~= "ready" then state.state = "incompatible" end
+		Stats.HandshakeRejected += 1; return
 	end
 	if op == 2 and n == 13 then
 		local serverNonce = buffer.readu32(data, 9)
@@ -6182,7 +6196,7 @@ function Internal.hsClient(data)
 			state.state = "confirm"
 			Internal.hsSend()
 		elseif state.state == "confirm" and state.serverNonce == serverNonce then
-			Internal.hsSend()
+			if os.clock() >= (state.nextAt or 0) then Internal.hsSend() end
 		end
 	elseif op == 4 and n == 13 and (state.state == "confirm" or state.state == "ready") and state.serverNonce == buffer.readu32(data, 9) then
 		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
@@ -6394,6 +6408,18 @@ local function ensureStarted()
 		end)
 	else
 		if handshakeRemote then receiveConnections[#receiveConnections + 1] = handshakeRemote.OnClientEvent:Connect(Internal.hsClient) end
+		if Config.HandshakeEnabled and not handshakeRemote then
+			task.spawn(function()
+				local folder = ReplicatedStorage:FindFirstChild("__NetStream_" .. Config.Namespace)
+				local found = folder and folder:WaitForChild("H", Config.RemoteWaitTimeout)
+				if found and found:IsA("RemoteEvent") and started and not destroyed and not handshakeRemote then
+					handshakeRemote = found
+					receiveConnections[#receiveConnections + 1] = found.OnClientEvent:Connect(Internal.hsClient)
+					Stats.HandshakeLateRemoteRecovered += 1
+					Internal.hsStart()
+				end
+			end)
+		end
 		receiveConnections[#receiveConnections + 1] = reliableRemote.OnClientEvent:Connect(function(data)
 			receive(nil, data)
 		end)
