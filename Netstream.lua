@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.20"
+local VERSION = "2.3.21"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -543,6 +543,8 @@ local Stats = {
 	FastSchemaHeaderBytesSaved = 0,
 	FixedSchemaFastWrites = 0,
 	FixedSchemaFastReads = 0,
+	BooleanBitPackWrites = 0,
+	BooleanBitPackReads = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -1845,9 +1847,11 @@ function Internal.compileSchema(spec, label)
 	end
 	local fixedBytes = 0
 	local isFixed = true
+	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
+		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		local fieldBytes = Internal.schemaFixedBytes(field)
 		if fieldBytes then
 			fixedBytes += fieldBytes
@@ -1866,6 +1870,7 @@ function Internal.compileSchema(spec, label)
 		signature = table.concat(signatureParts, "|"),
 		fixedBytes = if isFixed then fixedBytes else nil,
 		isFixed = isFixed,
+		bitPackedBooleans = bitPackedBooleans,
 	}
 end
 
@@ -2417,6 +2422,17 @@ end
 
 function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 	local offset = base or 0
+	if schema.bitPackedBooleans then
+		local packed = 0
+		local bitWeight = 1
+		for i = 1, schema.count do
+			if args[offset + i] then packed += bitWeight end
+			bitWeight *= 2
+		end
+		writer:bits(packed, schema.count)
+		Stats.BooleanBitPackWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		local field = schema.fields[i]
 		local value = args[offset + i]
@@ -2432,6 +2448,16 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 	if schema.count == 0 then return EMPTY_ARGS end
 	if schema.count == 1 and schema.fields[1].Kind == SCHEMA_BOOL then
 		return if reader:bits(1) ~= 0 then TRUE_ARGS else FALSE_ARGS
+	end
+	if schema.bitPackedBooleans then
+		local packed = reader:bits(schema.count)
+		local args = acquireArgsCount(schema.count)
+		for i = 1, schema.count do
+			args[i] = packed % 2 ~= 0
+			packed = math.floor(packed / 2)
+		end
+		Stats.BooleanBitPackReads += 1
+		return args
 	end
 	local args = acquireArgsCount(schema.count)
 	for i = 1, schema.count do
@@ -7789,6 +7815,8 @@ function NetStream.GetPerformanceStats()
 		FastSchemaHeaderBytesSaved = stats.FastSchemaHeaderBytesSaved,
 		FixedSchemaFastWrites = stats.FixedSchemaFastWrites,
 		FixedSchemaFastReads = stats.FixedSchemaFastReads,
+		BooleanBitPackWrites = stats.BooleanBitPackWrites,
+		BooleanBitPackReads = stats.BooleanBitPackReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
