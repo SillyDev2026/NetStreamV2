@@ -8,17 +8,20 @@ NetStream.Configure({BandwidthGovernorEnabled = true, BandwidthLimitBytesPerSeco
 local T = NetStream.Types
 local flag = NetStream.Event("__NSBooleanQueue", {Id = 35200, Compression = false, Schema = {T.Bool, T.Bool, T.Bool, T.Bool, T.Bool, T.Bool, T.Bool, T.Bool}})
 local text = NetStream.Event("__NSTextQueue", {Id = 35201, Compression = false})
+local schema32 = table.create(32)
+for i = 1, 32 do schema32[i] = T.Bool end
+local flag32 = NetStream.Event("__NSBoolean32", {Id = 35203, Compression = false, Schema = schema32})
 local ack = NetStream.Event("__NSQueueAck", {Id = 35202, Compression = false})
 local active = {}
 local function stateFor(player)
 	local s = active[player]
-	if not s then s = {Flags = 0, Texts = 0}; active[player] = s end
+	if not s then s = {Flags = 0, Texts = 0, Boundary = false}; active[player] = s end
 	return s
 end
 local function maybeAck(player, s)
-	if s.Flags ~= 96 or s.Texts ~= 80 then return end
+	if s.Flags ~= 96 or s.Texts ~= 80 or not s.Boundary then return end
 	local stat = NetStream.GetStats()
-	assert(stat.BooleanBitPackReads >= 96, "Boolean schema did not use packed read path")
+	assert(stat.BooleanBitPackReads >= 97, "Boolean schema did not use packed read path")
 	assert(stat.DecodeErrors == 0, "Decoder rejected queue test")
 	assert(ack:FireClient(player, stat.BooleanBitPackReads), "Failed to acknowledge")
 end
@@ -27,6 +30,16 @@ flag:Connect(function(player, a, b, c, d, e, f, g, h)
 	local s = stateFor(player)
 	assert(index == s.Flags + 1, "Boolean stream lost FIFO order")
 	s.Flags += 1
+	maybeAck(player, s)
+end)
+flag32:Connect(function(player, ...)
+	assert(select("#", ...) == 32, "32-value schema decoded wrong field count")
+	local values = {...}
+	assert(values[1] and values[32], "Top or bottom boolean bit lost")
+	for i = 2, 31 do assert(values[i] == false, "High-order boolean bit caused corruption") end
+	local s = stateFor(player)
+	assert(not s.Boundary, "Duplicate 32-bit Boolean payload")
+	s.Boundary = true
 	maybeAck(player, s)
 end)
 text:Connect(function(player, index, payload)
