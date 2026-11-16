@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.12"
+local VERSION = "2.3.13"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -322,6 +322,7 @@ local DEFAULTS = {
 	BandwidthDropUnreliableOnPressure = true,
 	BandwidthWarnAtUtilization = 0.85,
 	TransportAdaptiveBatching = true,
+	TransportFastFlushEnabled = true,
 	TransportBatchWindowSeconds = 1 / 60,
 	TransportRealtimeBatchWindowSeconds = 0,
 	TransportEstimatedPacketOverheadBytes = 96,
@@ -511,6 +512,8 @@ local Stats = {
 	BandwidthBatchSplits = 0,
 	BandwidthThrottleEvents = 0,
 	TransportLogicalMessagesQueued = 0,
+	TransportFastFlushScheduled = 0,
+	TransportFastFlushExecuted = 0,
 	TransportBatchHolds = 0,
 	TransportCriticalMessagesQueued = 0,
 	TransportNormalMessagesQueued = 0,
@@ -3249,13 +3252,20 @@ function Internal.messagePriority(message)
 end
 
 function Internal.transportWindow(priority)
-	if not Config.TransportAdaptiveBatching or priority == "Critical" then
-		return 0
-	end
-	if priority == "Realtime" then
-		return Config.TransportRealtimeBatchWindowSeconds
-	end
+	if not Config.TransportAdaptiveBatching or priority == "Critical" then return 0 end
+	if priority == "Realtime" then return Config.TransportRealtimeBatchWindowSeconds end
 	return Config.TransportBatchWindowSeconds
+end
+
+function Internal.scheduleFastFlush(target, bucket, priority)
+	if not Config.TransportFastFlushEnabled or (priority ~= "Realtime" and priority ~= "Critical") or bucket._fastFlushScheduled then return end
+	bucket._fastFlushScheduled = true
+	Stats.TransportFastFlushScheduled += 1
+	task.defer(function()
+		bucket._fastFlushScheduled = false
+		if destroyed or not started or peekTargetBucket(target) ~= bucket or bucketEmpty(bucket) then return end
+		if Internal.runFastFlush then Internal.runFastFlush(target, bucket) end
+	end)
 end
 
 local function enqueue(target, unreliable, message, latestKey)
@@ -3269,8 +3279,8 @@ local function enqueue(target, unreliable, message, latestKey)
 	local notBeforeKey = if unreliable then "unreliableNotBefore" else "reliableNotBefore"
 	if wasEmpty then
 		bucket[notBeforeKey] = now + Internal.transportWindow(priority)
-	elseif priority == "Critical" then
-		bucket[notBeforeKey] = now
+	elseif priority == "Critical" or priority == "Realtime" then
+		bucket[notBeforeKey] = math.min(bucket[notBeforeKey], now + Internal.transportWindow(priority))
 	end
 	Stats.TransportLogicalMessagesQueued += 1
 	if priority == "Critical" then
@@ -3287,6 +3297,7 @@ local function enqueue(target, unreliable, message, latestKey)
 			Stats.CoalescedLatest += 1
 		end
 		latest[latestKey] = message
+		Internal.scheduleFastFlush(target, bucket, priority)
 		return true
 	end
 	local maxQueue = if unreliable then Config.MaxUnreliableQueue else Config.MaxReliableQueue
@@ -3312,6 +3323,7 @@ local function enqueue(target, unreliable, message, latestKey)
 		end
 	end
 	queuePush(queue, message)
+	Internal.scheduleFastFlush(target, bucket, priority)
 	return true
 end
 
@@ -3373,8 +3385,8 @@ function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
 	local notBeforeKey = if unreliable then "unreliableNotBefore" else "reliableNotBefore"
 	if wasEmpty then
 		bucket[notBeforeKey] = os.clock() + Internal.transportWindow(priority)
-	elseif priority == "Critical" then
-		bucket[notBeforeKey] = os.clock()
+	elseif priority == "Critical" or priority == "Realtime" then
+		bucket[notBeforeKey] = math.min(bucket[notBeforeKey], os.clock() + Internal.transportWindow(priority))
 	end
 	Stats.TransportLogicalMessagesQueued += 1
 	if priority == "Critical" then
@@ -3384,6 +3396,7 @@ function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
 	else
 		Stats.TransportNormalMessagesQueued += 1
 	end
+	Internal.scheduleFastFlush(target, bucket, priority)
 	return true
 end
 function Internal.routeForItem(item)
@@ -4715,6 +4728,13 @@ local function flushBucket(target, bucket, deadline, force)
 	if queueCount(bucket.unreliable) <= 0 and next(bucket.latestUnreliable) == nil then
 		bucket.unreliableNotBefore = 0
 	end
+end
+
+function Internal.runFastFlush(target, bucket)
+	if destroyed or not started or peekTargetBucket(target) ~= bucket or bucketEmpty(bucket) then return end
+	Stats.TransportFastFlushExecuted += 1
+	flushBucket(target, bucket, os.clock() + Config.ImmediateFlushBudgetSeconds, false)
+	if IS_SERVER and target ~= ALL and bucketEmpty(bucket) then targetBuckets[target] = nil end
 end
 
 function Internal.nextRequestId()
@@ -6077,9 +6097,9 @@ function Internal.hsServer(player, data)
 	if nonce == 0 then Stats.HandshakeRejected += 1; return end
 	local state = handshakePeers[player]
 	local now = os.clock()
-	if state and now - (state.lastAt or 0) < 0.05 then Stats.HandshakeRejected += 1; return end
+	if op == 1 and state and now - (state.lastAt or 0) < 0.05 then Stats.HandshakeRejected += 1; return end
 	if not state then state = {}; handshakePeers[player] = state end
-	state.lastAt = now
+	if op == 1 then state.lastAt = now end
 	if buffer.readu8(data, 1) ~= Internal.HS_PROTOCOL or buffer.readu16(data, 2) ~= Internal.HS_CODEC
 		or buffer.readu8(data, 4) ~= (if Config.BitFrameEnabled then 1 else 0) then
 		state.state = "incompatible"
@@ -6954,6 +6974,7 @@ function Internal.validateConfig(config)
 	assert(type(config.BandwidthDropUnreliableOnPressure) == "boolean", "BandwidthDropUnreliableOnPressure must be a boolean")
 	assert(type(config.BandwidthWarnAtUtilization) == "number" and isFiniteNumber(config.BandwidthWarnAtUtilization) and config.BandwidthWarnAtUtilization > 0 and config.BandwidthWarnAtUtilization <= 1, "BandwidthWarnAtUtilization must be > 0 and <= 1")
 	assert(type(config.TransportAdaptiveBatching) == "boolean", "TransportAdaptiveBatching must be a boolean")
+	assert(type(config.TransportFastFlushEnabled) == "boolean", "TransportFastFlushEnabled must be boolean")
 	assert(type(config.TransportBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportBatchWindowSeconds) and config.TransportBatchWindowSeconds >= 0 and config.TransportBatchWindowSeconds <= 1, "TransportBatchWindowSeconds must be from 0 to 1")
 	assert(type(config.TransportRealtimeBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportRealtimeBatchWindowSeconds) and config.TransportRealtimeBatchWindowSeconds >= 0 and config.TransportRealtimeBatchWindowSeconds <= 1, "TransportRealtimeBatchWindowSeconds must be from 0 to 1")
 	assert(type(config.TransportEstimatedPacketOverheadBytes) == "number" and isFiniteNumber(config.TransportEstimatedPacketOverheadBytes) and config.TransportEstimatedPacketOverheadBytes >= 0, "TransportEstimatedPacketOverheadBytes must be >= 0")
@@ -7023,6 +7044,10 @@ function NetStream.RetryHandshake()
 	NetStream.Start()
 	Internal.hsStart()
 	return NetStream.GetHandshakeStatus()
+end
+
+function NetStream.IsHandshakeReady(player)
+	return NetStream.GetHandshakeStatus(player).Ready
 end
 
 function NetStream.IsStarted()
