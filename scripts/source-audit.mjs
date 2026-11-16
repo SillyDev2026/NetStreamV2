@@ -9,7 +9,7 @@ const source = read("Netstream.lua");
 const version = "2.3.31";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
-assert(!/\\blocal\\s+[A-Za-z_]\\w*\\s*=\\s*\\n\\s*\\S/.test(source), "Local assignments must stay on one line");
+assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
 assert(source.includes("Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)"), "Single-validation varuint path missing");
 assert(source.includes("writer:ensureBits(schema.count * 8)"), "U8 writer preflight missing");
 assert(source.includes("reader:needBits(schema.count * 8)"), "U8 reader preflight missing");
@@ -18,15 +18,15 @@ const fixedStart = source.indexOf("local function readFixedSchemaArgs(reader, sc
 const fixedEnd = source.indexOf("local function readSchemaArgs(reader, schema)", fixedStart);
 assert(fixedStart >= 0 && fixedEnd > fixedStart, "Legacy fixed decoder not found");
 const fixed = source.slice(fixedStart, fixedEnd);
-assert.equal((fixed.match(/readFiniteFixedF64\\(data, /g) || []).length, 10, "Legacy composite finite guards missing");
+assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Legacy composite finite guards missing");
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
 assert(tests.length >= 33, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
-    assert(!/\\blocal\\s+[A-Za-z_]\\w*\\s*=\\s*\\n\\s*\\S/.test(content), `Broken local assignment in ${name}`);
-    const guards = [...content.matchAll(/NetStream\\.GetVersion\\(\\) == "([^"]+)"/g)];
+    assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
+    const guards = [...content.matchAll(/NetStream\.GetVersion\(\) == "([^"]+)"/g)];
     for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
 }
 
