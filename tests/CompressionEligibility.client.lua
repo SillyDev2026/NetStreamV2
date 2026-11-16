@@ -3,7 +3,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
 assert(NetStream.GetVersion() == "2.3.25")
-NetStream.Configure({CompressionEnabled = true, CompressionMinStringBytes = 6})
+NetStream.Configure({CompressionEnabled = true, CompressionCpuBudgetEnabled = false, CompressionMinStringBytes = 6})
 local Payload = NetStream.Event("__NSEligibility", {Id = 35311})
 local Ack = NetStream.Event("__NSEligibilityAck", {Id = 35312, Compression = false})
 local done = false
