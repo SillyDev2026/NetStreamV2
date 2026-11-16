@@ -207,7 +207,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.26"
+local VERSION = "2.3.27"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1677,12 +1677,16 @@ function Internal.BitFrameReader:i32()
 end
 function Internal.BitFrameReader:f32()
 	buffer.writeu32(Internal.BitFrameScratch, 0, self:bits(32))
-	return buffer.readf32(Internal.BitFrameScratch, 0)
+	local value = buffer.readf32(Internal.BitFrameScratch, 0)
+	if not math.isfinite(value) then error("NetStream BitFrame rejected non-finite F32", 0) end
+	return value
 end
 function Internal.BitFrameReader:f64()
 	buffer.writeu32(Internal.BitFrameScratch, 0, self:bits(32))
 	buffer.writeu32(Internal.BitFrameScratch, 4, self:bits(32))
-	return buffer.readf64(Internal.BitFrameScratch, 0)
+	local value = buffer.readf64(Internal.BitFrameScratch, 0)
+	if not math.isfinite(value) then error("NetStream BitFrame rejected non-finite F64", 0) end
+	return value
 end
 function Internal.BitFrameReader:rawString(length)
 	if length > Config.MaxStringBytes then error("NetStream BitFrame string exceeds MaxStringBytes", 0) end

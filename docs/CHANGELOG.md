@@ -1,6 +1,13 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.26**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.3.27**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.27 — Non-finite BitFrame float rejection
+
+- Reject NaN and positive/negative infinity at the shared BitFrame F32/F64 reader boundary, including composite schema fields such as `UDim.Scale`.
+- Prevent malformed float values reaching gameplay callbacks and preserve the decoder error path and later valid traffic.
+- Add a server/client malformed-bitframe regression pair, including valid traffic recovery.
+- No packet field widths, protocol IDs, or compression formats changed.
 
 ## v2.3.26 — Adaptive uint encoding input safety
 
