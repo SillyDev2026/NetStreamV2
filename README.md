@@ -3123,3 +3123,23 @@ These three source revisions preserve the event/state/RPC API, wire protocol, le
 The source contains `tests/VarUIntRegression.server.lua`, `tests/BundledCompressionRegression.server.lua` and `tests/MaintenanceRegression.server.lua`. In Roblox Studio, place each regression Script beside the `Netstream` ModuleScript and its `Compression` child, then run them. Run a server plus at least two clients and check event/state/RPC roundtrips, reliable/unreliable events, malformed packets, rate limits and shutdown behavior. The maintenance scripts run without live network events.
 
 **Verification scope:** GitHub source checks and branch re-reads are available here; no Roblox Studio execution, strict Luau analyzer run, end-to-end multiplayer traffic test, or p95/p99 performance profile is claimed.
+
+
+## CPU and packet-sizing maintenance: v2.3.5 → v2.3.7
+
+These three incremental patches build on the still-open v2.3.2–v2.3.4 maintenance branch. They keep NetStream's API, BitFrame version 1, hybrid/native payload encoding, Compression codec 230, and existing rate/queue limits.
+
+| Source patch | Change | Expected benefit and limitation |
+|---|---|---|
+| **2.3.5** | Unaligned strings: write 4 bytes per 32-bit `buffer.writebits` operation for strings ≥16 bytes, and read 4-byte chunks into a buffer for strings ≥64 bytes. Byte-aligned paths remain unchanged. | Fewer bit builtin calls and temporary 1-byte strings for longer payloads. Larger reads use a temporary buffer, so GC should be measured. |
+| **2.3.6** | Reuse `BitFrameWriter` instances through a bounded pool, clear the packet's route string dictionary on reuse, and zero trailing padding bits before cloning the packet. Clear the writer pool on Destroy. | Avoids a new writer buffer on repeated sends; pooled buffers remain capped by `MaxPooledWriterBytes`. |
+| **2.3.7** | Track recent packet bytes per logical message for each queue and estimate the next batch cap. On an oversize batch, trim proportionally to the configured packet byte budget instead of always halving. | May avoid repeated encoding/splits, while preserving the existing split fallback. Heterogeneous payloads can make estimates noisy; gains are workload-dependent. |
+
+### Roblox Studio performance and correctness check
+
+1. Put `Netstream` ModuleScript into `ReplicatedStorage` with `Compression` ModuleScript as its child. Make sure client and server have **the same code/version**.
+2. Place `tests/BitFramePerfProbe.server.lua` as a ServerScript in `ServerScriptService`, and `tests/BitFramePerfProbe.client.lua` as a LocalScript in `StarterPlayerScripts`. Run Play with server/client. The probe sends **300 reliable events** alternating 17-, 31-, 80- and 260-byte strings, validates every sequence and payload, and prints local packet, byte, duration and pool/prediction/split counters.
+3. Run with **v2.3.4 baseline** using matched options, device, server/player count and load. For the baseline, change the probe's `GetVersion() == "2.3.7"` assertions to `"2.3.4"`, and omit new counters where unavailable. Repeat the same run at least 5 times in both versions; measure median/p95 CPU and real network use with Roblox MicroProfiler and network stats.
+4. Repeat with schema-driven messages, unreliable events, 0- and 1-byte payloads, 32-bit boundary-crossing strings, mixed sizes, 2+ clients, rate limiting, malformed packets, and Disconnect/Destroy. The probe is an integration test, not a load-test or conclusive Jolt comparison.
+
+**Verification note:** code/branch checks have been performed; Luau analyzer, Studio gameplay execution, p95/p99 CPU profiles and measured Jolt comparisons have not been run here. The v2.3.7 packet prediction is a heuristic and does not guarantee fewer packets on every workload.

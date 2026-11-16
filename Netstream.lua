@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.4"
+local VERSION = "2.3.7"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -530,6 +530,8 @@ local Stats = {
 	HybridCompressionThresholdSkips = 0,
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
+	BitFrameWriterPoolHits = 0,
+	TransportPredictedBatchCaps = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
 	BitFrameMessagesEncoded = 0,
@@ -1368,6 +1370,7 @@ end
 Internal.BitFrameScratch = buffer.create(8)
 Internal.BitFrameWriter = {}
 Internal.BitFrameWriter.__index = Internal.BitFrameWriter
+Internal.BitFrameWriterPool = {}
 
 function Internal.BitFrameWriter.new(initialBytes)
 	local capacity = math.max(16, initialBytes or 256)
@@ -1378,6 +1381,26 @@ function Internal.BitFrameWriter.new(initialBytes)
 		strings = {},
 		stringToIndex = {},
 	}, Internal.BitFrameWriter)
+end
+
+function Internal.acquireBitFrameWriter()
+	local pool = Internal.BitFrameWriterPool
+	local writer = pool[#pool]
+	if writer then
+		pool[#pool] = nil
+		writer.bitPosition = 0
+		table.clear(writer.strings)
+		table.clear(writer.stringToIndex)
+		Stats.BitFrameWriterPoolHits += 1
+		return writer
+	end
+	return Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+end
+
+function Internal.releaseBitFrameWriter(writer)
+	if writer.capacity <= Config.MaxPooledWriterBytes and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
+		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
+	end
 end
 
 function Internal.BitFrameWriter:ensureBits(additionalBits)
@@ -1430,9 +1453,19 @@ function Internal.BitFrameWriter:rawString(value)
 		self.bitPosition = bitPosition + length * 8
 		return
 	end
-	for i = 1, length do
-		buffer.writebits(self.buffer, bitPosition, 8, string.byte(value, i))
+	local index = 1
+	if length >= 16 then
+		while index + 3 <= length do
+			local b0, b1, b2, b3 = string.byte(value, index, index + 3)
+			buffer.writebits(self.buffer, bitPosition, 32, b0 + b1 * 256 + b2 * 65536 + b3 * 16777216)
+			bitPosition += 32
+			index += 4
+		end
+	end
+	while index <= length do
+		buffer.writebits(self.buffer, bitPosition, 8, string.byte(value, index))
 		bitPosition += 8
+		index += 1
 	end
 	self.bitPosition = bitPosition
 end
@@ -1468,6 +1501,8 @@ function Internal.BitFrameWriter:varInt(value)
 	self:varUInt(if value >= 0 then value * 2 else -value * 2 - 1)
 end
 function Internal.BitFrameWriter:finish()
+	local paddingBits = (8 - self.bitPosition % 8) % 8
+	if paddingBits > 0 then buffer.writebits(self.buffer, self.bitPosition, paddingBits, 0) end
 	return Internal.cloneBits(self.buffer, self.bitPosition)
 end
 
@@ -1527,6 +1562,22 @@ function Internal.BitFrameReader:rawString(length)
 		local value = buffer.readstring(self.buffer, bitPosition / 8, length)
 		self.bitPosition = bitPosition + length * 8
 		return value
+	end
+	if length >= 64 then
+		local output = buffer.create(length)
+		local offset = 0
+		while offset + 4 <= length do
+			buffer.writeu32(output, offset, buffer.readbits(self.buffer, bitPosition, 32))
+			bitPosition += 32
+			offset += 4
+		end
+		while offset < length do
+			buffer.writeu8(output, offset, buffer.readbits(self.buffer, bitPosition, 8))
+			bitPosition += 8
+			offset += 1
+		end
+		self.bitPosition = bitPosition
+		return buffer.tostring(output)
 	end
 	local chars = table.create(length)
 	for i = 1, length do
@@ -2850,7 +2901,7 @@ local function messageLogicalCount(item)
 end
 
 function Internal.newQueue()
-	return { items = {}, head = 1, tail = 0, logicalCount = 0 }
+	return { items = {}, head = 1, tail = 0, logicalCount = 0, estimatedBytesPerMessage = nil }
 end
 
 local function queueCount(queue)
@@ -4148,11 +4199,12 @@ function Internal.bitFrameWriteOne(writer, item)
 end
 
 function Internal.encodeBitFrame(items)
-	local writer = Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+	local writer = Internal.acquireBitFrameWriter()
 	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
 	writer:bits(0, 1) -- end-of-frame marker; remaining physical tail bits stay zero
 	local usefulBits = writer.bitPosition
 	local out = writer:finish()
+	Internal.releaseBitFrameWriter(writer)
 	local physicalBits = buffer.len(out) * 8
 	Internal._lastEncodedUsefulBits = usefulBits
 	Internal._lastEncodedCodec = "BitFrame"
@@ -4479,7 +4531,8 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	local ok, data = pcall(encodeBatch, items)
 	while ok and Config.BandwidthGovernorEnabled and #items > 1 and buffer.len(data) > Config.BandwidthMaxPacketBytes do
 		local originalCount = #items
-		local keepCount = math.max(1, math.floor(originalCount / 2))
+		local idealCount = math.floor(originalCount * Config.BandwidthMaxPacketBytes / buffer.len(data))
+		local keepCount = math.max(1, math.min(originalCount - 1, idealCount))
 		local deferred = acquireBatch(originalCount - keepCount)
 		for i = keepCount + 1, originalCount do
 			deferred[#deferred + 1] = items[i]
@@ -4489,6 +4542,14 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
 		ok, data = pcall(encodeBatch, items)
+	end
+	if ok and Config.BandwidthGovernorEnabled then
+		local logical = batchLogicalCount(items)
+		if logical > 0 then
+			local observed = buffer.len(data) / logical
+			local previous = queue.estimatedBytesPerMessage
+			queue.estimatedBytesPerMessage = if previous then previous * 0.3 + observed * 0.7 else observed
+		end
 	end
 	return ok, data
 end
@@ -4537,7 +4598,16 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 			Stats.BandwidthDeferredFlushes += 1
 			break
 		end
-		local items = collectBatch(queue, latest, Config.MaxBatchMessages)
+		local messageLimit = Config.MaxBatchMessages
+		local average = queue.estimatedBytesPerMessage
+		if Config.BandwidthGovernorEnabled and average and average > 0 then
+			local predictedLimit = math.max(1, math.floor(Config.BandwidthMaxPacketBytes / average))
+			if predictedLimit < messageLimit then
+				messageLimit = predictedLimit
+				Stats.TransportPredictedBatchCaps += 1
+			end
+		end
+		local items = collectBatch(queue, latest, messageLimit)
 		if #items == 0 then
 			releaseBatch(items)
 			break
@@ -7619,6 +7689,7 @@ function NetStream.Destroy()
 	dispatchCount = 0
 	dispatchHead = 1
 
+	table.clear(Internal.BitFrameWriterPool)
 	Internal.releaseBucket(clientBucket)
 	Internal.releaseBucket(broadcastBucket)
 	for _, bucket in pairs(targetBuckets) do
