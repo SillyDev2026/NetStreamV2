@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.10"
+local VERSION = "2.3.11"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -338,6 +338,10 @@ local DEFAULTS = {
 	BitFrameEnabled = true,
 	BitFrameMaxBytes = 2 * 1024 * 1024,
 	BitFrameTinyScalarEnabled = true,
+	HandshakeEnabled = true,
+	HandshakeRetrySeconds = 1,
+	HandshakeTimeoutSeconds = 12,
+	HandshakeMaxAttempts = 6,
 	Debug = false,
 }
 
@@ -346,6 +350,9 @@ local started = false
 local destroyed = false
 local reliableRemote = nil
 local unreliableRemote = nil
+Internal.HandshakeRemote = nil
+Internal.HandshakePeers = {}
+Internal.ClientHandshake = { Status = "idle", Attempts = 0, RTTMs = nil }
 local heartbeatConnection = nil
 local playerRemovingConnection = nil
 local receiveConnections = {}
@@ -529,6 +536,13 @@ local Stats = {
 	HybridBitStreamBytesSaved = 0,
 	HybridCompressionThresholdSkips = 0,
 	HybridCompressionThresholdAttempts = 0,
+	HandshakeStarts = 0,
+	HandshakeRetries = 0,
+	HandshakeReady = 0,
+	HandshakeRejected = 0,
+	HandshakeMismatch = 0,
+	HandshakeTimeouts = 0,
+	HandshakePendingData = 0,
 	BitFramePacketsEncoded = 0,
 	BitFrameWriterPoolHits = 0,
 	TransportPredictedBatchCaps = 0,
@@ -4660,6 +4674,7 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 end
 
 local function flushBucket(target, bucket, deadline, force)
+	if not Internal.handshakeReady(target) then return end
 	local now = os.clock()
 	local reliableCount = math.max(0, queueLogicalCount(bucket.reliable)) + Internal.mapCount(bucket.latestReliable)
 	local reliablePending = reliableCount > 0
@@ -5980,6 +5995,7 @@ local function receive(player, data)
 	if destroyed or not started then return end
 	local isBuffer = typeof(data) == "buffer"
 	local bytes = if isBuffer then buffer.len(data) else 0
+	if Config.HandshakeEnabled and not Internal.handshakeReady(player) then Stats.HandshakePendingData += 1; return end
 	if not chargeIncomingEnvelope(player, bytes) then
 		Stats.RateLimitedBatches += 1
 		Stats.ReceivedBatches += 1
@@ -6078,6 +6094,22 @@ function Internal.ensureRemotes()
 			unreliableRemote = nil
 		end
 	end
+	if Config.HandshakeEnabled then
+		if IS_SERVER then
+			local remote = folder:FindFirstChild("H")
+			if remote and not remote:IsA("RemoteEvent") then remote:Destroy(); remote = nil end
+			if not remote then
+				remote = Instance.new("RemoteEvent")
+				remote.Name = "H"
+				remote.Parent = folder
+			end
+			Internal.HandshakeRemote = remote
+		else
+			local remote = folder:WaitForChild("H", Config.RemoteWaitTimeout)
+			assert(remote and remote:IsA("RemoteEvent"), "NetStream handshake remote H missing; update both client and server")
+			Internal.HandshakeRemote = remote
+		end
+	end
 end
 
 local function updateTrafficSnapshot()
@@ -6170,6 +6202,118 @@ local function flushAll()
 	end
 end
 
+
+-- The H RemoteEvent is a reliable control plane; it is not an authentication layer.
+-- Message fields: opcode, client nonce, server challenge / version, codec and BitFrame flag.
+function Internal.handshakeReady(target)
+	if not Config.HandshakeEnabled then return true end
+	if IS_SERVER then
+		if target == ALL then return true end -- broadcast remains best-effort for unready peers
+		local state = Internal.HandshakePeers[target]
+		return state ~= nil and state.Status == "ready"
+	end
+	return Internal.ClientHandshake.Status == "ready"
+end
+
+function Internal.sendHandshakeHello(retry)
+	if not Config.HandshakeEnabled or IS_SERVER or destroyed or not started then return end
+	local state = Internal.ClientHandshake
+	if state.Status == "ready" or state.Status == "rejected" or state.Status == "timeout" then return end
+	local now = os.clock()
+	if state.Attempts >= Config.HandshakeMaxAttempts or now - state.StartedAt >= Config.HandshakeTimeoutSeconds then
+		state.Status = "timeout"
+		Stats.HandshakeTimeouts += 1
+		return
+	end
+	state.Attempts += 1
+	state.LastSentAt = now
+	state.NextRetryAt = now + Config.HandshakeRetrySeconds
+	Stats.HandshakeStarts += if retry then 0 else 1
+	Stats.HandshakeRetries += if retry then 1 else 0
+	Internal.HandshakeRemote:FireServer(1, state.Nonce, VERSION, Internal.CompressionCore.CodecVersion, Config.BitFrameEnabled)
+end
+
+function Internal.handleHandshakeServer(player, opcode, nonce, extra, version, codec, bitFrame)
+	if destroyed or not started or not Config.HandshakeEnabled or player.Parent ~= Players then return end
+	local now = os.clock()
+	local state = Internal.HandshakePeers[player]
+	if not state then state = { Status = "pending", LastHelloAt = 0 }; Internal.HandshakePeers[player] = state end
+	if opcode == 1 then
+		if type(nonce) ~= "number" or nonce % 1 ~= 0 or nonce < 1 or nonce > 2147483647 then return end
+		if now - state.LastHelloAt < 0.2 then return end
+		state.LastHelloAt = now
+		if state.Status == "ready" then return end
+		if type(extra) ~= "string" or #extra > 24 or type(version) ~= "number" or type(codec) ~= "boolean" then return end
+		if extra ~= VERSION or version ~= Internal.CompressionCore.CodecVersion or codec ~= Config.BitFrameEnabled then
+			state.Status = "rejected"
+			Stats.HandshakeMismatch += 1
+			Stats.HandshakeRejected += 1
+			Internal.HandshakeRemote:FireClient(player, 4, nonce, "NetStream version or codec mismatch")
+			return
+		end
+		state.Status = "welcome"
+		state.Nonce = nonce
+		state.Challenge = math.random(1, 2147483647)
+		state.SentAt = now
+		Internal.HandshakeRemote:FireClient(player, 2, nonce, state.Challenge, VERSION, Internal.CompressionCore.CodecVersion, Config.BitFrameEnabled)
+	elseif opcode == 3 then
+		if state.Status ~= "welcome" or nonce ~= state.Nonce or extra ~= state.Challenge then return end
+		state.Status = "ready"
+		state.HandshakeElapsedMs = (now - state.SentAt) * 1000
+		Stats.HandshakeReady += 1
+		if Internal.flushTargetNow then Internal.flushTargetNow(player) end
+	end
+end
+
+function Internal.handleHandshakeClient(opcode, nonce, extra, version, codec, bitFrame)
+	if destroyed or not started or not Config.HandshakeEnabled then return end
+	local state = Internal.ClientHandshake
+	if nonce ~= state.Nonce or state.Status ~= "pending" then return end
+	if opcode == 4 then
+		state.Status = "rejected"
+		state.Reason = if type(extra) == "string" then string.sub(extra, 1, 80) else "Rejected"
+		Stats.HandshakeRejected += 1
+		return
+	end
+	if opcode ~= 2 or type(extra) ~= "number" or extra % 1 ~= 0 or extra < 1 or extra > 2147483647 then return end
+	if version ~= VERSION or codec ~= Internal.CompressionCore.CodecVersion or bitFrame ~= Config.BitFrameEnabled then
+		state.Status = "rejected"
+		state.Reason = "Server version or codec mismatch"
+		Stats.HandshakeMismatch += 1
+		Stats.HandshakeRejected += 1
+		return
+	end
+	state.Status = "ready"
+	state.RTTMs = math.max(0, (os.clock() - state.LastSentAt) * 1000)
+	Stats.HandshakeReady += 1
+	Internal.HandshakeRemote:FireServer(3, state.Nonce, extra)
+	if Internal.flushTargetNow then Internal.flushTargetNow(nil) end
+end
+
+function Internal.tickHandshake()
+	if IS_SERVER or destroyed or not started or not Config.HandshakeEnabled then return end
+	local state = Internal.ClientHandshake
+	if state.Status == "pending" and os.clock() >= state.NextRetryAt then Internal.sendHandshakeHello(true) end
+end
+
+function Internal.startHandshake()
+	if not Config.HandshakeEnabled then return end
+	if IS_SERVER then
+		receiveConnections[#receiveConnections + 1] = Internal.HandshakeRemote.OnServerEvent:Connect(Internal.handleHandshakeServer)
+	else
+		receiveConnections[#receiveConnections + 1] = Internal.HandshakeRemote.OnClientEvent:Connect(Internal.handleHandshakeClient)
+		local state = Internal.ClientHandshake
+		state.Status = "pending"
+		state.Attempts = 0
+		state.Nonce = math.random(1, 2147483647)
+		state.StartedAt = os.clock()
+		state.NextRetryAt = 0
+		state.Reason = nil
+		state.RTTMs = nil
+		Internal.sendHandshakeHello(false)
+	end
+end
+
 local function ensureStarted()
 	if started then
 		return
@@ -6192,6 +6336,7 @@ local function ensureStarted()
 			incomingRates[player] = nil
 			Internal.bandwidthStates[player] = nil
 			peerStates[player] = nil
+			Internal.HandshakePeers[player] = nil
 			Internal.failPendingForPlayer(player, "Player left before NetStream call completed")
 		end)
 	else
@@ -6204,8 +6349,10 @@ local function ensureStarted()
 			end)
 		end
 	end
+	Internal.startHandshake()
 	local interval = 1 / math.max(1, Config.FlushRate)
 	heartbeatConnection = RunService.Heartbeat:Connect(function(dt)
+		Internal.tickHandshake()
 		runDispatch()
 		updateTrafficSnapshot()
 		accumulator += dt
@@ -6830,6 +6977,10 @@ function Internal.validateConfig(config)
 	assert(type(config.BitFrameEnabled) == "boolean", "BitFrameEnabled must be boolean")
 	assert(type(config.BitFrameMaxBytes) == "number" and isInteger(config.BitFrameMaxBytes) and config.BitFrameMaxBytes >= 16 and config.BitFrameMaxBytes <= config.MaxOutgoingBatchBytes, "BitFrameMaxBytes invalid")
 	assert(type(config.BitFrameTinyScalarEnabled) == "boolean", "BitFrameTinyScalarEnabled must be boolean")
+	assert(type(config.HandshakeEnabled) == "boolean", "HandshakeEnabled must be boolean")
+	assert(type(config.HandshakeRetrySeconds) == "number" and isFiniteNumber(config.HandshakeRetrySeconds) and config.HandshakeRetrySeconds >= 0.2 and config.HandshakeRetrySeconds <= 10, "HandshakeRetrySeconds must be 0.2..10")
+	assert(type(config.HandshakeTimeoutSeconds) == "number" and isFiniteNumber(config.HandshakeTimeoutSeconds) and config.HandshakeTimeoutSeconds >= 2 and config.HandshakeTimeoutSeconds <= 60, "HandshakeTimeoutSeconds must be 2..60")
+	assert(type(config.HandshakeMaxAttempts) == "number" and isInteger(config.HandshakeMaxAttempts) and config.HandshakeMaxAttempts >= 1 and config.HandshakeMaxAttempts <= 32, "HandshakeMaxAttempts must be integer 1..32")
 	assert(type(config.Debug) == "boolean", "Debug must be a boolean")
 end
 
@@ -7209,6 +7360,22 @@ end
 
 function NetStream.GetVersion()
 	return VERSION
+end
+
+function NetStream.GetHandshakeStatus(player)
+	if not Config.HandshakeEnabled then return { Status = "disabled" } end
+	if IS_SERVER then
+		assert(player and player:IsA("Player"), "GetHandshakeStatus(player) requires a Player on the server")
+		local state = Internal.HandshakePeers[player]
+		return { Status = if state then state.Status else "pending", HandshakeElapsedMs = if state then state.HandshakeElapsedMs else nil }
+	end
+	local state = Internal.ClientHandshake
+	return { Status = state.Status, RTTMs = state.RTTMs, Attempts = state.Attempts, Reason = state.Reason }
+end
+
+function NetStream.IsPeerReady(player)
+	if IS_SERVER and player ~= ALL then assert(player and player:IsA("Player"), "IsPeerReady(player) requires a Player on the server") end
+	return Internal.handshakeReady(player)
 end
 
 function NetStream.GetState(player)
@@ -7730,6 +7897,9 @@ function NetStream.Destroy()
 	activeTargetTail = 0
 	table.clear(incomingRates)
 	table.clear(peerStates)
+	table.clear(Internal.HandshakePeers)
+	Internal.HandshakeRemote = nil
+	Internal.ClientHandshake = { Status = "destroyed", Attempts = 0, RTTMs = nil }
 	table.clear(messagePool)
 	table.clear(argsPool)
 	table.clear(writerPool)
