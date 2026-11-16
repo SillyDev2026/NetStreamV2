@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.4"
+local VERSION = "2.3.5"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1430,9 +1430,19 @@ function Internal.BitFrameWriter:rawString(value)
 		self.bitPosition = bitPosition + length * 8
 		return
 	end
-	for i = 1, length do
-		buffer.writebits(self.buffer, bitPosition, 8, string.byte(value, i))
+	local index = 1
+	if length >= 16 then
+		while index + 3 <= length do
+			local b0, b1, b2, b3 = string.byte(value, index, index + 3)
+			buffer.writebits(self.buffer, bitPosition, 32, b0 + b1 * 256 + b2 * 65536 + b3 * 16777216)
+			bitPosition += 32
+			index += 4
+		end
+	end
+	while index <= length do
+		buffer.writebits(self.buffer, bitPosition, 8, string.byte(value, index))
 		bitPosition += 8
+		index += 1
 	end
 	self.bitPosition = bitPosition
 end
@@ -1527,6 +1537,22 @@ function Internal.BitFrameReader:rawString(length)
 		local value = buffer.readstring(self.buffer, bitPosition / 8, length)
 		self.bitPosition = bitPosition + length * 8
 		return value
+	end
+	if length >= 64 then
+		local output = buffer.create(length)
+		local offset = 0
+		while offset + 4 <= length do
+			buffer.writeu32(output, offset, buffer.readbits(self.buffer, bitPosition, 32))
+			bitPosition += 32
+			offset += 4
+		end
+		while offset < length do
+			buffer.writeu8(output, offset, buffer.readbits(self.buffer, bitPosition, 8))
+			bitPosition += 8
+			offset += 1
+		end
+		self.bitPosition = bitPosition
+		return buffer.tostring(output)
 	end
 	local chars = table.create(length)
 	for i = 1, length do
