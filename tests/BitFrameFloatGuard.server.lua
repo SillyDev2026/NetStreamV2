@@ -2,7 +2,7 @@
 -- ServerScriptService Script; pair with BitFrameFloatGuard.client.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.31")
+assert(NetStream.GetVersion() == "2.3.34")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local F32 = NetStream.Event("__NSFloatGuard32", {Id = 35401, Schema = {T.F32}, Compression = false})
@@ -16,4 +16,4 @@ Good:Connect(function(player, value)
     assert(NetStream.GetStats().DecodeErrors >= 2, "Two malformed float frames were not rejected")
     assert(Ack:FireClient(player, value), "Could not send float guard acknowledgement")
 end)
-print("NetStream v2.3.31 non-finite BitFrame guard server ready")
+print("NetStream v2.3.34 non-finite BitFrame guard server ready")
