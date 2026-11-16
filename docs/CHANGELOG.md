@@ -1,6 +1,26 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.31**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.3.34**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.34 — Unaligned binary string decoding and pool trim
+
+- Decode unaligned schema strings of 16–63 bytes into a binary buffer instead of allocating a character table and per-character strings.
+- Add `NetStream.TrimPools()` for explicit release of idle pool storage, without altering queued messages or active objects.
+- Add `AllWriterPoolsBytes` and `ScratchWriterPooledBytes` memory diagnostics.
+- Add a dedicated paired Studio regression for U8 packed runs, unaligned strings and trimming. Live Studio results remain pending.
+
+## v2.3.33 — Smaller binary writer pools
+
+- Initialize BitFrame writers to 128 bytes by default, rather than 1024 bytes, expanding on demand.
+- Limit idle BitFrame writer retention to 4096 bytes by default, preserving the existing global writer cap for legacy paths.
+- Expose binary writer pool capacity and configuration in memory diagnostics.
+
+## v2.3.32 — Packed run memory allocation correction
+
+- Stop allocating space for `MaxBatchMessages` whenever a single packed message is created; start with only the fields needed for one message.
+- Skip re-pooling packed arrays used for more than `MaxPooledPackedValues` values (default 64), preventing large transient runs from permanently retaining oversized arrays.
+- Add `PackedValuePoolOversizeDrops` and validate `MaxPooledPackedValues`.
+- Preserve the existing BitFrame v1 format and Compression v2.3.5 codec.
 
 ## v2.3.31 — Legacy fixed-schema composite float validation
 

@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v2.3.31. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v2.3.34. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
-## Latest completed three-patch cycle (source-level)
+## Latest memory/binary optimization cycle (source-level)
+
+| Release | Change | Status |
+|---|---|---|
+| 2.3.32 | Size packed-run tables to actual fields and bound retained arrays | Committed; Studio memory tests pending |
+| 2.3.33 | Start BitFrame writers at 128 B and cap retained writers at 4 KiB | Committed; Studio CPU+memory tests pending |
+| 2.3.34 | Buffer-based unaligned string decode and optional idle pool trim | Committed; Studio tests pending |
+
+## Previous completed three-patch cycle (source-level)
 
 | Release | Change | Status |
 |---|---|---|

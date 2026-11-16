@@ -6,13 +6,20 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "2.3.31";
+const version = "2.3.34";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
 assert(source.includes("Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)"), "Single-validation varuint path missing");
 assert(source.includes("writer:ensureBits(schema.count * 8)"), "U8 writer preflight missing");
 assert(source.includes("reader:needBits(schema.count * 8)"), "U8 reader preflight missing");
+assert(source.includes("local values = acquirePackedValues(math.max(8, valueCount))"), "Packed runs must not reserve an entire maximum batch");
+assert(source.includes("MaxPooledPackedValues = 64,"), "Bounded retained packed-value limit missing");
+assert(source.includes("BitFrameInitialWriterBytes = 128,"), "BitFrame initial writer size missing");
+assert(source.includes("BitFrameRetainWriterMaxBytes = 4096,"), "Binary writer retention cap missing");
+assert(source.includes("function NetStream.TrimPools()"), "Idle memory trim API missing");
+assert(source.includes("if length >= 16 then"), "Unaligned binary string buffer decoder missing");
+assert(source.includes("PackedValuePoolOversizeDrops"), "Oversized packed pool diagnostics missing");
 
 const fixedStart = source.indexOf("local function readFixedSchemaArgs(reader, schema)");
 const fixedEnd = source.indexOf("local function readSchemaArgs(reader, schema)", fixedStart);
@@ -22,7 +29,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 33, "Regression suite unexpectedly missing");
+assert(tests.length >= 35, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);

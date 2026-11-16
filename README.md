@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v2.3.31-2563eb)
+![Release](https://img.shields.io/badge/release-v2.3.34-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v2.3.31.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.3.31 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v2.3.34.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.3.34 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -223,6 +223,23 @@ By default, `HandshakeEnabled = true` but `HandshakeRequireReady = false`, so st
 
 The server has global/per-player incoming packet, byte, message and RPC limits, plus optional per-route `MaxPerSecond` and `Burst` rate limiting. Your gameplay handler must validate permissions and economic decisions.
 
+## Memory optimization (v2.3.32–v2.3.34)
+
+The BitFrame writer starts at **128 bytes** instead of 1024 bytes and grows on demand; `BitFrameRetainWriterMaxBytes` defaults to **4096 bytes** for idle reuse. Packed schema runs initially allocate for the current fields, not an entire possible 256-message batch. Packed arrays containing more than `MaxPooledPackedValues` (default **64 values**) are released instead of cached.
+
+Unaligned binary schema strings with length **16–63 bytes** now decode through buffers rather than building a per-character Lua table. The **BitFrame wire format and codec ID are unchanged**.
+
+After transient load, `NetStream.TrimPools()` releases **idle** buffers and tables, leaving queued/in-flight traffic intact. Do not call it every frame, since rebuilding pools adds allocation overhead.
+
+```luau
+local before = NetStream.GetMemoryDiagnostics()
+print(before.BitFrameWriterPooledBytes, before.PackedValuePoolOversizeDrops, before.LuaHeapKB)
+local released = NetStream.TrimPools()
+print(released.BitFrameWriterPooledBytes, NetStream.GetMemoryDiagnostics().BitFrameWriterPooledBytes)
+```
+
+`LuaHeapKB` includes all Luau allocations in the VM, not just NetStream. Memory reductions require identical Roblox Studio workloads and GC-aware baselines. The new `MemoryBinaryRegression` pair covers packed-U8 runs, unaligned string round-trips, and pool trimming.
+
 ## Performance monitoring
 
 Telemetry is **opt-in** to limit measurement overhead:
@@ -264,6 +281,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **2.3.34** | Replace unaligned string decoding tables with binary buffers and add `TrimPools()` |
+| **2.3.33** | Right-size default BitFrame writers to 128 bytes and cap retained writer buffers |
+| **2.3.32** | Avoid preallocating maximum packed-run tables and discard oversized pooled arrays |
 | **2.3.31** | Reject malformed F64 components in legacy composite fixed-schema decoding |
 | **2.3.30** | One bounds check per U8 BitFrame schema run |
 | **2.3.29** | Single-validation BitFrame varuint writer |
