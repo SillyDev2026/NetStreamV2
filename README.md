@@ -1,6 +1,6 @@
 # NetStreamV2 (NetStream)
 
-![Version](https://img.shields.io/badge/version-v2.3.19-4c8bf5)
+![Version](https://img.shields.io/badge/version-v2.3.22-4c8bf5)
 ![Language](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Platform](https://img.shields.io/badge/platform-Roblox-111111)
 ![Compression](https://img.shields.io/badge/compression-v2.3.5-2ea44f)
@@ -8,7 +8,7 @@
 
 **NetStreamV2** is a Roblox networking module implemented as `Netstream.lua`, supporting reliable and unreliable remote traffic, schema and dynamic binary encoding, RPC, replicated state, coalescing, adaptive batching, route compression, handshake negotiation, queue/rate protections, and performance diagnostics.
 
-> **Current version on `main`:** NetStream **v2.3.19**
+> **Current version on `main`:** NetStream **v2.3.22**
 >
 > **Bundled child dependency:** Compression **v2.3.5**, codec **230**. NetStream accepts the **2.3.x** module API; use the bundled child to keep both peers consistent.
 >
@@ -20,7 +20,7 @@ For a verified local version check:
 
 ```luau
 local NetStream = require(game:GetService("ReplicatedStorage"):WaitForChild("Netstream"))
-print(NetStream.GetVersion()) -- 2.3.19
+print(NetStream.GetVersion()) -- 2.3.22
 print(NetStream.CompressionVersion) -- 2.3.5
 print(NetStream.RequiredCompressionVersion) -- "2.3.x"
 print(NetStream.BitFrameVersion) -- 1
@@ -30,10 +30,28 @@ See [Installation](#installation), [Compression Integration](#compression-v235-i
 
 ---
 
+
+## Latest patches: v2.3.20–v2.3.22
+
+| Release | Changes | Compatibility |
+|---|---|---|
+| **v2.3.20 — BitFrame hardening** | Always releases a pooled BitFrame writer after both successful and failed encoding, rejects physical tail padding longer than seven bits, and tracks `BitFrameEncodeFailures` / `BitFrameTailPaddingRejected`. | Valid BitFrame v1 output remains byte-for-byte equivalent; extra zero padding that was previously tolerated is now rejected |
+| **v2.3.21 — Boolean schema fast path** | Schema compilation marks runs of **2–32 Bool fields** for a packed writer/read path: one bit-write/read call per tuple instead of one call per field. Adds `BooleanBitPackWrites` and `BooleanBitPackReads`. | Exact same bit order/field values; other schemas follow the original path |
+| **v2.3.22 — Allocation-free deferred queue restores** | Requeues deferred reliable FIFO messages in reverse order directly into the original queue, without building a new `table.create` scratch array. Preserves newest-key coalescing and configured unreliable pressure drops. Adds `TransportDeferredRestoreCalls` and `TransportDeferredRestoredMessages`. | No API, message semantics, or wire-format changes |
+
+**Validation:** Structural source checks and new regression scripts are available. The Roblox Studio tests have been **authored but not executed**, so CPU, allocations, p95/p99, or throughput improvements are **not measured**.
+
+The dedicated paired Studio regressions are:
+
+- `tests/BitFrameHardening.server.lua` / `tests/BitFrameHardening.client.lua`: assert that malformed extra padding is rejected, an oversized encoder fails safely, and the next valid packet arrives.
+- `tests/BooleanQueueRegression.server.lua` / `tests/BooleanQueueRegression.client.lua`: send 96 Boolean-schema messages plus 80 text messages, check value integrity and FIFO order across packet splitting, and inspect packed-boolean/deferred-restore statistics.
+
+Keep `Netstream.lua` with the bundled `Compression.lua` (v2.3.5, codec 230) as its child ModuleScript in `ReplicatedStorage`. Set up **one test pair per Play session** to avoid configuration clashes. Compare p50/p95/p99, CPU and garbage collection against **v2.3.19** using equivalent devices, payloads, player counts and Studio network conditions.
+
 ## Table of Contents
 
 - [What NetStream Does](#what-netstream-does)
-- [Current v2.3.19 Highlights](#current-v2319-highlights)
+- [Current v2.3.19 Highlights](#current-v2322-highlights)
 - [How the Pipeline Works](#how-the-pipeline-works)
 - [Installation](#installation)
 - [Recommended Project Structure](#recommended-project-structure)
@@ -134,9 +152,9 @@ The receiver performs the reverse operation and dispatches the decoded arguments
 
 ---
 
-# Current v2.3.19 Highlights
+# Current v2.3.22 Highlights
 
-NetStream v2.3.19 is a major step beyond the older v1.0.0 README.
+NetStream v2.3.22 is a major step beyond the older v1.0.0 README.
 
 ## Bundled compression highlights
 
@@ -276,7 +294,7 @@ It measures whether compression helps and rejects compression when it would wast
 
 ## Required hierarchy
 
-NetStream v2.3.19 loads a child ModuleScript named `Compression`. This repository bundles Compression v2.3.5 (codec 230); the loader accepts compatible 2.3.x implementations with the required packet API.
+NetStream v2.3.22 loads a child ModuleScript named `Compression`. This repository bundles Compression v2.3.5 (codec 230); the loader accepts compatible 2.3.x implementations with the required packet API.
 
 ```text
 ReplicatedStorage
@@ -287,7 +305,7 @@ ReplicatedStorage
 Where:
 
 ```text
-NetStream     = NetStream v2.3.19 ModuleScript
+NetStream     = NetStream v2.3.22 ModuleScript
 Compression   = Compression v2.3.5 ModuleScript
 ```
 
@@ -2999,7 +3017,7 @@ New code should generally prefer typed Route objects.
 
 # Protocol and Compatibility
 
-NetStream v2.3.19 uses **BitFrame v1** by default; `GetCompatibilityInfo()` additionally reports the legacy byte-header constants used when `BitFrameEnabled=false`:
+NetStream v2.3.22 uses **BitFrame v1** by default; `GetCompatibilityInfo()` additionally reports the legacy byte-header constants used when `BitFrameEnabled=false`:
 
 ```text
 Normal batch protocol         0x30
@@ -3022,7 +3040,7 @@ print(info.ProtocolCompactTable)
 
 For production, run the same NetStream version on server and client.
 
-NetStream v2.3.19 accepts the compatible **Compression 2.3.x API** and this repository bundles **v2.3.5 (codec 230)**. For actual interoperability, keep server and client builds consistent.
+NetStream v2.3.22 accepts the compatible **Compression 2.3.x API** and this repository bundles **v2.3.5 (codec 230)**. For actual interoperability, keep server and client builds consistent.
 
 Do not mix the v2.3.19 encoder with an older peer or a different Compression wire format.
 
@@ -3034,7 +3052,7 @@ When upgrading an older NetStream build to v2.3.19:
 
 1. Replace the old NetStream ModuleScript.
 2. Add `Compression v2.3.5` as a child named exactly `Compression`.
-3. Confirm both server and client require the same NetStream v2.3.19 module.
+3. Confirm both server and client require the same NetStream v2.3.22 module.
 4. Start NetStream early on the server.
 5. Keep shared route definitions identical.
 6. Re-test all schema routes.
@@ -3055,7 +3073,7 @@ When upgrading an older NetStream build to v2.3.19:
 
 # Design Summary
 
-A healthy NetStream v2.3.19 setup usually follows this rule:
+A healthy NetStream v2.3.22 setup usually follows this rule:
 
 ```text
 Small frequent scalar
@@ -3100,7 +3118,7 @@ The goal is to minimize **total useful networking work**:
 - measurable compression;
 - measurable transport behavior.
 
-That is where NetStream v2.3.19 is designed to be most useful.
+That is where NetStream v2.3.22 is designed to be most useful.
 
 
 ## Release History
@@ -3327,3 +3345,15 @@ Run **only** `tests/PerformanceP95.server.lua` in ServerScriptService and `tests
 For comparable results: run several trials at fixed player counts, payloads, device load, regions and network conditions; record warmup vs steady-state separately; report min/mean/p50/p95/p99 and actual sample counts; repeat with telemetry disabled to measure observer overhead. Re-run existing maintenance/handshake/BitFrame/CPU tests against 2.3.19.
 
 **Validation:** Source-level checks validate the implementation and preserved wire/version invariants. Roblox Studio compilation, multiplayer runtime, MicroProfiler, measured memory allocation, and benchmarks against Jolt/Blink/Zap have **not** been performed by this change. No throughput or ping improvement is claimed.
+
+
+## Latest patch details: v2.3.20 → v2.3.22
+
+v2.3.20, v2.3.21 and v2.3.22 are incremental maintenance and hot-path optimization releases on top of v2.3.19. Valid BitFrame packets remain v1, the bundled Compression module remains v2.3.5 (codec 230), and handshake, route IDs, RPC and event APIs remain compatible.
+
+- `BitFrameEncodeFailures` counts encoder attempts that failed **before** network send. Failed writers return to the pool and their partial payloads are never transmitted.
+- `BitFrameTailPaddingRejected` counts packets where remaining bits after the end marker are nonzero or exceed seven physical padding bits.
+- `BooleanBitPackWrites` and `BooleanBitPackReads` count fast-path Boolean tuples (not logical messages). Only schemas of 2–32 Boolean fields qualify.
+- `TransportDeferredRestoreCalls` counts times splitting or deferring a batch invokes queue restoration; `TransportDeferredRestoredMessages` counts logical FIFO messages actually restored, excluding coalesced latest slots and unreliable traffic dropped by pressure policy.
+
+Use `NetStream.GetStats()` for the counters and `NetStream.GetLatencyStats()` for sampled latency percentiles with telemetry enabled. Their values are local to each process. The estimated benefits must be established in Roblox Studio; GitHub source-only checks are not runtime benchmarks.
