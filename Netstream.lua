@@ -6140,6 +6140,11 @@ function Internal.hsServer(player, data)
 		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
 		state.state = "ready"
 		pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(4, nonce, state.serverNonce)) end)
+		if Config.HandshakeRequireReady and Config.TransportFastFlushEnabled then
+			local bucket = targetBuckets[player]
+			if bucket then Internal.scheduleFastFlush(player, bucket, "Critical") end
+			if broadcastBucket then Internal.scheduleFastFlush(ALL, broadcastBucket, "Critical") end
+		end
 	else
 		Stats.HandshakeRejected += 1
 	end
@@ -6174,6 +6179,7 @@ function Internal.hsClient(data)
 	elseif op == 4 and n == 13 and (state.state == "confirm" or state.state == "ready") and state.serverNonce == buffer.readu32(data, 9) then
 		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
 		state.state = "ready"
+		if Config.HandshakeRequireReady and Config.TransportFastFlushEnabled and clientBucket then Internal.scheduleFastFlush(nil, clientBucket, "Critical") end
 	else
 		Stats.HandshakeRejected += 1
 	end
