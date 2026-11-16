@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.12"
+local VERSION = "2.3.13"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -345,6 +345,10 @@ local DEFAULTS = {
 	HandshakeRetrySeconds = 1,
 	HandshakeTimeoutSeconds = 12,
 	HandshakeMaxAttempts = 6,
+	HandshakePingIntervalSeconds = 15,
+	TransportLatencyAwareBatching = true,
+	TransportHighRTTThresholdMs = 120,
+	TransportHighRTTBatchWindowSeconds = 0.004,
 	Debug = false,
 }
 
@@ -546,6 +550,9 @@ local Stats = {
 	HandshakeMismatch = 0,
 	HandshakeTimeouts = 0,
 	HandshakePendingData = 0,
+	HandshakePingSent = 0,
+	HandshakePingReplies = 0,
+	TransportLatencyWindowCaps = 0,
 	CompressionBackoffSkips = 0,
 	CompressionBackoffActivations = 0,
 	BitFramePacketsEncoded = 0,
@@ -3253,13 +3260,17 @@ function Internal.messagePriority(message)
 end
 
 function Internal.transportWindow(priority)
-	if not Config.TransportAdaptiveBatching or priority == "Critical" then
-		return 0
+	if not Config.TransportAdaptiveBatching or priority == "Critical" then return 0 end
+	if priority == "Realtime" then return Config.TransportRealtimeBatchWindowSeconds end
+	local window = Config.TransportBatchWindowSeconds
+	if not IS_SERVER and Config.TransportLatencyAwareBatching then
+		local rtt = Internal.ClientHandshake.SmoothedRTTMs
+		if rtt and rtt >= Config.TransportHighRTTThresholdMs and window > Config.TransportHighRTTBatchWindowSeconds then
+			Stats.TransportLatencyWindowCaps += 1
+			return Config.TransportHighRTTBatchWindowSeconds
+		end
 	end
-	if priority == "Realtime" then
-		return Config.TransportRealtimeBatchWindowSeconds
-	end
-	return Config.TransportBatchWindowSeconds
+	return window
 end
 
 local function enqueue(target, unreliable, message, latestKey)
@@ -6252,8 +6263,7 @@ function Internal.sendHandshakeHello(retry)
 	state.Attempts += 1
 	state.LastSentAt = now
 	state.NextRetryAt = now + Config.HandshakeRetrySeconds
-	Stats.HandshakeStarts += if retry then 0 else 1
-	Stats.HandshakeRetries += if retry then 1 else 0
+	if retry then Stats.HandshakeRetries += 1 else Stats.HandshakeStarts += 1 end
 	Internal.HandshakeRemote:FireServer(1, state.Nonce, VERSION, Internal.CompressionCore.CodecVersion, Config.BitFrameEnabled)
 end
 
@@ -6286,13 +6296,33 @@ function Internal.handleHandshakeServer(player, opcode, nonce, extra, version, c
 		state.HandshakeElapsedMs = (now - state.SentAt) * 1000
 		Stats.HandshakeReady += 1
 		if Internal.flushTargetNow then Internal.flushTargetNow(player) end
+	elseif opcode == 5 then
+		if state.Status ~= "ready" or nonce ~= state.Nonce or type(extra) ~= "number" or extra % 1 ~= 0 or extra < 1 or extra > 2147483647 then return end
+		if state.LastPingAt and now - state.LastPingAt < 1 then return end
+		state.LastPingAt = now
+		Internal.HandshakeRemote:FireClient(player, 6, nonce, extra)
 	end
 end
 
 function Internal.handleHandshakeClient(opcode, nonce, extra, version, codec, bitFrame)
 	if destroyed or not started or not Config.HandshakeEnabled then return end
 	local state = Internal.ClientHandshake
-	if nonce ~= state.Nonce or state.Status ~= "pending" then return end
+	if nonce ~= state.Nonce then return end
+	if opcode == 6 then
+		if state.Status ~= "ready" or extra ~= state.PingSeq or not state.PingSentAt then return end
+		local sample = math.max(0, (os.clock() - state.PingSentAt) * 1000)
+		state.PingSentAt = nil
+		if sample <= 60000 then
+			local previous = state.SmoothedRTTMs or sample
+			state.JitterMs = (state.JitterMs or 0) * 0.75 + math.abs(sample - previous) * 0.25
+			state.SmoothedRTTMs = previous * 0.8 + sample * 0.2
+			state.RTTMs = sample
+			state.RTTSamples = (state.RTTSamples or 0) + 1
+			Stats.HandshakePingReplies += 1
+		end
+		return
+	end
+	if state.Status ~= "pending" then return end
 	if opcode == 4 then
 		state.Status = "rejected"
 		state.Reason = if type(extra) == "string" then string.sub(extra, 1, 80) else "Rejected"
@@ -6309,6 +6339,11 @@ function Internal.handleHandshakeClient(opcode, nonce, extra, version, codec, bi
 	end
 	state.Status = "ready"
 	state.RTTMs = math.max(0, (os.clock() - state.LastSentAt) * 1000)
+	state.SmoothedRTTMs = state.RTTMs
+	state.JitterMs = 0
+	state.RTTSamples = 1
+	state.NextPingAt = os.clock() + Config.HandshakePingIntervalSeconds
+	state.PingSeq = 0
 	Stats.HandshakeReady += 1
 	Internal.HandshakeRemote:FireServer(3, state.Nonce, extra)
 	if Internal.flushTargetNow then Internal.flushTargetNow(nil) end
@@ -6317,7 +6352,16 @@ end
 function Internal.tickHandshake()
 	if IS_SERVER or destroyed or not started or not Config.HandshakeEnabled then return end
 	local state = Internal.ClientHandshake
-	if state.Status == "pending" and os.clock() >= state.NextRetryAt then Internal.sendHandshakeHello(true) end
+	local now = os.clock()
+	if state.Status == "pending" and now >= state.NextRetryAt then
+		Internal.sendHandshakeHello(true)
+	elseif state.Status == "ready" and Config.HandshakePingIntervalSeconds > 0 and now >= state.NextPingAt then
+		state.PingSeq = (state.PingSeq % 2147483647) + 1
+		state.PingSentAt = now
+		state.NextPingAt = now + Config.HandshakePingIntervalSeconds
+		Stats.HandshakePingSent += 1
+		Internal.HandshakeRemote:FireServer(5, state.Nonce, state.PingSeq)
+	end
 end
 
 function Internal.startHandshake()
@@ -6334,6 +6378,10 @@ function Internal.startHandshake()
 		state.NextRetryAt = 0
 		state.Reason = nil
 		state.RTTMs = nil
+		state.SmoothedRTTMs = nil
+		state.JitterMs = nil
+		state.RTTSamples = 0
+		state.PingSentAt = nil
 		Internal.sendHandshakeHello(false)
 	end
 end
@@ -7008,6 +7056,10 @@ function Internal.validateConfig(config)
 	assert(type(config.HandshakeRetrySeconds) == "number" and isFiniteNumber(config.HandshakeRetrySeconds) and config.HandshakeRetrySeconds >= 0.2 and config.HandshakeRetrySeconds <= 10, "HandshakeRetrySeconds must be 0.2..10")
 	assert(type(config.HandshakeTimeoutSeconds) == "number" and isFiniteNumber(config.HandshakeTimeoutSeconds) and config.HandshakeTimeoutSeconds >= 2 and config.HandshakeTimeoutSeconds <= 60, "HandshakeTimeoutSeconds must be 2..60")
 	assert(type(config.HandshakeMaxAttempts) == "number" and isInteger(config.HandshakeMaxAttempts) and config.HandshakeMaxAttempts >= 1 and config.HandshakeMaxAttempts <= 32, "HandshakeMaxAttempts must be integer 1..32")
+	assert(type(config.HandshakePingIntervalSeconds) == "number" and isFiniteNumber(config.HandshakePingIntervalSeconds) and (config.HandshakePingIntervalSeconds == 0 or (config.HandshakePingIntervalSeconds >= 2 and config.HandshakePingIntervalSeconds <= 300)), "HandshakePingIntervalSeconds must be 0 or 2..300")
+	assert(type(config.TransportLatencyAwareBatching) == "boolean", "TransportLatencyAwareBatching must be boolean")
+	assert(type(config.TransportHighRTTThresholdMs) == "number" and isFiniteNumber(config.TransportHighRTTThresholdMs) and config.TransportHighRTTThresholdMs >= 20 and config.TransportHighRTTThresholdMs <= 2000, "TransportHighRTTThresholdMs must be 20..2000")
+	assert(type(config.TransportHighRTTBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportHighRTTBatchWindowSeconds) and config.TransportHighRTTBatchWindowSeconds >= 0 and config.TransportHighRTTBatchWindowSeconds <= 0.1, "TransportHighRTTBatchWindowSeconds must be 0..0.1")
 	assert(type(config.Debug) == "boolean", "Debug must be a boolean")
 end
 
@@ -7397,7 +7449,13 @@ function NetStream.GetHandshakeStatus(player)
 		return { Status = if state then state.Status else "pending", HandshakeElapsedMs = if state then state.HandshakeElapsedMs else nil }
 	end
 	local state = Internal.ClientHandshake
-	return { Status = state.Status, RTTMs = state.RTTMs, Attempts = state.Attempts, Reason = state.Reason }
+	return { Status = state.Status, RTTMs = state.RTTMs, SmoothedRTTMs = state.SmoothedRTTMs, JitterMs = state.JitterMs, Samples = state.RTTSamples, Attempts = state.Attempts, Reason = state.Reason }
+end
+
+function NetStream.GetPingStats()
+	if IS_SERVER then return { Available = false, Reason = "RTT probing runs on the client" } end
+	local state = Internal.ClientHandshake
+	return { Available = state.Status == "ready" and state.RTTMs ~= nil, RTTMs = state.RTTMs, SmoothedRTTMs = state.SmoothedRTTMs, JitterMs = state.JitterMs, Samples = state.RTTSamples or 0 }
 end
 
 function NetStream.IsPeerReady(player)
