@@ -270,8 +270,9 @@ type ReaderObject = {
 }
 
 function Reader.new(source: buffer, offset: number?, length: number?): ReaderObject
-	local start = offset or 0
-	local count = length or (buffer.len(source) - start)
+	local start = if offset == nil then 0 else offset
+	local count = if length == nil then buffer.len(source) - start else length
+	if start < 0 or count < 0 or start % 1 ~= 0 or count % 1 ~= 0 or start + count > buffer.len(source) then error("COMPRESSION_INVALID_READER_RANGE") end
 	return setmetatable({
 		Buffer = source,
 		Position = start,
@@ -280,7 +281,7 @@ function Reader.new(source: buffer, offset: number?, length: number?): ReaderObj
 end
 
 function Reader:Need(count: number)
-	if self.Position + count > self.Length then
+	if count < 0 or count % 1 ~= 0 or self.Position + count > self.Length then
 		error("COMPRESSION_TRUNCATED")
 	end
 end
@@ -746,7 +747,7 @@ end
 
 -- Returns the codec version exposed to dependent modules.
 function Compression.Version(): string
-	return "2.3.3"
+	return "2.3.4"
 end
 
 -- Returns the stable table codec mode identifier.
@@ -842,12 +843,16 @@ function Compression.DecompressTable(source: buffer, options: Options?): any
 	if dictionaryCount > (normalized.MaxNodes :: number) then
 		error("MAX_NODES_EXCEEDED")
 	end
+	if dictionaryCount > (normalized.DictionaryMaxEntries :: number) then
+		error("MAX_DICTIONARY_ENTRIES_EXCEEDED")
+	end
 	if dictionaryCount > reader:Remaining() then
 		error("INVALID_DICTIONARY_COUNT")
 	end
 	if flags == 0 and dictionaryCount ~= 0 then
 		error("UNEXPECTED_STRING_DICTIONARY")
 	end
+	if flags == 1 and dictionaryCount == 0 then error("EMPTY_STRING_DICTIONARY") end
 	local dictionary = table.create(dictionaryCount)
 	local dictionaryLookup = {}
 	for index = 1, dictionaryCount do
