@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.24"
+local VERSION = "2.3.25"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -478,6 +478,8 @@ local Stats = {
 	CompressionAttempts = 0,
 	CompressionRealtimeSkips = 0,
 	CompressionCpuBudgetSkips = 0,
+	CompressionEligibilityShortScans = 0,
+	CompressionEligibilityShortSkips = 0,
 	CompressionCpuSamples = 0,
 	CompressionCpuSampleSeconds = 0,
 	CompressionUsed = 0,
@@ -954,28 +956,39 @@ function Internal.canCompressionRoundTrip(value, seen)
 end
 
 function Internal.shouldAttemptCompression(args)
-	-- Cheap structural eligibility first: most one-value scalar messages cannot
-	-- benefit from the bundled dictionary/table codec. Defer recursive validation
-	-- until a table or repeated string makes compression plausible.
-	if args.n == 1 and typeof(args[1]) ~= "table" then return false end
-	local repeatedStrings = nil
-	local candidate = false
-	for i = 1, args.n do
+	local count = args.n
+	if count == 0 then return false end
+	if count == 1 and typeof(args[1]) ~= "table" then return false end
+	-- Short argument lists are common. Scan their earlier strings directly
+	-- instead of creating a temporary dictionary for every ineligible packet.
+	if count <= 8 then
+		Stats.CompressionEligibilityShortScans += 1
+		for i = 1, count do
+			local value = args[i]
+			local kind = typeof(value)
+			if kind == "table" then return Internal.canCompressionRoundTrip(args, {}) end
+			if kind == "string" and #value >= Config.CompressionMinStringBytes then
+				for j = 1, i - 1 do
+					if args[j] == value then return Internal.canCompressionRoundTrip(args, {}) end
+				end
+			end
+		end
+		Stats.CompressionEligibilityShortSkips += 1
+		return false
+	end
+	-- Avoid O(n^2) work for large argument lists.
+	local seenStrings = nil
+	for i = 1, count do
 		local value = args[i]
 		local kind = typeof(value)
-		if kind == "table" then
-			candidate = true
-			break
-		elseif kind == "string" and #value >= Config.CompressionMinStringBytes then
-			repeatedStrings = repeatedStrings or {}
-			if repeatedStrings[value] then
-				candidate = true
-				break
-			end
-			repeatedStrings[value] = true
+		if kind == "table" then return Internal.canCompressionRoundTrip(args, {}) end
+		if kind == "string" and #value >= Config.CompressionMinStringBytes then
+			seenStrings = seenStrings or {}
+			if seenStrings[value] then return Internal.canCompressionRoundTrip(args, {}) end
+			seenStrings[value] = true
 		end
 	end
-	return candidate and Internal.canCompressionRoundTrip(args, {})
+	return false
 end
 
 local SCHEMA_BOOL = 1
@@ -7989,6 +8002,8 @@ function NetStream.GetCompressionStats()
 		CpuBudgetEnabled = Config.CompressionCpuBudgetEnabled,
 		MaxEstimatedEncodeSeconds = Config.CompressionMaxEstimatedSeconds,
 		CpuBudgetSkips = stats.CompressionCpuBudgetSkips,
+		EligibilityShortScans = stats.CompressionEligibilityShortScans,
+		EligibilityShortSkips = stats.CompressionEligibilityShortSkips,
 		CpuSamples = stats.CompressionCpuSamples,
 		CpuSampleSeconds = stats.CompressionCpuSampleSeconds,
 		AcceptancePercent = if stats.CompressionAttempts > 0 then stats.CompressionUsed / stats.CompressionAttempts * 100 else 0,
