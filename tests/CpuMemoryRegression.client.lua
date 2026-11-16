@@ -2,7 +2,7 @@
 -- Dedicated StarterPlayerScripts LocalScript paired with CpuMemoryRegression.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.16", "Expected NetStream 2.3.16")
+assert(NetStream.GetVersion() == "2.3.19", "Expected NetStream 2.3.19")
 NetStream.Configure({BandwidthGovernorEnabled = false, MaxBatchMessages = 8, TransportAdaptiveBatching = false, TransportFastFlushEnabled = false, CompressionCpuBudgetEnabled = true, CompressionMaxEstimatedSeconds = 0.0001, CompressionCpuProbeEvery = 2})
 local data = NetStream.Event("__NSCpuMemoryProbe", {Id = 34210, Priority = "Normal"})
 local ack = NetStream.Event("__NSCpuMemoryAck", {Id = 34211, Compression = false})
@@ -13,7 +13,7 @@ ack:Connect(function(count, readerHits, readerCreated)
 	assert(stats.CompressionCpuSamples > 0, "No compression CPU samples observed")
 	assert(stats.CompressionCpuSampleSeconds >= 0, "Invalid compression timing")
 	completed = true
-	print(string.format("NetStream 2.3.16 CPU/memory PASS: %d messages, %d reader hits, %d readers created, %d CPU samples, %d CPU-budget skips", count, readerHits, readerCreated, stats.CompressionCpuSamples, stats.CompressionCpuBudgetSkips))
+	print(string.format("NetStream 2.3.19 CPU/memory PASS: %d messages, %d reader hits, %d readers created, %d CPU samples, %d CPU-budget skips", count, readerHits, readerCreated, stats.CompressionCpuSamples, stats.CompressionCpuBudgetSkips))
 end)
 local pattern = string.rep("repeated-dictionary-text", 12)
 for i = 1, 120 do
