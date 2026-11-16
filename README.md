@@ -3108,3 +3108,18 @@ The goal is to minimize **total useful networking work**:
 - measurable transport behavior.
 
 That is where NetStream v1.3.0 is designed to be most useful.
+
+
+## NetStreamV2 maintenance patch sequence (v2.3.2 → v2.3.4)
+
+These three source revisions preserve the event/state/RPC API, wire protocol, legacy fallback and Compression codec ID 230. They are source maintenance patches, not a proven performance improvement.
+
+- **v2.3.2:** Corrects the BitFrame incoming buffer length condition so both `MaxBufferBytes` and `MaxIncomingPacketBytes` apply; rejects invalid hybrid payload lengths and truncated bit ranges **before allocating the destination buffer**.
+- **v2.3.3:** Hardened bundled Compression (implementation version 2.3.4) to reject invalid reader slices, decoder dictionary counts above `DictionaryMaxEntries`, and dictionary flag/count mismatches. On-wire Compression codec ID remains 230.
+- **v2.3.4:** Applies `MaxIncomingPacketBytes` to the standalone `NetStream.Codec.Decode` API, rejects fractional transport byte/message limits, and prevents inbound processing after NetStream has stopped or been destroyed.
+
+### Validation
+
+The source contains `tests/VarUIntRegression.server.lua`, `tests/BundledCompressionRegression.server.lua` and `tests/MaintenanceRegression.server.lua`. In Roblox Studio, place each regression Script beside the `Netstream` ModuleScript and its `Compression` child, then run them. Run a server plus at least two clients and check event/state/RPC roundtrips, reliable/unreliable events, malformed packets, rate limits and shutdown behavior. The maintenance scripts run without live network events.
+
+**Verification scope:** GitHub source checks and branch re-reads are available here; no Roblox Studio execution, strict Luau analyzer run, end-to-end multiplayer traffic test, or p95/p99 performance profile is claimed.
