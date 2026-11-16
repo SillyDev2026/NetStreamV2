@@ -135,8 +135,20 @@ type WriterObject = {
 	Finish: (self: WriterObject) -> buffer,
 }
 
+local writerPool: {WriterObject} = {}
+local WRITER_POOL_MAX = 12
+local WRITER_POOL_BYTES = 262144
+
 function Writer.new(initialCapacity: number?): WriterObject
 	local capacity = math.max(64, initialCapacity or 4096)
+	for i = #writerPool, 1, -1 do
+		local candidate = writerPool[i]
+		if candidate.Capacity >= capacity then
+			table.remove(writerPool, i)
+			candidate.Position = 0
+			return candidate
+		end
+	end
 	return setmetatable({
 		Buffer = buffer.create(capacity),
 		Position = 0,
@@ -243,11 +255,12 @@ function Writer:String(value: string)
 end
 
 function Writer:Finish(): buffer
-	if self.Position == self.Capacity then
-		return self.Buffer
-	end
+	-- Always detach the wire output: the backing buffer may be reused.
 	local output = buffer.create(self.Position)
-	buffer.copy(output, 0, self.Buffer, 0, self.Position)
+	if self.Position > 0 then buffer.copy(output, 0, self.Buffer, 0, self.Position) end
+	if self.Capacity <= WRITER_POOL_BYTES and #writerPool < WRITER_POOL_MAX then
+		writerPool[#writerPool + 1] = self
+	end
 	return output
 end
 
@@ -270,8 +283,9 @@ type ReaderObject = {
 }
 
 function Reader.new(source: buffer, offset: number?, length: number?): ReaderObject
-	local start = offset or 0
-	local count = length or (buffer.len(source) - start)
+	local start = if offset == nil then 0 else offset
+	local count = if length == nil then buffer.len(source) - start else length
+	if start < 0 or count < 0 or start % 1 ~= 0 or count % 1 ~= 0 or start + count > buffer.len(source) then error("COMPRESSION_INVALID_READER_RANGE") end
 	return setmetatable({
 		Buffer = source,
 		Position = start,
@@ -280,7 +294,7 @@ function Reader.new(source: buffer, offset: number?, length: number?): ReaderObj
 end
 
 function Reader:Need(count: number)
-	if self.Position + count > self.Length then
+	if count < 0 or count % 1 ~= 0 or self.Position + count > self.Length then
 		error("COMPRESSION_TRUNCATED")
 	end
 end
@@ -746,7 +760,7 @@ end
 
 -- Returns the codec version exposed to dependent modules.
 function Compression.Version(): string
-	return "2.3.3"
+	return "2.3.5"
 end
 
 -- Returns the stable table codec mode identifier.
@@ -842,12 +856,16 @@ function Compression.DecompressTable(source: buffer, options: Options?): any
 	if dictionaryCount > (normalized.MaxNodes :: number) then
 		error("MAX_NODES_EXCEEDED")
 	end
+	if dictionaryCount > (normalized.DictionaryMaxEntries :: number) then
+		error("MAX_DICTIONARY_ENTRIES_EXCEEDED")
+	end
 	if dictionaryCount > reader:Remaining() then
 		error("INVALID_DICTIONARY_COUNT")
 	end
 	if flags == 0 and dictionaryCount ~= 0 then
 		error("UNEXPECTED_STRING_DICTIONARY")
 	end
+	if flags == 1 and dictionaryCount == 0 then error("EMPTY_STRING_DICTIONARY") end
 	local dictionary = table.create(dictionaryCount)
 	local dictionaryLookup = {}
 	for index = 1, dictionaryCount do

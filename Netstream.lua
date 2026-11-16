@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.1"
+local VERSION = "2.3.16"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -245,6 +245,10 @@ local EXT = table.freeze({
 local DEFAULTS = {
 	Namespace = "NetStream",
 	RemoteWaitTimeout = 10,
+	HandshakeEnabled = true,
+	HandshakeRequireReady = false,
+	HandshakeRetrySeconds = 1,
+	HandshakeMaxAttempts = 5,
 	FlushRate = 60,
 	MaxBatchMessages = 256,
 	MaxOutgoingBatchBytes = 2 * 1024 * 1024,
@@ -262,6 +266,7 @@ local DEFAULTS = {
 	MaxPooledStrings = 2048,
 	MaxBatchPoolSize = 64,
 	MaxWriterPoolSize = 32,
+	MaxBitFrameReaderPoolSize = 32,
 	MaxScratchWriterPoolSize = 16,
 	InitialWriterBytes = 1024,
 	MaxTargetsPerFlush = 128,
@@ -284,6 +289,10 @@ local DEFAULTS = {
 	MaxTableEntries = 8192,
 	MaxDepth = 32,
 	CompressionEnabled = true,
+	CompressionSkipRealtime = true,
+	CompressionCpuBudgetEnabled = true,
+	CompressionMaxEstimatedSeconds = 0.002,
+	CompressionCpuProbeEvery = 32,
 	CompressionMinSavingsBytes = 1,
 	CompressionMinStringBytes = 6,
 	CompressionStringStrategy = "Auto",
@@ -318,6 +327,7 @@ local DEFAULTS = {
 	BandwidthDropUnreliableOnPressure = true,
 	BandwidthWarnAtUtilization = 0.85,
 	TransportAdaptiveBatching = true,
+	TransportFastFlushEnabled = true,
 	TransportBatchWindowSeconds = 1 / 60,
 	TransportRealtimeBatchWindowSeconds = 0,
 	TransportEstimatedPacketOverheadBytes = 96,
@@ -346,6 +356,9 @@ local started = false
 local destroyed = false
 local reliableRemote = nil
 local unreliableRemote = nil
+local handshakeRemote = nil
+local handshakePeers = {}
+local handshakeClient = nil
 local heartbeatConnection = nil
 local playerRemovingConnection = nil
 local receiveConnections = {}
@@ -415,6 +428,17 @@ local FALSE_ARGS = table.freeze({ false, n = 1 })
 
 local Stats = {
 	SentBatches = 0,
+	HandshakeHellos = 0,
+	HandshakeWelcomes = 0,
+	HandshakeConfirms = 0,
+	HandshakeReadyCount = 0,
+	HandshakeRetries = 0,
+	HandshakeTimeouts = 0,
+	HandshakeRejected = 0,
+	HandshakeReplayRejected = 0,
+	HandshakeLateRemoteRecovered = 0,
+	HandshakeTrafficHeld = 0,
+	HandshakeTrafficRejected = 0,
 	SentBytes = 0,
 	ReceivedBatches = 0,
 	ReceivedBytes = 0,
@@ -448,6 +472,10 @@ local Stats = {
 	RouteRateLimited = 0,
 	TrafficSnapshots = 0,
 	CompressionAttempts = 0,
+	CompressionRealtimeSkips = 0,
+	CompressionCpuBudgetSkips = 0,
+	CompressionCpuSamples = 0,
+	CompressionCpuSampleSeconds = 0,
 	CompressionUsed = 0,
 	CompressionRejected = 0,
 	CompressionErrors = 0,
@@ -496,6 +524,8 @@ local Stats = {
 	BandwidthBatchSplits = 0,
 	BandwidthThrottleEvents = 0,
 	TransportLogicalMessagesQueued = 0,
+	TransportFastFlushScheduled = 0,
+	TransportFastFlushExecuted = 0,
 	TransportBatchHolds = 0,
 	TransportCriticalMessagesQueued = 0,
 	TransportNormalMessagesQueued = 0,
@@ -530,6 +560,10 @@ local Stats = {
 	HybridCompressionThresholdSkips = 0,
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
+	BitFrameWriterPoolHits = 0,
+	BitFrameReaderPoolHits = 0,
+	BitFrameReadersCreated = 0,
+	TransportPredictedBatchCaps = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
 	BitFrameMessagesEncoded = 0,
@@ -685,6 +719,8 @@ function Internal.packetAppendBufferBits(out, bitPosition, payload)
 end
 
 function Internal.packetReadBufferBits(data, bitPosition, byteCount)
+	if byteCount < 0 or byteCount % 1 ~= 0 or byteCount > Config.MaxIncomingPacketBytes then error("NetStream hybrid payload length invalid", 0) end
+	if bitPosition < 0 or bitPosition % 1 ~= 0 or bitPosition + byteCount * 8 > buffer.len(data) * 8 then error("NetStream hybrid payload truncated", 0) end
 	local out = buffer.create(byteCount)
 	if byteCount == 0 then
 		return out, bitPosition
@@ -867,28 +903,28 @@ function Internal.canCompressionRoundTrip(value, seen)
 end
 
 function Internal.shouldAttemptCompression(args)
-	if not Internal.canCompressionRoundTrip(args, {}) then
-		return false
-	end
-
-	-- Compression v2.3 is structural. A single raw string cannot shrink because
-	-- its bytes are preserved plus packet framing; repeated strings and nested
-	-- tables are the cases where its dictionary/table encoding can win.
+	-- Cheap structural eligibility first: most one-value scalar messages cannot
+	-- benefit from the bundled dictionary/table codec. Defer recursive validation
+	-- until a table or repeated string makes compression plausible.
+	if args.n == 1 and typeof(args[1]) ~= "table" then return false end
 	local repeatedStrings = nil
+	local candidate = false
 	for i = 1, args.n do
 		local value = args[i]
 		local kind = typeof(value)
 		if kind == "table" then
-			return true
+			candidate = true
+			break
 		elseif kind == "string" and #value >= Config.CompressionMinStringBytes then
 			repeatedStrings = repeatedStrings or {}
 			if repeatedStrings[value] then
-				return true
+				candidate = true
+				break
 			end
 			repeatedStrings[value] = true
 		end
 	end
-	return false
+	return candidate and Internal.canCompressionRoundTrip(args, {})
 end
 
 local SCHEMA_BOOL = 1
@@ -1366,6 +1402,7 @@ end
 Internal.BitFrameScratch = buffer.create(8)
 Internal.BitFrameWriter = {}
 Internal.BitFrameWriter.__index = Internal.BitFrameWriter
+Internal.BitFrameWriterPool = {}
 
 function Internal.BitFrameWriter.new(initialBytes)
 	local capacity = math.max(16, initialBytes or 256)
@@ -1376,6 +1413,30 @@ function Internal.BitFrameWriter.new(initialBytes)
 		strings = {},
 		stringToIndex = {},
 	}, Internal.BitFrameWriter)
+end
+
+function Internal.acquireBitFrameWriter()
+	local pool = Internal.BitFrameWriterPool
+	local writer = pool[#pool]
+	if writer then
+		pool[#pool] = nil
+		writer.bitPosition = 0
+		table.clear(writer.strings)
+		table.clear(writer.stringToIndex)
+		Stats.BitFrameWriterPoolHits += 1
+		return writer
+	end
+	return Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+end
+
+function Internal.releaseBitFrameWriter(writer)
+	-- Pooled writers must not retain per-packet dictionary keys or values.
+	if #writer.strings > Config.MaxPooledStrings then writer.strings = {} else table.clear(writer.strings) end
+	table.clear(writer.stringToIndex)
+	writer.bitPosition = 0
+	if writer.capacity <= Config.MaxPooledWriterBytes and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
+		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
+	end
 end
 
 function Internal.BitFrameWriter:ensureBits(additionalBits)
@@ -1428,9 +1489,19 @@ function Internal.BitFrameWriter:rawString(value)
 		self.bitPosition = bitPosition + length * 8
 		return
 	end
-	for i = 1, length do
-		buffer.writebits(self.buffer, bitPosition, 8, string.byte(value, i))
+	local index = 1
+	if length >= 16 then
+		while index + 3 <= length do
+			local b0, b1, b2, b3 = string.byte(value, index, index + 3)
+			buffer.writebits(self.buffer, bitPosition, 32, b0 + b1 * 256 + b2 * 65536 + b3 * 16777216)
+			bitPosition += 32
+			index += 4
+		end
+	end
+	while index <= length do
+		buffer.writebits(self.buffer, bitPosition, 8, string.byte(value, index))
 		bitPosition += 8
+		index += 1
 	end
 	self.bitPosition = bitPosition
 end
@@ -1466,19 +1537,44 @@ function Internal.BitFrameWriter:varInt(value)
 	self:varUInt(if value >= 0 then value * 2 else -value * 2 - 1)
 end
 function Internal.BitFrameWriter:finish()
+	local paddingBits = (8 - self.bitPosition % 8) % 8
+	if paddingBits > 0 then buffer.writebits(self.buffer, self.bitPosition, paddingBits, 0) end
 	return Internal.cloneBits(self.buffer, self.bitPosition)
 end
 
 Internal.BitFrameReader = {}
 Internal.BitFrameReader.__index = Internal.BitFrameReader
 
+Internal.BitFrameReaderPool = {}
 function Internal.BitFrameReader.new(data)
+	Stats.BitFrameReadersCreated += 1
 	return setmetatable({
 		buffer = data,
 		bitPosition = 0,
 		bitLength = buffer.len(data) * 8,
 		strings = {},
 	}, Internal.BitFrameReader)
+end
+function Internal.acquireBitFrameReader(data)
+	local pool = Internal.BitFrameReaderPool
+	local reader = pool[#pool]
+	if reader then
+		pool[#pool] = nil
+		reader.buffer = data
+		reader.bitPosition = 0
+		reader.bitLength = buffer.len(data) * 8
+		Stats.BitFrameReaderPoolHits += 1
+		return reader
+	end
+	return Internal.BitFrameReader.new(data)
+end
+function Internal.releaseBitFrameReader(reader)
+	reader.buffer = nil
+	reader.bitPosition = 0
+	reader.bitLength = 0
+	if #reader.strings > Config.MaxPooledStrings then reader.strings = {} else table.clear(reader.strings) end
+	local pool = Internal.BitFrameReaderPool
+	if #pool < Config.MaxBitFrameReaderPoolSize then pool[#pool + 1] = reader end
 end
 function Internal.BitFrameReader:needBits(count)
 	if self.bitPosition + count > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
@@ -1526,6 +1622,22 @@ function Internal.BitFrameReader:rawString(length)
 		self.bitPosition = bitPosition + length * 8
 		return value
 	end
+	if length >= 64 then
+		local output = buffer.create(length)
+		local offset = 0
+		while offset + 4 <= length do
+			buffer.writeu32(output, offset, buffer.readbits(self.buffer, bitPosition, 32))
+			bitPosition += 32
+			offset += 4
+		end
+		while offset < length do
+			buffer.writeu8(output, offset, buffer.readbits(self.buffer, bitPosition, 8))
+			bitPosition += 8
+			offset += 1
+		end
+		self.bitPosition = bitPosition
+		return buffer.tostring(output)
+	end
 	local chars = table.create(length)
 	for i = 1, length do
 		chars[i] = string.char(buffer.readbits(self.buffer, bitPosition, 8))
@@ -1534,8 +1646,8 @@ function Internal.BitFrameReader:rawString(length)
 	self.bitPosition = bitPosition
 	return table.concat(chars)
 end
-function Internal.BitFrameReader:rawBuffer(length)
-	if length > Config.MaxBufferBytes and length > Config.MaxIncomingPacketBytes then error("NetStream BitFrame buffer is too large", 0) end
+function Internal.BitFrameReader:rawBuffer(length, compressed)
+	if length < 0 or length % 1 ~= 0 or length > Config.MaxIncomingPacketBytes or (not compressed and length > Config.MaxBufferBytes) then error("NetStream BitFrame buffer is too large", 0) end
 	local bitPosition = self.bitPosition
 	if bitPosition + length * 8 > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
 	local out = buffer.create(length)
@@ -1825,7 +1937,7 @@ function Internal.readSchemaString(reader)
 		if payload > Config.MaxIncomingPacketBytes then
 			error("NetStream incoming compressed schema string is too large", 0)
 		end
-		local packed = reader:rawBuffer(payload)
+		local packed = reader:rawBuffer(payload, true)
 		local value = Compression.DecompressString(packed)
 		if #value > Config.MaxStringBytes then
 			error("NetStream incoming schema string exceeds MaxStringBytes", 0)
@@ -1858,7 +1970,7 @@ function Internal.readSchemaBuffer(reader)
 	local payload = math.floor(meta / 2)
 	if compressed then
 		if payload > Config.MaxIncomingPacketBytes then error("NetStream incoming compressed schema buffer is too large", 0) end
-		local packed = reader:rawBuffer(payload)
+		local packed = reader:rawBuffer(payload, true)
 		local value = Compression.DecompressBuffer(packed)
 		if buffer.len(value) > Config.MaxBufferBytes then error("NetStream incoming schema buffer exceeds MaxBufferBytes", 0) end
 		Stats.CompressionDecodeCount += 1
@@ -2848,7 +2960,7 @@ local function messageLogicalCount(item)
 end
 
 function Internal.newQueue()
-	return { items = {}, head = 1, tail = 0, logicalCount = 0 }
+	return { items = {}, head = 1, tail = 0, logicalCount = 0, estimatedBytesPerMessage = nil }
 end
 
 local function queueCount(queue)
@@ -3181,13 +3293,20 @@ function Internal.messagePriority(message)
 end
 
 function Internal.transportWindow(priority)
-	if not Config.TransportAdaptiveBatching or priority == "Critical" then
-		return 0
-	end
-	if priority == "Realtime" then
-		return Config.TransportRealtimeBatchWindowSeconds
-	end
+	if not Config.TransportAdaptiveBatching or priority == "Critical" then return 0 end
+	if priority == "Realtime" then return Config.TransportRealtimeBatchWindowSeconds end
 	return Config.TransportBatchWindowSeconds
+end
+
+function Internal.scheduleFastFlush(target, bucket, priority)
+	if not Config.TransportFastFlushEnabled or (priority ~= "Realtime" and priority ~= "Critical") or bucket._fastFlushScheduled then return end
+	bucket._fastFlushScheduled = true
+	Stats.TransportFastFlushScheduled += 1
+	task.defer(function()
+		bucket._fastFlushScheduled = false
+		if destroyed or not started or peekTargetBucket(target) ~= bucket or bucketEmpty(bucket) then return end
+		if Internal.runFastFlush then Internal.runFastFlush(target, bucket) end
+	end)
 end
 
 local function enqueue(target, unreliable, message, latestKey)
@@ -3201,8 +3320,8 @@ local function enqueue(target, unreliable, message, latestKey)
 	local notBeforeKey = if unreliable then "unreliableNotBefore" else "reliableNotBefore"
 	if wasEmpty then
 		bucket[notBeforeKey] = now + Internal.transportWindow(priority)
-	elseif priority == "Critical" then
-		bucket[notBeforeKey] = now
+	elseif priority == "Critical" or priority == "Realtime" then
+		bucket[notBeforeKey] = math.min(bucket[notBeforeKey], now + Internal.transportWindow(priority))
 	end
 	Stats.TransportLogicalMessagesQueued += 1
 	if priority == "Critical" then
@@ -3219,6 +3338,7 @@ local function enqueue(target, unreliable, message, latestKey)
 			Stats.CoalescedLatest += 1
 		end
 		latest[latestKey] = message
+		Internal.scheduleFastFlush(target, bucket, priority)
 		return true
 	end
 	local maxQueue = if unreliable then Config.MaxUnreliableQueue else Config.MaxReliableQueue
@@ -3244,6 +3364,7 @@ local function enqueue(target, unreliable, message, latestKey)
 		end
 	end
 	queuePush(queue, message)
+	Internal.scheduleFastFlush(target, bucket, priority)
 	return true
 end
 
@@ -3305,8 +3426,8 @@ function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
 	local notBeforeKey = if unreliable then "unreliableNotBefore" else "reliableNotBefore"
 	if wasEmpty then
 		bucket[notBeforeKey] = os.clock() + Internal.transportWindow(priority)
-	elseif priority == "Critical" then
-		bucket[notBeforeKey] = os.clock()
+	elseif priority == "Critical" or priority == "Realtime" then
+		bucket[notBeforeKey] = math.min(bucket[notBeforeKey], os.clock() + Internal.transportWindow(priority))
 	end
 	Stats.TransportLogicalMessagesQueued += 1
 	if priority == "Critical" then
@@ -3316,6 +3437,7 @@ function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
 	else
 		Stats.TransportNormalMessagesQueued += 1
 	end
+	Internal.scheduleFastFlush(target, bucket, priority)
 	return true
 end
 function Internal.routeForItem(item)
@@ -3330,17 +3452,31 @@ function Internal.routeForItem(item)
 end
 
 function Internal.routeCompressionEnabled(item)
-	if not Config.CompressionEnabled then
-		return false
-	end
+	if not Config.CompressionEnabled then return false end
 	local route = Internal.routeForItem(item)
-	if route and route.Compression == false then
+	if route and route.Compression == false then return false end
+	if route and route.Compression == true then return true end
+	if Config.CompressionSkipRealtime and route and route.Priority == "Realtime" then
+		Stats.CompressionRealtimeSkips += 1
 		return false
 	end
-	if route and route.Compression == true then
-		return true
+	if Config.CompressionCpuBudgetEnabled and route and (route._compressionCpuAverageSeconds or 0) > Config.CompressionMaxEstimatedSeconds then
+		local skipped = (route._compressionCpuSkipped or 0) + 1
+		route._compressionCpuSkipped = skipped
+		if skipped % Config.CompressionCpuProbeEvery ~= 0 then
+			Stats.CompressionCpuBudgetSkips += 1
+			return false
+		end
 	end
 	return Internal.shouldAttemptCompression(item.args)
+end
+
+function Internal.observeCompressionCpu(route, elapsed)
+	if not Config.CompressionCpuBudgetEnabled or not route or route.Compression == true then return end
+	local average = route._compressionCpuAverageSeconds
+	route._compressionCpuAverageSeconds = if average then average * 0.75 + elapsed * 0.25 else elapsed
+	Stats.CompressionCpuSamples += 1
+	Stats.CompressionCpuSampleSeconds += elapsed
 end
 
 function Internal.compressionOptionsForRoute(route)
@@ -3436,7 +3572,9 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 
 	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local compressionStarted = if Config.CompressionCpuBudgetEnabled and route and route.Compression ~= true then os.clock() else nil
 	local ok, packet = pcall(Compression.Compress, source, compressionOptions)
+	if compressionStarted then Internal.observeCompressionCpu(route, os.clock() - compressionStarted) end
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -3576,7 +3714,9 @@ function Internal.tryEncodeBitCallSingle(item)
 	if not Internal.hybridCompressionAllowed(item, rawPayloadBytes * 8) then return nil, true end
 	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local compressionStarted = if Config.CompressionCpuBudgetEnabled and route and route.Compression ~= true then os.clock() else nil
 	local ok, packet = pcall(Compression.Compress, item.args[1], compressionOptions)
+	if compressionStarted then Internal.observeCompressionCpu(route, os.clock() - compressionStarted) end
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -3658,7 +3798,9 @@ function Internal.tryEncodeCompactSingle(item)
 	if not Internal.hybridCompressionAllowed(item, rawPayloadBytes * 8) then return nil, true end
 	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local compressionStarted = if Config.CompressionCpuBudgetEnabled and route and route.Compression ~= true then os.clock() else nil
 	local ok, packet = pcall(Compression.Compress, item.args[1], compressionOptions)
+	if compressionStarted then Internal.observeCompressionCpu(route, os.clock() - compressionStarted) end
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -4146,11 +4288,12 @@ function Internal.bitFrameWriteOne(writer, item)
 end
 
 function Internal.encodeBitFrame(items)
-	local writer = Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+	local writer = Internal.acquireBitFrameWriter()
 	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
 	writer:bits(0, 1) -- end-of-frame marker; remaining physical tail bits stay zero
 	local usefulBits = writer.bitPosition
 	local out = writer:finish()
+	Internal.releaseBitFrameWriter(writer)
 	local physicalBits = buffer.len(out) * 8
 	Internal._lastEncodedUsefulBits = usefulBits
 	Internal._lastEncodedCodec = "BitFrame"
@@ -4311,7 +4454,7 @@ function Internal.commitBandwidth(target, bytes)
 	Internal.trafficWindowEstimatedTransportBytes += chargedBytes
 end
 
-function Internal.restoreDeferredItems(queue, latest, items, unreliable)
+function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPressureDrop)
 	local normal = table.create(#items)
 	for i = 1, #items do
 		local item = items[i]
@@ -4323,7 +4466,7 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable)
 					Stats.CoalescedLatest += 1
 				end
 				latest[item.latestKey] = item
-			elseif unreliable and Config.BandwidthDropUnreliableOnPressure then
+			elseif unreliable and allowPressureDrop ~= false and Config.BandwidthDropUnreliableOnPressure then
 				local droppedCount = messageLogicalCount(item)
 				releaseMessage(item)
 				Stats.BandwidthDroppedUnreliableMessages += droppedCount
@@ -4473,20 +4616,36 @@ local function collectBatch(queue, latest, limit)
 	return items
 end
 
+function Internal.packetByteBudget(unreliable)
+	local budget = if Config.BandwidthGovernorEnabled then math.min(Config.BandwidthMaxPacketBytes, Config.MaxOutgoingBatchBytes) else Config.MaxOutgoingBatchBytes
+	if unreliable and unreliableRemote then budget = math.min(budget, Config.UnreliableMaxBytes) end
+	return budget
+end
+
 function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
+	local byteBudget = Internal.packetByteBudget(unreliable)
 	local ok, data = pcall(encodeBatch, items)
-	while ok and Config.BandwidthGovernorEnabled and #items > 1 and buffer.len(data) > Config.BandwidthMaxPacketBytes do
+	while ok and #items > 1 and buffer.len(data) > byteBudget do
 		local originalCount = #items
-		local keepCount = math.max(1, math.floor(originalCount / 2))
+		local idealCount = math.floor(originalCount * byteBudget / buffer.len(data))
+		local keepCount = math.max(1, math.min(originalCount - 1, idealCount))
 		local deferred = acquireBatch(originalCount - keepCount)
 		for i = keepCount + 1, originalCount do
 			deferred[#deferred + 1] = items[i]
 			items[i] = nil
 		end
-		Internal.restoreDeferredItems(queue, latest, deferred, unreliable)
+		Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
 		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
 		ok, data = pcall(encodeBatch, items)
+	end
+	if ok and (Config.BandwidthGovernorEnabled or (unreliable and unreliableRemote)) then
+		local logical = batchLogicalCount(items)
+		if logical > 0 then
+			local observed = buffer.len(data) / logical
+			local previous = queue.estimatedBytesPerMessage
+			queue.estimatedBytesPerMessage = if previous then previous * 0.3 + observed * 0.7 else observed
+		end
 	end
 	return ok, data
 end
@@ -4530,12 +4689,22 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		if queueCount(queue) <= 0 and next(latest) == nil then
 			break
 		end
+		if not Internal.hsCanSend(target) then Stats.HandshakeTrafficHeld += 1; break end
 		local ready = Internal.bandwidthReady(target)
 		if not ready then
 			Stats.BandwidthDeferredFlushes += 1
 			break
 		end
-		local items = collectBatch(queue, latest, Config.MaxBatchMessages)
+		local messageLimit = Config.MaxBatchMessages
+		local average = queue.estimatedBytesPerMessage
+		if (Config.BandwidthGovernorEnabled or (unreliable and unreliableRemote)) and average and average > 0 then
+			local predictedLimit = math.max(1, math.floor(Internal.packetByteBudget(unreliable) / average))
+			if predictedLimit < messageLimit then
+				messageLimit = predictedLimit
+				Stats.TransportPredictedBatchCaps += 1
+			end
+		end
+		local items = collectBatch(queue, latest, messageLimit)
 		if #items == 0 then
 			releaseBatch(items)
 			break
@@ -4617,6 +4786,13 @@ local function flushBucket(target, bucket, deadline, force)
 	if queueCount(bucket.unreliable) <= 0 and next(bucket.latestUnreliable) == nil then
 		bucket.unreliableNotBefore = 0
 	end
+end
+
+function Internal.runFastFlush(target, bucket)
+	if destroyed or not started or peekTargetBucket(target) ~= bucket or bucketEmpty(bucket) then return end
+	Stats.TransportFastFlushExecuted += 1
+	flushBucket(target, bucket, os.clock() + Config.ImmediateFlushBudgetSeconds, false)
+	if IS_SERVER and target ~= ALL and bucketEmpty(bucket) then targetBuckets[target] = nil end
 end
 
 function Internal.nextRequestId()
@@ -5565,7 +5741,7 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 	else
 		local compressedBytes = reader:adaptiveUInt()
 		if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then error("NetStream BitFrame compressed payload size invalid", 0) end
-		local compressedData = reader:rawBuffer(compressedBytes)
+		local compressedData = reader:rawBuffer(compressedBytes, true)
 		local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
 		Stats.CompressionDecodeCount += 1
 		if mode == 2 then
@@ -5604,8 +5780,8 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 	return 1
 end
 
-function Internal.decodeBitFrame(player, data)
-	local reader = Internal.BitFrameReader.new(data)
+function Internal.decodeBitFrame(player, data, reader)
+	-- Caller owns reader lifecycle so exceptions still release pooled scratch.
 	local logicalCount = 0
 	while true do
 		local present = reader:bits(1)
@@ -5679,7 +5855,7 @@ end
 
 local function decodeBatch(player, data, reader)
 	if Config.BitFrameEnabled then
-		Internal.decodeBitFrame(player, data)
+		Internal.decodeBitFrame(player, data, reader)
 		return
 	end
 	if buffer.len(data) > 0 then
@@ -5898,6 +6074,7 @@ local function decodeBatch(player, data, reader)
 end
 
 local function receive(player, data)
+	if destroyed or not started then return end
 	local isBuffer = typeof(data) == "buffer"
 	local bytes = if isBuffer then buffer.len(data) else 0
 	if not chargeIncomingEnvelope(player, bytes) then
@@ -5906,6 +6083,7 @@ local function receive(player, data)
 		Stats.ReceivedBytes += bytes
 		return
 	end
+	if not Internal.hsCanReceive(player) then Stats.HandshakeTrafficRejected += 1; return end
 	if isBuffer and bytes > Config.MaxIncomingPacketBytes then
 		Stats.RejectedOversizedPackets += 1
 		Stats.DecodeErrors += 1
@@ -5916,13 +6094,169 @@ local function receive(player, data)
 		Stats.RejectedMalformedPackets += 1
 		return
 	end
-	local reader = acquireReader(data)
+	local bitFrame = Config.BitFrameEnabled
+	local reader = if bitFrame then Internal.acquireBitFrameReader(data) else acquireReader(data)
 	local ok, err = pcall(decodeBatch, player, data, reader)
-	releaseReader(reader)
+	if bitFrame then Internal.releaseBitFrameReader(reader) else releaseReader(reader) end
 	if not ok then
 		Stats.DecodeErrors += 1
 		Stats.RejectedMalformedPackets += 1
 		Internal.debugWarn("Decode rejected:", err)
+	end
+end
+
+
+-- A distinct reliable control channel prevents handshake bytes entering the
+-- existing data codec. This exchanges capabilities; it is not authentication.
+Internal.HS_PROTOCOL = 1
+Internal.HS_CODEC = Internal.CompressionCore.CodecVersion
+Internal.HS_RANDOM = Random.new()
+function Internal.hsPacket(op, clientNonce, serverNonce)
+	local data = buffer.create(if serverNonce then 13 else 9)
+	buffer.writeu8(data, 0, op)
+	buffer.writeu8(data, 1, Internal.HS_PROTOCOL)
+	buffer.writeu16(data, 2, Internal.HS_CODEC)
+	buffer.writeu8(data, 4, if Config.BitFrameEnabled then 1 else 0)
+	buffer.writeu32(data, 5, clientNonce)
+	if serverNonce then buffer.writeu32(data, 9, serverNonce) end
+	return data
+end
+function Internal.hsCanSend(target)
+	if not Config.HandshakeRequireReady then return true end
+	if IS_SERVER then
+		if target == ALL then
+			for _, player in ipairs(Players:GetPlayers()) do
+				local state = handshakePeers[player]
+				if not state or state.state ~= "ready" then return false end
+			end
+			return true
+		end
+		local state = handshakePeers[target]
+		return state ~= nil and state.state == "ready"
+	end
+	return handshakeClient ~= nil and handshakeClient.state == "ready"
+end
+
+function Internal.hsCanReceive(player)
+	if not Config.HandshakeRequireReady then return true end
+	if IS_SERVER then return Internal.hsCanSend(player) end
+	-- READY arrives on a different RemoteEvent from gameplay data, so a
+	-- valid server packet may precede READY. Outbound client data remains held.
+	return handshakeClient ~= nil and (handshakeClient.state == "hello" or handshakeClient.state == "confirm" or handshakeClient.state == "ready")
+end
+
+function Internal.hsStatus(state)
+	return {State = if state then state.state else "idle", Ready = state ~= nil and state.state == "ready", RoundTripMs = if state then state.rttMs else nil, HelloAttempts = if state then state.helloAttempts or 0 else 0, ConfirmAttempts = if state then state.confirmAttempts or 0 else 0}
+end
+function Internal.hsSend()
+	if IS_SERVER or destroyed or not started or not handshakeRemote or not handshakeClient then return end
+	local state = handshakeClient
+	local phase = state.state
+	if phase ~= "hello" and phase ~= "confirm" then return end
+	local key = if phase == "hello" then "helloAttempts" else "confirmAttempts"
+	if state[key] >= Config.HandshakeMaxAttempts then state.state = "timeout"; Stats.HandshakeTimeouts += 1; return end
+	state[key] += 1
+	if state[key] > 1 then Stats.HandshakeRetries += 1 end
+	state.nextAt = os.clock() + Config.HandshakeRetrySeconds
+	if phase == "hello" then state.sentAt = os.clock() end
+	local op = if phase == "hello" then 1 else 3
+	local ok = pcall(function() handshakeRemote:FireServer(Internal.hsPacket(op, state.clientNonce, if op == 3 then state.serverNonce else nil)) end)
+	if ok then
+		if op == 1 then Stats.HandshakeHellos += 1 else Stats.HandshakeConfirms += 1 end
+	end
+end
+function Internal.hsStart()
+	if IS_SERVER or not started or destroyed or not Config.HandshakeEnabled then return end
+	if not handshakeRemote then handshakeClient = {state = "unavailable", helloAttempts = 0, confirmAttempts = 0}; return end
+	handshakeClient = {state = "hello", clientNonce = Internal.HS_RANDOM:NextInteger(1, 2147483647), helloAttempts = 0, confirmAttempts = 0}
+	Internal.hsSend()
+end
+function Internal.hsServer(player, data)
+	if destroyed or not started or not Config.HandshakeEnabled or player.Parent ~= Players then return end
+	if typeof(data) ~= "buffer" then Stats.HandshakeRejected += 1; return end
+	local n = buffer.len(data)
+	if n ~= 9 and n ~= 13 then Stats.HandshakeRejected += 1; return end
+	local op = buffer.readu8(data, 0)
+	if (op == 1 and n ~= 9) or (op == 3 and n ~= 13) or (op ~= 1 and op ~= 3) then Stats.HandshakeRejected += 1; return end
+	local nonce = buffer.readu32(data, 5)
+	if nonce == 0 then Stats.HandshakeRejected += 1; return end
+	local state = handshakePeers[player]
+	local now = os.clock()
+	if op == 1 and state and now - (state.lastAt or 0) < 0.05 then Stats.HandshakeRejected += 1; return end
+	if buffer.readu8(data, 1) ~= Internal.HS_PROTOCOL or buffer.readu16(data, 2) ~= Internal.HS_CODEC
+		or buffer.readu8(data, 4) ~= (if Config.BitFrameEnabled then 1 else 0) then
+		Stats.HandshakeRejected += 1
+		if op == 1 then pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(5, nonce)) end) end
+		return
+	end
+	if op == 1 then
+		if not state then state = {recentNonces = {}}; handshakePeers[player] = state end
+		state.lastAt = now
+		if state.clientNonce ~= nonce then
+			local history = state.recentNonces
+			if not history then history = {}; state.recentNonces = history end
+			for i = 1, #history do
+				if history[i] == nonce then Stats.HandshakeReplayRejected += 1; return end
+			end
+			if state.clientNonce then
+				if #history >= 8 then table.remove(history, 1) end
+				history[#history + 1] = state.clientNonce
+			end
+			state.clientNonce = nonce
+			state.serverNonce = Internal.HS_RANDOM:NextInteger(1, 2147483647)
+			state.state = "confirm"
+		end
+		local response = if state.state == "ready" then 4 else 2
+		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(response, nonce, state.serverNonce)) end)
+		if ok and response == 2 then Stats.HandshakeWelcomes += 1 end
+	elseif state and state.clientNonce == nonce and state.serverNonce == buffer.readu32(data, 9)
+		and (state.state == "confirm" or state.state == "ready") then
+		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
+		state.state = "ready"
+		pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(4, nonce, state.serverNonce)) end)
+		if Config.HandshakeRequireReady and Config.TransportFastFlushEnabled then
+			local bucket = targetBuckets[player]
+			if bucket then Internal.scheduleFastFlush(player, bucket, "Critical") end
+			if broadcastBucket then Internal.scheduleFastFlush(ALL, broadcastBucket, "Critical") end
+		end
+	else
+		Stats.HandshakeRejected += 1
+	end
+end
+function Internal.hsClient(data)
+	if destroyed or not started or typeof(data) ~= "buffer" then return end
+	local state = handshakeClient
+	if not state then return end
+	local n = buffer.len(data)
+	if n ~= 9 and n ~= 13 then Stats.HandshakeRejected += 1; return end
+	local op = buffer.readu8(data, 0)
+	if buffer.readu32(data, 5) ~= state.clientNonce then Stats.HandshakeRejected += 1; return end
+	if op == 5 and n == 9 then
+		if state.state ~= "ready" then state.state = "incompatible"; Stats.HandshakeRejected += 1 end
+		return
+	end
+	if buffer.readu8(data, 1) ~= Internal.HS_PROTOCOL or buffer.readu16(data, 2) ~= Internal.HS_CODEC
+		or buffer.readu8(data, 4) ~= (if Config.BitFrameEnabled then 1 else 0) then
+		if state.state ~= "ready" then state.state = "incompatible" end
+		Stats.HandshakeRejected += 1; return
+	end
+	if op == 2 and n == 13 then
+		local serverNonce = buffer.readu32(data, 9)
+		if serverNonce == 0 then Stats.HandshakeRejected += 1; return end
+		if state.state == "hello" then
+			state.rttMs = (os.clock() - state.sentAt) * 1000
+			state.serverNonce = serverNonce
+			state.state = "confirm"
+			Internal.hsSend()
+		elseif state.state == "confirm" and state.serverNonce == serverNonce then
+			if os.clock() >= (state.nextAt or 0) then Internal.hsSend() end
+		end
+	elseif op == 4 and n == 13 and (state.state == "confirm" or state.state == "ready") and state.serverNonce == buffer.readu32(data, 9) then
+		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
+		state.state = "ready"
+		if Config.HandshakeRequireReady and Config.TransportFastFlushEnabled and clientBucket then Internal.scheduleFastFlush(nil, clientBucket, "Critical") end
+	else
+		Stats.HandshakeRejected += 1
 	end
 end
 
@@ -5968,6 +6302,11 @@ function Internal.ensureRemotes()
 			reliableRemote.Name = "R"
 			reliableRemote.Parent = folder
 		end
+		if Config.HandshakeEnabled then
+			handshakeRemote = folder:FindFirstChild("H")
+			if handshakeRemote and not handshakeRemote:IsA("RemoteEvent") then handshakeRemote:Destroy(); handshakeRemote = nil end
+			if not handshakeRemote then handshakeRemote = Instance.new("RemoteEvent"); handshakeRemote.Name = "H"; handshakeRemote.Parent = folder end
+		end
 		unreliableRemote = folder:FindFirstChild("U")
 		if unreliableRemote and not unreliableRemote:IsA("UnreliableRemoteEvent") then
 			unreliableRemote:Destroy()
@@ -5990,6 +6329,10 @@ function Internal.ensureRemotes()
 				), 0)
 		end
 		assert(reliableRemote:IsA("RemoteEvent"), "NetStream remote R is not a RemoteEvent")
+		if Config.HandshakeEnabled then
+			handshakeRemote = folder:FindFirstChild("H")
+			if handshakeRemote and not handshakeRemote:IsA("RemoteEvent") then handshakeRemote = nil end
+		end
 		unreliableRemote = folder:FindFirstChild("U")
 		if not unreliableRemote then
 			unreliableRemote = folder:WaitForChild("U", 2)
@@ -6098,6 +6441,7 @@ local function ensureStarted()
 	Internal.ensureRemotes()
 	started = true
 	if IS_SERVER then
+		if handshakeRemote then receiveConnections[#receiveConnections + 1] = handshakeRemote.OnServerEvent:Connect(Internal.hsServer) end
 		receiveConnections[#receiveConnections + 1] = reliableRemote.OnServerEvent:Connect(function(player, data)
 			receive(player, data)
 		end)
@@ -6112,9 +6456,23 @@ local function ensureStarted()
 			incomingRates[player] = nil
 			Internal.bandwidthStates[player] = nil
 			peerStates[player] = nil
+			handshakePeers[player] = nil
 			Internal.failPendingForPlayer(player, "Player left before NetStream call completed")
 		end)
 	else
+		if handshakeRemote then receiveConnections[#receiveConnections + 1] = handshakeRemote.OnClientEvent:Connect(Internal.hsClient) end
+		if Config.HandshakeEnabled and not handshakeRemote then
+			task.spawn(function()
+				local folder = ReplicatedStorage:FindFirstChild("__NetStream_" .. Config.Namespace)
+				local found = folder and folder:WaitForChild("H", Config.RemoteWaitTimeout)
+				if found and found:IsA("RemoteEvent") and started and not destroyed and not handshakeRemote then
+					handshakeRemote = found
+					receiveConnections[#receiveConnections + 1] = found.OnClientEvent:Connect(Internal.hsClient)
+					Stats.HandshakeLateRemoteRecovered += 1
+					Internal.hsStart()
+				end
+			end)
+		end
 		receiveConnections[#receiveConnections + 1] = reliableRemote.OnClientEvent:Connect(function(data)
 			receive(nil, data)
 		end)
@@ -6124,10 +6482,12 @@ local function ensureStarted()
 			end)
 		end
 	end
+	if not IS_SERVER and Config.HandshakeEnabled then Internal.hsStart() end
 	local interval = 1 / math.max(1, Config.FlushRate)
 	heartbeatConnection = RunService.Heartbeat:Connect(function(dt)
 		runDispatch()
 		updateTrafficSnapshot()
+		if not IS_SERVER and handshakeClient and (handshakeClient.state == "hello" or handshakeClient.state == "confirm") and os.clock() >= (handshakeClient.nextAt or 0) then Internal.hsSend() end
 		accumulator += dt
 		timeoutAccumulator += dt
 		if timeoutAccumulator >= Config.TimeoutSweepInterval then
@@ -6643,11 +7003,15 @@ NetStream.HybridReturnMarker = Internal.HYBRID_RETURN_MARKER
 function Internal.validateConfig(config)
 	assert(type(config.Namespace) == "string" and #config.Namespace > 0, "Namespace must be a non-empty string")
 	assert(type(config.RemoteWaitTimeout) == "number" and isFiniteNumber(config.RemoteWaitTimeout) and config.RemoteWaitTimeout > 0, "RemoteWaitTimeout must be a finite number greater than 0")
+	assert(type(config.HandshakeEnabled) == "boolean", "HandshakeEnabled must be boolean")
+	assert(type(config.HandshakeRequireReady) == "boolean" and (not config.HandshakeRequireReady or config.HandshakeEnabled), "HandshakeRequireReady requires HandshakeEnabled")
+	assert(type(config.HandshakeRetrySeconds) == "number" and isFiniteNumber(config.HandshakeRetrySeconds) and config.HandshakeRetrySeconds >= 0.2 and config.HandshakeRetrySeconds <= 10, "HandshakeRetrySeconds must be between 0.2 and 10 seconds")
+	assert(type(config.HandshakeMaxAttempts) == "number" and isInteger(config.HandshakeMaxAttempts) and config.HandshakeMaxAttempts >= 1 and config.HandshakeMaxAttempts <= 20, "HandshakeMaxAttempts must be an integer from 1 to 20")
 	assert(type(config.FlushRate) == "number" and isFiniteNumber(config.FlushRate) and config.FlushRate > 0, "FlushRate must be a finite number greater than 0")
 	assert(type(config.VectorPrecision) == "number" and isFiniteNumber(config.VectorPrecision) and config.VectorPrecision > 0, "VectorPrecision must be a finite number greater than 0")
 	assert(type(config.MaxBatchMessages) == "number" and config.MaxBatchMessages >= 1, "MaxBatchMessages must be >= 1")
-	assert(type(config.MaxOutgoingBatchBytes) == "number" and config.MaxOutgoingBatchBytes >= 1024, "MaxOutgoingBatchBytes must be >= 1024")
-	assert(type(config.MaxIncomingPacketBytes) == "number" and config.MaxIncomingPacketBytes >= 1024, "MaxIncomingPacketBytes must be >= 1024")
+	assert(type(config.MaxOutgoingBatchBytes) == "number" and isInteger(config.MaxOutgoingBatchBytes) and config.MaxOutgoingBatchBytes >= 1024, "MaxOutgoingBatchBytes must be >= 1024")
+	assert(type(config.MaxIncomingPacketBytes) == "number" and isInteger(config.MaxIncomingPacketBytes) and config.MaxIncomingPacketBytes >= 1024, "MaxIncomingPacketBytes must be >= 1024")
 	assert(type(config.MaxBatchesPerFlush) == "number" and config.MaxBatchesPerFlush >= 1, "MaxBatchesPerFlush must be >= 1")
 	assert(type(config.MaxDispatchPerCycle) == "number" and config.MaxDispatchPerCycle >= 1, "MaxDispatchPerCycle must be >= 1")
 	assert(type(config.MaxDispatchBacklog) == "number" and config.MaxDispatchBacklog >= config.MaxDispatchPerCycle, "MaxDispatchBacklog must be >= MaxDispatchPerCycle")
@@ -6673,13 +7037,17 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxUnreliableQueue) == "number" and config.MaxUnreliableQueue >= 1, "MaxUnreliableQueue must be >= 1")
 	assert(type(config.UnreliableMaxBytes) == "number" and config.UnreliableMaxBytes >= 1, "UnreliableMaxBytes must be >= 1")
 	assert(type(config.CallTimeout) == "number" and config.CallTimeout > 0, "CallTimeout must be > 0")
-	assert(type(config.MaxIncomingMessages) == "number" and config.MaxIncomingMessages >= 1, "MaxIncomingMessages must be >= 1")
-	assert(type(config.MaxStringBytes) == "number" and config.MaxStringBytes >= 0, "MaxStringBytes must be >= 0")
-	assert(type(config.MaxBufferBytes) == "number" and config.MaxBufferBytes >= 0, "MaxBufferBytes must be >= 0")
-	assert(type(config.MaxTableEntries) == "number" and config.MaxTableEntries >= 1, "MaxTableEntries must be >= 1")
+	assert(type(config.MaxIncomingMessages) == "number" and isInteger(config.MaxIncomingMessages) and config.MaxIncomingMessages >= 1, "MaxIncomingMessages must be >= 1")
+	assert(type(config.MaxStringBytes) == "number" and isInteger(config.MaxStringBytes) and config.MaxStringBytes >= 0, "MaxStringBytes must be >= 0")
+	assert(type(config.MaxBufferBytes) == "number" and isInteger(config.MaxBufferBytes) and config.MaxBufferBytes >= 0, "MaxBufferBytes must be >= 0")
+	assert(type(config.MaxTableEntries) == "number" and isInteger(config.MaxTableEntries) and config.MaxTableEntries >= 1, "MaxTableEntries must be >= 1")
 	assert(type(config.MaxDepth) == "number" and config.MaxDepth >= 1, "MaxDepth must be >= 1")
 	assert(type(config.CompressionEnabled) == "boolean", "CompressionEnabled must be a boolean")
 	assert(type(config.CompressionMinSavingsBytes) == "number" and config.CompressionMinSavingsBytes >= 0, "CompressionMinSavingsBytes must be >= 0")
+	assert(type(config.CompressionSkipRealtime) == "boolean", "CompressionSkipRealtime must be boolean")
+	assert(type(config.CompressionCpuBudgetEnabled) == "boolean", "CompressionCpuBudgetEnabled must be boolean")
+	assert(type(config.CompressionMaxEstimatedSeconds) == "number" and isFiniteNumber(config.CompressionMaxEstimatedSeconds) and config.CompressionMaxEstimatedSeconds >= 0.0001 and config.CompressionMaxEstimatedSeconds <= 0.1, "CompressionMaxEstimatedSeconds must be 0.0001 to 0.1")
+	assert(type(config.CompressionCpuProbeEvery) == "number" and isInteger(config.CompressionCpuProbeEvery) and config.CompressionCpuProbeEvery >= 1 and config.CompressionCpuProbeEvery <= 1024, "CompressionCpuProbeEvery must be an integer from 1 to 1024")
 	assert(type(config.CompressionMinStringBytes) == "number" and config.CompressionMinStringBytes >= 0, "CompressionMinStringBytes must be >= 0")
 	assert(
 		config.CompressionStringStrategy == "Auto"
@@ -6727,11 +7095,13 @@ function Internal.validateConfig(config)
 	assert(type(config.BandwidthDropUnreliableOnPressure) == "boolean", "BandwidthDropUnreliableOnPressure must be a boolean")
 	assert(type(config.BandwidthWarnAtUtilization) == "number" and isFiniteNumber(config.BandwidthWarnAtUtilization) and config.BandwidthWarnAtUtilization > 0 and config.BandwidthWarnAtUtilization <= 1, "BandwidthWarnAtUtilization must be > 0 and <= 1")
 	assert(type(config.TransportAdaptiveBatching) == "boolean", "TransportAdaptiveBatching must be a boolean")
+	assert(type(config.TransportFastFlushEnabled) == "boolean", "TransportFastFlushEnabled must be boolean")
 	assert(type(config.TransportBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportBatchWindowSeconds) and config.TransportBatchWindowSeconds >= 0 and config.TransportBatchWindowSeconds <= 1, "TransportBatchWindowSeconds must be from 0 to 1")
 	assert(type(config.TransportRealtimeBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportRealtimeBatchWindowSeconds) and config.TransportRealtimeBatchWindowSeconds >= 0 and config.TransportRealtimeBatchWindowSeconds <= 1, "TransportRealtimeBatchWindowSeconds must be from 0 to 1")
 	assert(type(config.TransportEstimatedPacketOverheadBytes) == "number" and isFiniteNumber(config.TransportEstimatedPacketOverheadBytes) and config.TransportEstimatedPacketOverheadBytes >= 0, "TransportEstimatedPacketOverheadBytes must be >= 0")
 	assert(type(config.TransportTargetMessagesPerPacket) == "number" and isInteger(config.TransportTargetMessagesPerPacket) and config.TransportTargetMessagesPerPacket >= 1, "TransportTargetMessagesPerPacket must be an integer >= 1")
 	assert(type(config.MaxWriterPoolSize) == "number" and isInteger(config.MaxWriterPoolSize) and config.MaxWriterPoolSize >= 0, "MaxWriterPoolSize must be a non-negative integer")
+	assert(type(config.MaxBitFrameReaderPoolSize) == "number" and isInteger(config.MaxBitFrameReaderPoolSize) and config.MaxBitFrameReaderPoolSize >= 0 and config.MaxBitFrameReaderPoolSize <= 256, "MaxBitFrameReaderPoolSize must be an integer from 0 to 256")
 	assert(type(config.MaxScratchWriterPoolSize) == "number" and isInteger(config.MaxScratchWriterPoolSize) and config.MaxScratchWriterPoolSize >= 0, "MaxScratchWriterPoolSize must be a non-negative integer")
 	assert(type(config.InitialWriterBytes) == "number" and isInteger(config.InitialWriterBytes) and config.InitialWriterBytes >= 64, "InitialWriterBytes must be an integer >= 64")
 	assert(type(config.FastSchemaEnabled) == "boolean", "FastSchemaEnabled must be a boolean")
@@ -6780,6 +7150,34 @@ end
 
 function NetStream.GetConfig()
 	return table.clone(Config)
+end
+
+function NetStream.GetHandshakeStatus(player)
+	if not Config.HandshakeEnabled then return {State = "disabled", Ready = false, RoundTripMs = nil, HelloAttempts = 0, ConfirmAttempts = 0} end
+	if IS_SERVER then
+		assert(typeof(player) == "Instance" and player:IsA("Player"), "GetHandshakeStatus on server expects a Player")
+		return Internal.hsStatus(handshakePeers[player])
+	end
+	return Internal.hsStatus(handshakeClient)
+end
+
+function NetStream.RetryHandshake()
+	assert(not IS_SERVER, "RetryHandshake is client-only")
+	NetStream.Start()
+	if not handshakeRemote and Config.HandshakeEnabled then
+		local folder = ReplicatedStorage:FindFirstChild("__NetStream_" .. Config.Namespace)
+		local found = folder and folder:FindFirstChild("H")
+		if found and found:IsA("RemoteEvent") then
+			handshakeRemote = found
+			receiveConnections[#receiveConnections + 1] = handshakeRemote.OnClientEvent:Connect(Internal.hsClient)
+		end
+	end
+	Internal.hsStart()
+	return NetStream.GetHandshakeStatus()
+end
+
+function NetStream.IsHandshakeReady(player)
+	return NetStream.GetHandshakeStatus(player).Ready
 end
 
 function NetStream.IsStarted()
@@ -7246,6 +7644,7 @@ function NetStream.GetStats()
 	copy.WriterPoolSize = #writerPool
 	copy.ScratchWriterPoolSize = #scratchWriterPool
 	copy.ReaderPoolSize = #readerPool
+	copy.BitFrameReaderPoolSize = #Internal.BitFrameReaderPool
 	copy.BatchPoolSize = #batchPool
 	copy.PackedValuePoolSize = #packedValuePool
 	copy.CompressionRatio = if copy.CompressionInputBytes > 0 then copy.CompressionOutputBytes / copy.CompressionInputBytes else 1
@@ -7404,6 +7803,11 @@ function NetStream.GetCompressionStats()
 		Rejected = stats.CompressionRejected,
 		Errors = stats.CompressionErrors,
 		NoGain = stats.CompressionNoGain,
+		CpuBudgetEnabled = Config.CompressionCpuBudgetEnabled,
+		MaxEstimatedEncodeSeconds = Config.CompressionMaxEstimatedSeconds,
+		CpuBudgetSkips = stats.CompressionCpuBudgetSkips,
+		CpuSamples = stats.CompressionCpuSamples,
+		CpuSampleSeconds = stats.CompressionCpuSampleSeconds,
 		AcceptancePercent = if stats.CompressionAttempts > 0 then stats.CompressionUsed / stats.CompressionAttempts * 100 else 0,
 		Decoded = stats.CompressionDecodeCount,
 		InputBytes = stats.CompressionInputBytes,
@@ -7599,6 +8003,9 @@ function NetStream.Destroy()
 		connection:Disconnect()
 	end
 	table.clear(receiveConnections)
+	handshakeRemote = nil
+	handshakeClient = nil
+	table.clear(handshakePeers)
 	for id, entry in pairs(pending) do
 		pending[id] = nil
 		task.spawn(entry.thread, false, "NetStream destroyed")
@@ -7616,6 +8023,8 @@ function NetStream.Destroy()
 	dispatchCount = 0
 	dispatchHead = 1
 
+	table.clear(Internal.BitFrameWriterPool)
+	table.clear(Internal.BitFrameReaderPool)
 	Internal.releaseBucket(clientBucket)
 	Internal.releaseBucket(broadcastBucket)
 	for _, bucket in pairs(targetBuckets) do
@@ -7710,6 +8119,7 @@ end
 function Codec._DecodeArgs(data)
 	assert(typeof(data) == "buffer", "NetStream.Codec.Decode expects a buffer")
 	local length = buffer.len(data)
+	if length > Config.MaxIncomingPacketBytes then error("NetStream.Codec.Decode exceeds MaxIncomingPacketBytes", 0) end
 	if length < 1 then
 		error("NetStream.Codec.Decode received an empty buffer", 0)
 	end
