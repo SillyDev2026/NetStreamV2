@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.32"
+local VERSION = "2.3.33"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -285,6 +285,8 @@ local DEFAULTS = {
 	PerformanceTelemetrySampleEvery = 4,
 	MaxScratchWriterPoolSize = 16,
 	InitialWriterBytes = 1024,
+	BitFrameInitialWriterBytes = 128,
+	BitFrameRetainWriterMaxBytes = 4096,
 	MaxTargetsPerFlush = 128,
 	MaxIncomingMessagesPerSecond = 30000,
 	MaxIncomingBytesPerSecond = 2 * 1024 * 1024,
@@ -1507,7 +1509,7 @@ function Internal.acquireBitFrameWriter()
 		Stats.BitFrameWriterPoolHits += 1
 		return writer
 	end
-	return Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+	return Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameInitialWriterBytes, Config.BitFrameMaxBytes))
 end
 
 function Internal.releaseBitFrameWriter(writer)
@@ -1515,7 +1517,7 @@ function Internal.releaseBitFrameWriter(writer)
 	if #writer.strings > Config.MaxPooledStrings then writer.strings = {} else table.clear(writer.strings) end
 	table.clear(writer.stringToIndex)
 	writer.bitPosition = 0
-	if writer.capacity <= Config.MaxPooledWriterBytes and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
+	if writer.capacity <= math.min(Config.MaxPooledWriterBytes, Config.BitFrameRetainWriterMaxBytes) and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
 		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
 	end
 end
@@ -7317,6 +7319,8 @@ function Internal.validateConfig(config)
 	assert(type(config.PerformanceTelemetrySampleEvery) == "number" and isInteger(config.PerformanceTelemetrySampleEvery) and config.PerformanceTelemetrySampleEvery >= 1 and config.PerformanceTelemetrySampleEvery <= 1024, "PerformanceTelemetrySampleEvery must be an integer from 1 to 1024")
 	assert(type(config.MaxScratchWriterPoolSize) == "number" and isInteger(config.MaxScratchWriterPoolSize) and config.MaxScratchWriterPoolSize >= 0, "MaxScratchWriterPoolSize must be a non-negative integer")
 	assert(type(config.InitialWriterBytes) == "number" and isInteger(config.InitialWriterBytes) and config.InitialWriterBytes >= 64, "InitialWriterBytes must be an integer >= 64")
+	assert(type(config.BitFrameInitialWriterBytes) == "number" and isInteger(config.BitFrameInitialWriterBytes) and config.BitFrameInitialWriterBytes >= 16 and config.BitFrameInitialWriterBytes <= config.BitFrameMaxBytes, "BitFrameInitialWriterBytes must be between 16 and BitFrameMaxBytes")
+	assert(type(config.BitFrameRetainWriterMaxBytes) == "number" and isInteger(config.BitFrameRetainWriterMaxBytes) and config.BitFrameRetainWriterMaxBytes >= 16, "BitFrameRetainWriterMaxBytes must be >= 16")
 	assert(type(config.FastSchemaEnabled) == "boolean", "FastSchemaEnabled must be a boolean")
 	assert(type(config.FastSchemaMaxBytes) == "number" and isInteger(config.FastSchemaMaxBytes) and config.FastSchemaMaxBytes >= 0, "FastSchemaMaxBytes must be a non-negative integer")
 	assert(type(config.FastSchemaAllowHeaderExpansion) == "boolean", "FastSchemaAllowHeaderExpansion must be a boolean")
@@ -7892,6 +7896,12 @@ function NetStream.GetMemoryDiagnostics()
 	for _, writer in ipairs(writerPool) do legacyBytes += writer.capacity or 0 end
 	return {
 		BitFrameWriterPooledBytes = writerBytes,
+		BitFrameWriterPoolSize = #Internal.BitFrameWriterPool,
+		BitFrameInitialWriterBytes = Config.BitFrameInitialWriterBytes,
+		BitFrameRetainWriterMaxBytes = Config.BitFrameRetainWriterMaxBytes,
+		PackedValuePoolSize = #packedValuePool,
+		MaxPooledPackedValues = Config.MaxPooledPackedValues,
+		PackedValuePoolOversizeDrops = Stats.PackedValuePoolOversizeDrops,
 		LegacyWriterPooledBytes = legacyBytes,
 		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
 		LegacyReaderPoolSize = #readerPool,
