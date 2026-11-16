@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.15"
+local VERSION = "2.3.16"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -290,6 +290,9 @@ local DEFAULTS = {
 	MaxDepth = 32,
 	CompressionEnabled = true,
 	CompressionSkipRealtime = true,
+	CompressionCpuBudgetEnabled = true,
+	CompressionMaxEstimatedSeconds = 0.002,
+	CompressionCpuProbeEvery = 32,
 	CompressionMinSavingsBytes = 1,
 	CompressionMinStringBytes = 6,
 	CompressionStringStrategy = "Auto",
@@ -470,6 +473,9 @@ local Stats = {
 	TrafficSnapshots = 0,
 	CompressionAttempts = 0,
 	CompressionRealtimeSkips = 0,
+	CompressionCpuBudgetSkips = 0,
+	CompressionCpuSamples = 0,
+	CompressionCpuSampleSeconds = 0,
 	CompressionUsed = 0,
 	CompressionRejected = 0,
 	CompressionErrors = 0,
@@ -3446,21 +3452,31 @@ function Internal.routeForItem(item)
 end
 
 function Internal.routeCompressionEnabled(item)
-	if not Config.CompressionEnabled then
-		return false
-	end
+	if not Config.CompressionEnabled then return false end
 	local route = Internal.routeForItem(item)
-	if route and route.Compression == false then
-		return false
-	end
-	if route and route.Compression == true then
-		return true
-	end
+	if route and route.Compression == false then return false end
+	if route and route.Compression == true then return true end
 	if Config.CompressionSkipRealtime and route and route.Priority == "Realtime" then
 		Stats.CompressionRealtimeSkips += 1
 		return false
 	end
+	if Config.CompressionCpuBudgetEnabled and route and (route._compressionCpuAverageSeconds or 0) > Config.CompressionMaxEstimatedSeconds then
+		local skipped = (route._compressionCpuSkipped or 0) + 1
+		route._compressionCpuSkipped = skipped
+		if skipped % Config.CompressionCpuProbeEvery ~= 0 then
+			Stats.CompressionCpuBudgetSkips += 1
+			return false
+		end
+	end
 	return Internal.shouldAttemptCompression(item.args)
+end
+
+function Internal.observeCompressionCpu(route, elapsed)
+	if not Config.CompressionCpuBudgetEnabled or not route or route.Compression == true then return end
+	local average = route._compressionCpuAverageSeconds
+	route._compressionCpuAverageSeconds = if average then average * 0.75 + elapsed * 0.25 else elapsed
+	Stats.CompressionCpuSamples += 1
+	Stats.CompressionCpuSampleSeconds += elapsed
 end
 
 function Internal.compressionOptionsForRoute(route)
@@ -3556,7 +3572,9 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 
 	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local compressionStarted = if Config.CompressionCpuBudgetEnabled and route and route.Compression ~= true then os.clock() else nil
 	local ok, packet = pcall(Compression.Compress, source, compressionOptions)
+	if compressionStarted then Internal.observeCompressionCpu(route, os.clock() - compressionStarted) end
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -3696,7 +3714,9 @@ function Internal.tryEncodeBitCallSingle(item)
 	if not Internal.hybridCompressionAllowed(item, rawPayloadBytes * 8) then return nil, true end
 	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local compressionStarted = if Config.CompressionCpuBudgetEnabled and route and route.Compression ~= true then os.clock() else nil
 	local ok, packet = pcall(Compression.Compress, item.args[1], compressionOptions)
+	if compressionStarted then Internal.observeCompressionCpu(route, os.clock() - compressionStarted) end
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -3778,7 +3798,9 @@ function Internal.tryEncodeCompactSingle(item)
 	if not Internal.hybridCompressionAllowed(item, rawPayloadBytes * 8) then return nil, true end
 	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
+	local compressionStarted = if Config.CompressionCpuBudgetEnabled and route and route.Compression ~= true then os.clock() else nil
 	local ok, packet = pcall(Compression.Compress, item.args[1], compressionOptions)
+	if compressionStarted then Internal.observeCompressionCpu(route, os.clock() - compressionStarted) end
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
 		Stats.CompressionRejected += 1
 		Stats.CompressionErrors += 1
@@ -7023,6 +7045,9 @@ function Internal.validateConfig(config)
 	assert(type(config.CompressionEnabled) == "boolean", "CompressionEnabled must be a boolean")
 	assert(type(config.CompressionMinSavingsBytes) == "number" and config.CompressionMinSavingsBytes >= 0, "CompressionMinSavingsBytes must be >= 0")
 	assert(type(config.CompressionSkipRealtime) == "boolean", "CompressionSkipRealtime must be boolean")
+	assert(type(config.CompressionCpuBudgetEnabled) == "boolean", "CompressionCpuBudgetEnabled must be boolean")
+	assert(type(config.CompressionMaxEstimatedSeconds) == "number" and isFiniteNumber(config.CompressionMaxEstimatedSeconds) and config.CompressionMaxEstimatedSeconds >= 0.0001 and config.CompressionMaxEstimatedSeconds <= 0.1, "CompressionMaxEstimatedSeconds must be 0.0001 to 0.1")
+	assert(type(config.CompressionCpuProbeEvery) == "number" and isInteger(config.CompressionCpuProbeEvery) and config.CompressionCpuProbeEvery >= 1 and config.CompressionCpuProbeEvery <= 1024, "CompressionCpuProbeEvery must be an integer from 1 to 1024")
 	assert(type(config.CompressionMinStringBytes) == "number" and config.CompressionMinStringBytes >= 0, "CompressionMinStringBytes must be >= 0")
 	assert(
 		config.CompressionStringStrategy == "Auto"
@@ -7778,6 +7803,11 @@ function NetStream.GetCompressionStats()
 		Rejected = stats.CompressionRejected,
 		Errors = stats.CompressionErrors,
 		NoGain = stats.CompressionNoGain,
+		CpuBudgetEnabled = Config.CompressionCpuBudgetEnabled,
+		MaxEstimatedEncodeSeconds = Config.CompressionMaxEstimatedSeconds,
+		CpuBudgetSkips = stats.CompressionCpuBudgetSkips,
+		CpuSamples = stats.CompressionCpuSamples,
+		CpuSampleSeconds = stats.CompressionCpuSampleSeconds,
 		AcceptancePercent = if stats.CompressionAttempts > 0 then stats.CompressionUsed / stats.CompressionAttempts * 100 else 0,
 		Decoded = stats.CompressionDecodeCount,
 		InputBytes = stats.CompressionInputBytes,
