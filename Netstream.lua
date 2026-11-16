@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.5"
+local VERSION = "2.3.6"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -530,6 +530,7 @@ local Stats = {
 	HybridCompressionThresholdSkips = 0,
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
+	BitFrameWriterPoolHits = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
 	BitFrameMessagesEncoded = 0,
@@ -1368,6 +1369,7 @@ end
 Internal.BitFrameScratch = buffer.create(8)
 Internal.BitFrameWriter = {}
 Internal.BitFrameWriter.__index = Internal.BitFrameWriter
+Internal.BitFrameWriterPool = {}
 
 function Internal.BitFrameWriter.new(initialBytes)
 	local capacity = math.max(16, initialBytes or 256)
@@ -1378,6 +1380,26 @@ function Internal.BitFrameWriter.new(initialBytes)
 		strings = {},
 		stringToIndex = {},
 	}, Internal.BitFrameWriter)
+end
+
+function Internal.acquireBitFrameWriter()
+	local pool = Internal.BitFrameWriterPool
+	local writer = pool[#pool]
+	if writer then
+		pool[#pool] = nil
+		writer.bitPosition = 0
+		table.clear(writer.strings)
+		table.clear(writer.stringToIndex)
+		Stats.BitFrameWriterPoolHits += 1
+		return writer
+	end
+	return Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+end
+
+function Internal.releaseBitFrameWriter(writer)
+	if writer.capacity <= Config.MaxPooledWriterBytes and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
+		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
+	end
 end
 
 function Internal.BitFrameWriter:ensureBits(additionalBits)
@@ -1478,6 +1500,8 @@ function Internal.BitFrameWriter:varInt(value)
 	self:varUInt(if value >= 0 then value * 2 else -value * 2 - 1)
 end
 function Internal.BitFrameWriter:finish()
+	local paddingBits = (8 - self.bitPosition % 8) % 8
+	if paddingBits > 0 then buffer.writebits(self.buffer, self.bitPosition, paddingBits, 0) end
 	return Internal.cloneBits(self.buffer, self.bitPosition)
 end
 
@@ -4174,11 +4198,12 @@ function Internal.bitFrameWriteOne(writer, item)
 end
 
 function Internal.encodeBitFrame(items)
-	local writer = Internal.BitFrameWriter.new(math.min(Config.InitialWriterBytes, Config.BitFrameMaxBytes))
+	local writer = Internal.acquireBitFrameWriter()
 	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
 	writer:bits(0, 1) -- end-of-frame marker; remaining physical tail bits stay zero
 	local usefulBits = writer.bitPosition
 	local out = writer:finish()
+	Internal.releaseBitFrameWriter(writer)
 	local physicalBits = buffer.len(out) * 8
 	Internal._lastEncodedUsefulBits = usefulBits
 	Internal._lastEncodedCodec = "BitFrame"
@@ -7645,6 +7670,7 @@ function NetStream.Destroy()
 	dispatchCount = 0
 	dispatchHead = 1
 
+	table.clear(Internal.BitFrameWriterPool)
 	Internal.releaseBucket(clientBucket)
 	Internal.releaseBucket(broadcastBucket)
 	for _, bucket in pairs(targetBuckets) do
