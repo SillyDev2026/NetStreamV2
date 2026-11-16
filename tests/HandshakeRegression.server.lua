@@ -1,0 +1,15 @@
+--!strict
+-- Run this ServerScript alone in ServerScriptService with Netstream + Compression in ReplicatedStorage.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
+assert(NetStream.GetVersion() == "2.3.13", "Wrong NetStream version")
+NetStream.Configure({HandshakeEnabled = true, HandshakeRequireReady = true, TransportFastFlushEnabled = true})
+local probe = NetStream.Event("__NSHandshakeProbe", {Id = 34111, Priority = "Realtime", Compression = false})
+local ack = NetStream.Event("__NSHandshakeReply", {Id = 34112, Priority = "Critical", Compression = false})
+probe:Connect(function(player, sequence, payload)
+	assert(sequence == 42 and payload == "handshake-ready", "Handshake regression payload corrupted")
+	local status = NetStream.GetHandshakeStatus(player)
+	assert(status.Ready and NetStream.IsHandshakeReady(player), "Strict handshake allowed unready peer")
+	ack:FireClient(player, sequence, status.State)
+end)
+print("NetStream v2.3.13 strict handshake server started")
