@@ -3,7 +3,7 @@
 local NetStream = require(script.Parent:WaitForChild("Netstream"))
 local Compression = require(script.Parent:WaitForChild("Netstream"):WaitForChild("Compression"))
 
-assert(NetStream.GetVersion() == "2.3.10", "Expected patched NetStream v2.3.4")
+assert(NetStream.GetVersion() == "2.3.13", "Expected patched NetStream v2.3.4")
 assert(Compression.Version() == "2.3.4", "Expected patched Compression v2.3.4")
 
 local previousLimit = NetStream.GetConfig().MaxIncomingPacketBytes
