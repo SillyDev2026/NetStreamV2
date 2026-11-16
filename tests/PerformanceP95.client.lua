@@ -2,7 +2,7 @@
 -- Use as a standalone LocalScript in StarterPlayerScripts with PerformanceP95.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.28", "Expected NetStream 2.3.28")
+assert(NetStream.GetVersion() == "2.3.31", "Expected NetStream 2.3.31")
 NetStream.Configure({
 	PerformanceTelemetryEnabled = true,
 	PerformanceTelemetryCapacity = 512,
