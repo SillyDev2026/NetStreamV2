@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.1"
+local VERSION = "2.3.2"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -685,6 +685,8 @@ function Internal.packetAppendBufferBits(out, bitPosition, payload)
 end
 
 function Internal.packetReadBufferBits(data, bitPosition, byteCount)
+	if byteCount < 0 or byteCount % 1 ~= 0 or byteCount > Config.MaxIncomingPacketBytes then error("NetStream hybrid payload length invalid", 0) end
+	if bitPosition < 0 or bitPosition % 1 ~= 0 or bitPosition + byteCount * 8 > buffer.len(data) * 8 then error("NetStream hybrid payload truncated", 0) end
 	local out = buffer.create(byteCount)
 	if byteCount == 0 then
 		return out, bitPosition
@@ -1535,7 +1537,7 @@ function Internal.BitFrameReader:rawString(length)
 	return table.concat(chars)
 end
 function Internal.BitFrameReader:rawBuffer(length)
-	if length > Config.MaxBufferBytes and length > Config.MaxIncomingPacketBytes then error("NetStream BitFrame buffer is too large", 0) end
+	if length > Config.MaxBufferBytes or length > Config.MaxIncomingPacketBytes then error("NetStream BitFrame buffer is too large", 0) end
 	local bitPosition = self.bitPosition
 	if bitPosition + length * 8 > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
 	local out = buffer.create(length)
