@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.19"
+local VERSION = "2.3.22"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -543,6 +543,8 @@ local Stats = {
 	FastSchemaHeaderBytesSaved = 0,
 	FixedSchemaFastWrites = 0,
 	FixedSchemaFastReads = 0,
+	BooleanBitPackWrites = 0,
+	BooleanBitPackReads = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -563,10 +565,14 @@ local Stats = {
 	HybridCompressionThresholdSkips = 0,
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
+	BitFrameEncodeFailures = 0,
+	BitFrameTailPaddingRejected = 0,
 	BitFrameWriterPoolHits = 0,
 	BitFrameReaderPoolHits = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
+	TransportDeferredRestoreCalls = 0,
+	TransportDeferredRestoredMessages = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
 	BitFrameMessagesEncoded = 0,
@@ -1843,9 +1849,11 @@ function Internal.compileSchema(spec, label)
 	end
 	local fixedBytes = 0
 	local isFixed = true
+	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
+		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		local fieldBytes = Internal.schemaFixedBytes(field)
 		if fieldBytes then
 			fixedBytes += fieldBytes
@@ -1864,6 +1872,7 @@ function Internal.compileSchema(spec, label)
 		signature = table.concat(signatureParts, "|"),
 		fixedBytes = if isFixed then fixedBytes else nil,
 		isFixed = isFixed,
+		bitPackedBooleans = bitPackedBooleans,
 	}
 end
 
@@ -2415,6 +2424,17 @@ end
 
 function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 	local offset = base or 0
+	if schema.bitPackedBooleans then
+		local packed = 0
+		local bitWeight = 1
+		for i = 1, schema.count do
+			if args[offset + i] then packed += bitWeight end
+			bitWeight *= 2
+		end
+		writer:bits(packed, schema.count)
+		Stats.BooleanBitPackWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		local field = schema.fields[i]
 		local value = args[offset + i]
@@ -2430,6 +2450,16 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 	if schema.count == 0 then return EMPTY_ARGS end
 	if schema.count == 1 and schema.fields[1].Kind == SCHEMA_BOOL then
 		return if reader:bits(1) ~= 0 then TRUE_ARGS else FALSE_ARGS
+	end
+	if schema.bitPackedBooleans then
+		local packed = reader:bits(schema.count)
+		local args = acquireArgsCount(schema.count)
+		for i = 1, schema.count do
+			args[i] = packed % 2 ~= 0
+			packed = math.floor(packed / 2)
+		end
+		Stats.BooleanBitPackReads += 1
+		return args
 	end
 	local args = acquireArgsCount(schema.count)
 	for i = 1, schema.count do
@@ -4332,13 +4362,20 @@ function Internal.bitFrameWriteOne(writer, item)
 	Stats.BitFrameMessagesEncoded += messageLogicalCount(item)
 end
 
+function Internal.finishBitFrameBatch(writer, items)
+	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
+	writer:bits(0, 1)
+	return writer:finish(), writer.bitPosition
+end
+
 function Internal.encodeBitFrame(items)
 	local writer = Internal.acquireBitFrameWriter()
-	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
-	writer:bits(0, 1) -- end-of-frame marker; remaining physical tail bits stay zero
-	local usefulBits = writer.bitPosition
-	local out = writer:finish()
+	local ok, out, usefulBits = pcall(Internal.finishBitFrameBatch, writer, items)
 	Internal.releaseBitFrameWriter(writer)
+	if not ok then
+		Stats.BitFrameEncodeFailures += 1
+		error(out, 0)
+	end
 	local physicalBits = buffer.len(out) * 8
 	Internal._lastEncodedUsefulBits = usefulBits
 	Internal._lastEncodedCodec = "BitFrame"
@@ -4500,7 +4537,9 @@ function Internal.commitBandwidth(target, bytes)
 end
 
 function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPressureDrop)
-	local normal = table.create(#items)
+	Stats.TransportDeferredRestoreCalls += 1
+	local dropOnPressure = unreliable and allowPressureDrop ~= false and Config.BandwidthDropUnreliableOnPressure
+	-- Apply latest-key overwrites in original order, retaining only the newest value.
 	for i = 1, #items do
 		local item = items[i]
 		if item then
@@ -4511,19 +4550,25 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPr
 					Stats.CoalescedLatest += 1
 				end
 				latest[item.latestKey] = item
-			elseif unreliable and allowPressureDrop ~= false and Config.BandwidthDropUnreliableOnPressure then
+			elseif dropOnPressure then
 				local droppedCount = messageLogicalCount(item)
 				releaseMessage(item)
 				Stats.BandwidthDroppedUnreliableMessages += droppedCount
-			else
-				normal[#normal + 1] = item
 			end
 		end
 	end
-	for i = #normal, 1, -1 do
-		queue.head -= 1
-		queue.items[queue.head] = normal[i]
-		queue.logicalCount += messageLogicalCount(normal[i])
+	-- Reverse the surviving FIFO items directly into the queue; no scratch array.
+	if not dropOnPressure then
+		for i = #items, 1, -1 do
+			local item = items[i]
+			if item and item.latestKey == nil then
+				queue.head -= 1
+				queue.items[queue.head] = item
+				local restored = messageLogicalCount(item)
+				queue.logicalCount += restored
+				Stats.TransportDeferredRestoredMessages += restored
+			end
+		end
 	end
 end
 
@@ -5912,9 +5957,11 @@ function Internal.decodeBitFrame(player, data, reader)
 		if logicalCount > Config.MaxIncomingMessages then error("NetStream BitFrame exceeds MaxIncomingMessages", 0) end
 	end
 
-	-- All remaining bits are physical tail padding and must be zero.
-	while reader.bitPosition < reader.bitLength do
-		if reader:bits(1) ~= 0 then error("NetStream BitFrame has non-zero tail padding", 0) end
+	-- A valid BitFrame has at most seven unused bits in its final byte.
+	local tailBits = reader.bitLength - reader.bitPosition
+	if tailBits > 7 or (tailBits > 0 and reader:bits(tailBits) ~= 0) then
+		Stats.BitFrameTailPaddingRejected += 1
+		error("NetStream BitFrame invalid tail padding", 0)
 	end
 	Internal.bitFrameCommitReceive(player, data, logicalCount)
 end
@@ -7778,6 +7825,8 @@ function NetStream.GetPerformanceStats()
 		FastSchemaHeaderBytesSaved = stats.FastSchemaHeaderBytesSaved,
 		FixedSchemaFastWrites = stats.FixedSchemaFastWrites,
 		FixedSchemaFastReads = stats.FixedSchemaFastReads,
+		BooleanBitPackWrites = stats.BooleanBitPackWrites,
+		BooleanBitPackReads = stats.BooleanBitPackReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
@@ -7801,6 +7850,8 @@ function NetStream.GetPerformanceStats()
 		ScalarDispatches = stats.ScalarDispatches,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,
+		DeferredRestoreCalls = stats.TransportDeferredRestoreCalls,
+		DeferredRestoredMessages = stats.TransportDeferredRestoredMessages,
 		Telemetry = NetStream.GetLatencyStats(),
 	}
 end
