@@ -1,42 +1,39 @@
-# NetStream
+# NetStreamV2 (NetStream)
 
-![Version](https://img.shields.io/badge/version-v2.3.1-4c8bf5)
+![Version](https://img.shields.io/badge/version-v2.3.19-4c8bf5)
 ![Language](https://img.shields.io/badge/language-Luau-00A2FF)
 ![Platform](https://img.shields.io/badge/platform-Roblox-111111)
-![Compression](https://img.shields.io/badge/Compression-v2.3.3-2ea44f)
-![Protocol](https://img.shields.io/badge/protocol-0x18%20%7C%200x19%20%7C%200x1A-6f42c1)
+![Compression](https://img.shields.io/badge/compression-v2.3.5-2ea44f)
+![Protocol](https://img.shields.io/badge/protocol-BitFrame%20v1-6f42c1)
 
-**NetStream** is a compact, production-oriented networking layer for Roblox that sits on top of `RemoteEvent` and `UnreliableRemoteEvent`.
+**NetStreamV2** is a Roblox networking module implemented as `Netstream.lua`, supporting reliable and unreliable remote traffic, schema and dynamic binary encoding, RPC, replicated state, coalescing, adaptive batching, route compression, handshake negotiation, queue/rate protections, and performance diagnostics.
 
-It provides typed routes, schema encoding, dynamic binary encoding, Compression v2.3.3 integration, adaptive batching, coalescing, RPC, replicated state, queue protection, inbound rate limiting, an outbound bandwidth governor, pooled encoders/decoders, and detailed transport/compression diagnostics through one API.
-
-> **Source release:** `v2.3.1` (proposed patch)
+> **Current version on `main`:** NetStream **v2.3.19**
 >
-> **Required dependency:** `Compression v2.3.3`
+> **Bundled child dependency:** Compression **v2.3.5**, codec **230**. NetStream accepts the **2.3.x** module API; use the bundled child to keep both peers consistent.
 >
-> NetStream v2.3.1 requires a child ModuleScript named `Compression` under the NetStream ModuleScript.
+> **Default packet format:** BitFrame **v1** (`BitFrameEnabled = true`); legacy 0x30–0x33 formats only apply when BitFrame is disabled.
+>
+> **Performance telemetry:** Opt-in p50/p95/p99 for encoding, decoding, queueing, dispatch, packet payload bytes, and explicitly recorded client-observed RTT/jitter. Telemetry is disabled by default; no Roblox Studio performance measurement is implied by this README.
 
----
+For a verified local version check:
 
-## v2.3.1 — decoder hardening (proposed patch)
+```luau
+local NetStream = require(game:GetService("ReplicatedStorage"):WaitForChild("Netstream"))
+print(NetStream.GetVersion()) -- 2.3.19
+print(NetStream.CompressionVersion) -- 2.3.5
+print(NetStream.RequiredCompressionVersion) -- "2.3.x"
+print(NetStream.BitFrameVersion) -- 1
+```
 
-This maintenance patch fixes **variable-length integer validation** and packet-batch limits without changing the bytes produced by valid encoders:
-
-- BitFrame `adaptiveUInt` decoding now detects truncated inputs before reading the next byte.
-- Both BitFrame and legacy `varUInt` decoding reject noncanonical encodings such as `0x80 0x00` for zero. The existing writer always emits canonical encodings, so standard packets remain compatible.
-- BitFrame rejects a packet with more than `MaxIncomingMessages` before parsing another message or oversized schema run, instead of discovering it only after processing the extra message.
-- A Studio-only regression verifies canonical variable-length integers, safe-integer round trips, truncated inputs, and malformed encodings.
-
-**Source release:** `2.3.1`, **required child Compression module:** v2.3.x (included version v2.3.3; codec 230). **Wire compatibility:** BitFrame v2.3 framing is unchanged.
-
-**Validation required:** Run `tests/VarUIntRegression.server.lua` in Studio with `Netstream` and its `Compression` child ModuleScripts. Repeat multiplayer RPC/State/Event tests with both peers configured identically. No performance gain or complete `--!strict` typecheck is claimed. There is no cross-version compatibility guarantee for `BitFrameEnabled` mismatches.
+See [Installation](#installation), [Compression Integration](#compression-v235-integration), [Performance Telemetry](#v2317v2319-p50p95p99-latency-cpu-packet-and-memory-diagnostics), and [Release History](#release-history).
 
 ---
 
 ## Table of Contents
 
 - [What NetStream Does](#what-netstream-does)
-- [v1.3.0 Highlights](#v130-highlights)
+- [Current v2.3.19 Highlights](#current-v2319-highlights)
 - [How the Pipeline Works](#how-the-pipeline-works)
 - [Installation](#installation)
 - [Recommended Project Structure](#recommended-project-structure)
@@ -49,7 +46,7 @@ This maintenance patch fixes **variable-length integer validation** and packet-b
 - [Functions / RPC](#functions--rpc)
 - [Schemas](#schemas)
 - [Dynamic Encoding](#dynamic-encoding)
-- [Compression v2.3.3 Integration](#compression-v232-integration)
+- [Compression v2.3.5 Integration](#compression-v235-integration)
 - [Compact Single-Table Packets](#compact-single-table-packets)
 - [Schema String and Buffer Compression](#schema-string-and-buffer-compression)
 - [Batching and Transport Windows](#batching-and-transport-windows)
@@ -115,7 +112,7 @@ Route validation
     ▼
 Schema or dynamic encoding
     │
-    ├── optional Compression v2.3.3
+    ├── optional Compression v2.3.5
     │
     ▼
 Queue / Latest slot
@@ -137,13 +134,13 @@ The receiver performs the reverse operation and dispatches the decoded arguments
 
 ---
 
-# v1.3.0 Highlights
+# Current v2.3.19 Highlights
 
-NetStream v1.3.0 is a major step beyond the older v1.0.0 README.
+NetStream v2.3.19 is a major step beyond the older v1.0.0 README.
 
-## Compression v2.3.3 integration
+## Bundled compression highlights
 
-NetStream now directly integrates **Compression v2.3.3** for:
+NetStream now directly integrates **Compression v2.3.5** for:
 
 - dynamic argument compression;
 - compact table compression;
@@ -158,29 +155,32 @@ NetStream now directly integrates **Compression v2.3.3** for:
 
 Compression is only accepted when the encoded result is actually beneficial under the configured minimum-savings threshold.
 
-## Three packet protocols
+## Default BitFrame protocol and legacy fallback
 
-v1.3.0 uses three packet forms:
+The default is **BitFrame v1**, which uses a bit-packed stream without an 0x30–0x33 prefix. When `BitFrameEnabled = false`, the supported legacy byte protocols are:
 
 ```text
-0x18  Normal multi-message batch
-0x19  Single-message packet
-0x1A  Compact single-table packet
+0x30  Multi-message batch
+0x31  Single-message packet
+0x32  Compact single-table packet
+0x33  Fast schema single packet
 ```
 
-The compact table protocol removes unnecessary framing when a single dynamic Event or State contains one compressible table.
+The compact table protocol is a legacy framing optimization, not the default BitFrame envelope.
 
 ## Adaptive batching
 
 Messages can wait for a short transport window so multiple logical messages can share one packet.
 
-Default windows:
+Default maximum batching windows (`TransportAdaptiveBatching = true`):
 
 ```text
-Normal   50 ms
-Realtime 33 ms
+Normal    1/60 second (approximately 16.7 ms)
+Realtime  0 ms
 Critical  0 ms
 ```
+
+Real-time and critical messages can use deferred fast-flush scheduling; these settings do not guarantee immediate delivery by Roblox.
 
 ## Bandwidth governor
 
@@ -196,7 +196,7 @@ The outbound governor can:
 
 ## Better diagnostics
 
-v1.3.0 exposes dedicated APIs for:
+v2.3.19 exposes dedicated APIs for:
 
 ```lua
 NetStream.GetCompressionStats()
@@ -250,7 +250,7 @@ wait for transport batching window
 measure native NetStream encoding
     │
     ▼
-try Compression v2.3.3
+try Compression v2.3.5
     │
     ├── compressed result smaller? use it
     │
@@ -276,7 +276,7 @@ It measures whether compression helps and rejects compression when it would wast
 
 ## Required hierarchy
 
-NetStream v1.3.0 requires Compression v2.3.3 as a child of the NetStream ModuleScript.
+NetStream v2.3.19 loads a child ModuleScript named `Compression`. This repository bundles Compression v2.3.5 (codec 230); the loader accepts compatible 2.3.x implementations with the required packet API.
 
 ```text
 ReplicatedStorage
@@ -287,16 +287,16 @@ ReplicatedStorage
 Where:
 
 ```text
-NetStream     = NetStream v1.3.0 ModuleScript
-Compression   = Compression v2.3.3 ModuleScript
+NetStream     = NetStream v2.3.19 ModuleScript
+Compression   = Compression v2.3.5 ModuleScript
 ```
 
-The dependency is checked when NetStream is required.
+The version family and required Compression packet API are checked when NetStream is required.
 
 NetStream expects:
 
 ```lua
-Compression.Version() == "2.3.3"
+Compression.Version() -- "2.3.5" in this repository
 ```
 
 If the dependency is missing or the version is wrong, NetStream throws an error immediately.
@@ -496,7 +496,7 @@ The same shared definition must be required by the server and client.
 
 ## Important Priority note
 
-The v1.3.0 direct route constructors support:
+The v2.3.19 direct route constructors support:
 
 ```lua
 Priority = "Critical"
@@ -506,7 +506,7 @@ Priority = "Realtime"
 
 However, the current `Define()` / `DefineCompact()` forwarding table does not forward the `Priority` field.
 
-If you need a custom priority in this exact v1.3.0 build, create that route directly:
+If you need a custom priority in this exact v2.3.19 build, create that route directly:
 
 ```lua
 local Movement = NetStream.Event("Movement", {
@@ -816,8 +816,8 @@ Damage:FireServer(targetId, damage)
 | `T.VarInt` | Variable-length signed integer |
 | `T.F32` | 32-bit float |
 | `T.F64` | 64-bit float |
-| `T.String` | String with optional Compression v2.3.3 |
-| `T.Buffer` | Buffer with optional Compression v2.3.3 |
+| `T.String` | String with optional Compression v2.3.5 |
+| `T.Buffer` | Buffer with optional Compression v2.3.5 |
 | `T.Vector2Q(precision)` | Quantized Vector2 |
 | `T.Vector3Q(precision)` | Quantized Vector3 |
 | `T.CFrameQ(precision)` | Quantized position + quaternion rotation |
@@ -924,12 +924,12 @@ Schemas are usually better for hot paths.
 
 ---
 
-# Compression v2.3.3 Integration
+# Compression v2.3.5 Integration
 
 NetStream requires:
 
 ```text
-Compression v2.3.3
+Compression v2.3.5
 ```
 
 and exposes it as:
@@ -945,11 +945,7 @@ print(NetStream.CompressionVersion)
 print(NetStream.RequiredCompressionVersion)
 ```
 
-Both should report:
-
-```text
-2.3.3
-```
+The bundled module reports `NetStream.CompressionVersion = "2.3.5"`; `NetStream.RequiredCompressionVersion = "2.3.x"` expresses the accepted API family.
 
 ## Compression is selective
 
@@ -960,7 +956,7 @@ For a candidate dynamic payload it measures:
 ```text
 native NetStream cost
 vs
-Compression v2.3.3 cost
+Compression v2.3.5 cost
 ```
 
 and accepts compression only when:
@@ -994,7 +990,7 @@ CompressionMinStringBytes = 8
 CompressionMinBufferBytes = 6
 ```
 
-## Compression options passed to v2.3.3
+## Compression options passed to v2.3.5
 
 NetStream configures Compression with:
 
@@ -1028,7 +1024,7 @@ NetStream configures Compression with:
 
 # Compact Single-Table Packets
 
-One of v1.3.0's most aggressive framing optimizations is protocol `0x1A`.
+One of v2.3.19's most aggressive framing optimizations is protocol `0x1A`.
 
 A compact single-table packet can be used when:
 
@@ -1039,7 +1035,7 @@ A compact single-table packet can be used when:
 - that argument is a table;
 - the route ID is `0..63`;
 - compression is enabled for the route;
-- Compression v2.3.3 produces a smaller total packet.
+- Compression v2.3.5 produces a smaller total packet.
 
 Conceptually:
 
@@ -1078,7 +1074,7 @@ Small compact route IDs are especially useful for this path.
 
 Schema routes are already compact, so NetStream does not wrap every schema payload in general table compression.
 
-Instead, v1.3.0 selectively compresses schema strings and buffers.
+Instead, v2.3.19 selectively compresses schema strings and buffers.
 
 ## Schema strings
 
@@ -2065,7 +2061,7 @@ local analysis = NetStream.Codec.Analyze(...)
 
 ## Direct Compression access
 
-The actual Compression v2.3.3 module is exposed as:
+The actual Compression v2.3.5 module is exposed as:
 
 ```lua
 NetStream.Compression
@@ -2441,7 +2437,7 @@ Routes.ProfileSnapshot:SetLatestClient(player, {
 })
 ```
 
-Compression v2.3.3 can then evaluate compact/mapped table encoding for the full profile.
+Compression v2.3.5 can then evaluate compact/mapped table encoding for the full profile.
 
 This gives two different optimizations:
 
@@ -2562,7 +2558,7 @@ It does **not** mean incoming client data is trustworthy.
 
 # Troubleshooting
 
-## `NetStream v1.3.0 requires a child ModuleScript named Compression`
+## Missing `Compression` child ModuleScript
 
 Your hierarchy is wrong.
 
@@ -2573,11 +2569,11 @@ NetStream
 └── Compression
 ```
 
-The Compression child must be v2.3.3.
+Use the bundled Compression v2.3.5 child (compatible 2.3.x API and codec 230).
 
 ---
 
-## `NetStream v1.3.0 requires Compression v2.3.3`
+## Incompatible `Compression` version or API
 
 The dependency exists, but:
 
@@ -2588,7 +2584,7 @@ Compression.Version()
 does not equal:
 
 ```text
-2.3.3
+2.3.5
 ```
 
 Update the Compression child.
@@ -2974,7 +2970,7 @@ NetStream.Codec.Analyze(...)
 
 ## Legacy compatibility helpers
 
-v1.3.0 still exposes compatibility helpers such as:
+v2.3.19 still exposes compatibility helpers such as:
 
 ```lua
 NetStream.Connect(id, callback)
@@ -3003,12 +2999,13 @@ New code should generally prefer typed Route objects.
 
 # Protocol and Compatibility
 
-NetStream v1.3.0 exposes:
+NetStream v2.3.19 uses **BitFrame v1** by default; `GetCompatibilityInfo()` additionally reports the legacy byte-header constants used when `BitFrameEnabled=false`:
 
 ```text
-Normal batch protocol         0x18
-Single-message protocol       0x19
-Compact single-table protocol 0x1A
+Normal batch protocol         0x30
+Single-message protocol       0x31
+Compact single-table protocol 0x32
+Fast schema protocol          0x33
 ```
 
 You can inspect:
@@ -3025,23 +3022,19 @@ print(info.ProtocolCompactTable)
 
 For production, run the same NetStream version on server and client.
 
-NetStream v1.3.0 also requires exactly:
+NetStream v2.3.19 accepts the compatible **Compression 2.3.x API** and this repository bundles **v2.3.5 (codec 230)**. For actual interoperability, keep server and client builds consistent.
 
-```text
-Compression v2.3.3
-```
-
-Do not mix the v1.3.0 encoder with an older peer or a different Compression wire format.
+Do not mix the v2.3.19 encoder with an older peer or a different Compression wire format.
 
 ---
 
 # Upgrade Notes
 
-When moving from the old v1.0.0 build to v1.3.0:
+When upgrading an older NetStream build to v2.3.19:
 
 1. Replace the old NetStream ModuleScript.
-2. Add `Compression v2.3.3` as a child named exactly `Compression`.
-3. Confirm both server and client require the same NetStream v1.3.0 module.
+2. Add `Compression v2.3.5` as a child named exactly `Compression`.
+3. Confirm both server and client require the same NetStream v2.3.19 module.
 4. Start NetStream early on the server.
 5. Keep shared route definitions identical.
 6. Re-test all schema routes.
@@ -3056,13 +3049,13 @@ When moving from the old v1.0.0 build to v1.3.0:
 15. Use coalescing for values where only the newest state matters.
 16. Keep Immediate traffic limited to latency-sensitive actions.
 17. Prefer small route IDs when packet size matters.
-18. Remember that `NetStream.Compression` now refers to Compression v2.3.3 itself, not the Codec wrapper.
+18. Remember that `NetStream.Compression` now refers to Compression v2.3.5 itself, not the Codec wrapper.
 
 ---
 
 # Design Summary
 
-A healthy NetStream v1.3.0 setup usually follows this rule:
+A healthy NetStream v2.3.19 setup usually follows this rule:
 
 ```text
 Small frequent scalar
@@ -3107,8 +3100,25 @@ The goal is to minimize **total useful networking work**:
 - measurable compression;
 - measurable transport behavior.
 
-That is where NetStream v1.3.0 is designed to be most useful.
+That is where NetStream v2.3.19 is designed to be most useful.
 
+
+## Release History
+
+The following sections record previous changes. Version numbers in these entries are historical, not the current release.
+
+## v2.3.1 — decoder hardening (historical release)
+
+This maintenance patch fixes **variable-length integer validation** and packet-batch limits without changing the bytes produced by valid encoders:
+
+- BitFrame `adaptiveUInt` decoding now detects truncated inputs before reading the next byte.
+- Both BitFrame and legacy `varUInt` decoding reject noncanonical encodings such as `0x80 0x00` for zero. The existing writer always emits canonical encodings, so standard packets remain compatible.
+- BitFrame rejects a packet with more than `MaxIncomingMessages` before parsing another message or oversized schema run, instead of discovering it only after processing the extra message.
+- A Studio-only regression verifies canonical variable-length integers, safe-integer round trips, truncated inputs, and malformed encodings.
+
+**Source release:** `2.3.1`, **required child Compression module:** v2.3.x (included version v2.3.3; codec 230). **Wire compatibility:** BitFrame v2.3 framing is unchanged.
+
+**Validation required:** Run `tests/VarUIntRegression.server.lua` in Studio with `Netstream` and its `Compression` child ModuleScripts. Repeat multiplayer RPC/State/Event tests with both peers configured identically. No performance gain or complete `--!strict` typecheck is claimed. There is no cross-version compatibility guarantee for `BitFrameEnabled` mismatches.
 
 ## NetStreamV2 maintenance patch sequence (v2.3.2 → v2.3.4)
 
@@ -3127,7 +3137,7 @@ The source contains `tests/VarUIntRegression.server.lua`, `tests/BundledCompress
 
 ## CPU and packet-sizing maintenance: v2.3.5 → v2.3.7
 
-These three incremental patches build on the still-open v2.3.2–v2.3.4 maintenance branch. They keep NetStream's API, BitFrame version 1, hybrid/native payload encoding, Compression codec 230, and existing rate/queue limits.
+These three incremental patches built on the v2.3.2–v2.3.4 maintenance branch (now merged into `main`). They keep NetStream's API, BitFrame version 1, hybrid/native payload encoding, Compression codec 230, and existing rate/queue limits.
 
 | Source patch | Change | Expected benefit and limitation |
 |---|---|---|
@@ -3147,7 +3157,7 @@ These three incremental patches build on the still-open v2.3.2–v2.3.4 maintena
 
 ## Maintenance / performance patches v2.3.8 → v2.3.10
 
-These releases are stacked on the unmerged v2.3.7 performance branch and preserve public Event, State, RPC, Codec, and route APIs. Wire encoding remains **BitFrame version 1** and bundled Compression **codec 230**.
+These releases were developed after the v2.3.7 performance branch (now merged) and preserve public Event, State, RPC, Codec, and route APIs. Wire encoding remains **BitFrame version 1** and bundled Compression **codec 230**.
 
 | Patch | Change | Why it matters |
 |---|---|---|
@@ -3217,7 +3227,7 @@ Run each standalone server/client test pair in its own Studio Play session; conf
 
 ## Handshake reliability + maximum CPU/memory focus: v2.3.14 → v2.3.16
 
-Three sequential patches stacked on the unmerged **v2.3.13** handshake/latency branch. These releases deliberately preserve **BitFrame wire version 1**, **Compression codec 230**, route IDs and the existing Event/State/RPC APIs.
+Three sequential patches originally developed on the **v2.3.13** handshake/latency branch, now merged into `main`. These releases deliberately preserve **BitFrame wire version 1**, **Compression codec 230**, route IDs and the existing Event/State/RPC APIs.
 
 | Release | Changes | Trade-off |
 |---|---|---|
@@ -3259,7 +3269,7 @@ The compression threshold is **per candidate compression call**, not a hard aggr
 
 **Validation status**: Remote GitHub source checks can establish the presence of features and preserve version/codec invariants, but they cannot substitute for a Luau typecheck, a Play Test, and measured CPU, memory, latency, packet and roundtrip benchmarks. These tests are written but **not executed in Roblox Studio**. Avoid claiming higher measured FPS or lower ping before running them.
 
-**Deployment dependency**: this branch is based on the unmerged v2.3.13 PR. Merge the earlier stacked pull requests and complete their test suites before deploying v2.3.16.
+**Historical deployment note:** earlier stacked PRs have since been merged into `main`. Roblox Studio runtime and performance validation are still recommended.
 
 
 ## v2.3.17–v2.3.19: p50/p95/p99 latency, CPU, packet, and memory diagnostics
