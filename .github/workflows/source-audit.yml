@@ -8,17 +8,18 @@ jobs:
   source-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
+          package-manager-cache: false
       - name: Deterministic source and wire-layout checks
         run: node scripts/source-audit.mjs
 
   luau-syntax:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build official Luau parser
         run: |
           git clone --depth 1 https://github.com/luau-lang/luau.git /tmp/luau-src
