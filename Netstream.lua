@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.23"
+local VERSION = "2.3.24"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -546,6 +546,8 @@ local Stats = {
 	FixedSchemaFastReads = 0,
 	BooleanBitPackWrites = 0,
 	BooleanBitPackReads = 0,
+	U8SchemaFastWrites = 0,
+	U8SchemaFastReads = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -1851,10 +1853,12 @@ function Internal.compileSchema(spec, label)
 	local fixedBytes = 0
 	local isFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
+	local byteRunU8 = #fields > 1 and #fields <= 32
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
+		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
 		local fieldBytes = Internal.schemaFixedBytes(field)
 		if fieldBytes then
 			fixedBytes += fieldBytes
@@ -1874,6 +1878,7 @@ function Internal.compileSchema(spec, label)
 		fixedBytes = if isFixed then fixedBytes else nil,
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
+		byteRunU8 = byteRunU8,
 	}
 end
 
@@ -2436,6 +2441,11 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		Stats.BooleanBitPackWrites += 1
 		return
 	end
+	if schema.byteRunU8 then
+		for i = 1, schema.count do writer:bits(args[offset + i], 8) end
+		Stats.U8SchemaFastWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		local field = schema.fields[i]
 		local value = args[offset + i]
@@ -2460,6 +2470,12 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 			packed = math.floor(packed / 2)
 		end
 		Stats.BooleanBitPackReads += 1
+		return args
+	end
+	if schema.byteRunU8 then
+		local args = acquireArgsCount(schema.count)
+		for i = 1, schema.count do args[i] = reader:bits(8) end
+		Stats.U8SchemaFastReads += 1
 		return args
 	end
 	local args = acquireArgsCount(schema.count)
@@ -7833,6 +7849,8 @@ function NetStream.GetPerformanceStats()
 		FixedSchemaFastReads = stats.FixedSchemaFastReads,
 		BooleanBitPackWrites = stats.BooleanBitPackWrites,
 		BooleanBitPackReads = stats.BooleanBitPackReads,
+		U8SchemaFastWrites = stats.U8SchemaFastWrites,
+		U8SchemaFastReads = stats.U8SchemaFastReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
