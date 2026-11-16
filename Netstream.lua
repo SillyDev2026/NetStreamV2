@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.3"
+local VERSION = "2.3.4"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -5900,6 +5900,7 @@ local function decodeBatch(player, data, reader)
 end
 
 local function receive(player, data)
+	if destroyed or not started then return end
 	local isBuffer = typeof(data) == "buffer"
 	local bytes = if isBuffer then buffer.len(data) else 0
 	if not chargeIncomingEnvelope(player, bytes) then
@@ -6648,8 +6649,8 @@ function Internal.validateConfig(config)
 	assert(type(config.FlushRate) == "number" and isFiniteNumber(config.FlushRate) and config.FlushRate > 0, "FlushRate must be a finite number greater than 0")
 	assert(type(config.VectorPrecision) == "number" and isFiniteNumber(config.VectorPrecision) and config.VectorPrecision > 0, "VectorPrecision must be a finite number greater than 0")
 	assert(type(config.MaxBatchMessages) == "number" and config.MaxBatchMessages >= 1, "MaxBatchMessages must be >= 1")
-	assert(type(config.MaxOutgoingBatchBytes) == "number" and config.MaxOutgoingBatchBytes >= 1024, "MaxOutgoingBatchBytes must be >= 1024")
-	assert(type(config.MaxIncomingPacketBytes) == "number" and config.MaxIncomingPacketBytes >= 1024, "MaxIncomingPacketBytes must be >= 1024")
+	assert(type(config.MaxOutgoingBatchBytes) == "number" and isInteger(config.MaxOutgoingBatchBytes) and config.MaxOutgoingBatchBytes >= 1024, "MaxOutgoingBatchBytes must be >= 1024")
+	assert(type(config.MaxIncomingPacketBytes) == "number" and isInteger(config.MaxIncomingPacketBytes) and config.MaxIncomingPacketBytes >= 1024, "MaxIncomingPacketBytes must be >= 1024")
 	assert(type(config.MaxBatchesPerFlush) == "number" and config.MaxBatchesPerFlush >= 1, "MaxBatchesPerFlush must be >= 1")
 	assert(type(config.MaxDispatchPerCycle) == "number" and config.MaxDispatchPerCycle >= 1, "MaxDispatchPerCycle must be >= 1")
 	assert(type(config.MaxDispatchBacklog) == "number" and config.MaxDispatchBacklog >= config.MaxDispatchPerCycle, "MaxDispatchBacklog must be >= MaxDispatchPerCycle")
@@ -6675,10 +6676,10 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxUnreliableQueue) == "number" and config.MaxUnreliableQueue >= 1, "MaxUnreliableQueue must be >= 1")
 	assert(type(config.UnreliableMaxBytes) == "number" and config.UnreliableMaxBytes >= 1, "UnreliableMaxBytes must be >= 1")
 	assert(type(config.CallTimeout) == "number" and config.CallTimeout > 0, "CallTimeout must be > 0")
-	assert(type(config.MaxIncomingMessages) == "number" and config.MaxIncomingMessages >= 1, "MaxIncomingMessages must be >= 1")
-	assert(type(config.MaxStringBytes) == "number" and config.MaxStringBytes >= 0, "MaxStringBytes must be >= 0")
-	assert(type(config.MaxBufferBytes) == "number" and config.MaxBufferBytes >= 0, "MaxBufferBytes must be >= 0")
-	assert(type(config.MaxTableEntries) == "number" and config.MaxTableEntries >= 1, "MaxTableEntries must be >= 1")
+	assert(type(config.MaxIncomingMessages) == "number" and isInteger(config.MaxIncomingMessages) and config.MaxIncomingMessages >= 1, "MaxIncomingMessages must be >= 1")
+	assert(type(config.MaxStringBytes) == "number" and isInteger(config.MaxStringBytes) and config.MaxStringBytes >= 0, "MaxStringBytes must be >= 0")
+	assert(type(config.MaxBufferBytes) == "number" and isInteger(config.MaxBufferBytes) and config.MaxBufferBytes >= 0, "MaxBufferBytes must be >= 0")
+	assert(type(config.MaxTableEntries) == "number" and isInteger(config.MaxTableEntries) and config.MaxTableEntries >= 1, "MaxTableEntries must be >= 1")
 	assert(type(config.MaxDepth) == "number" and config.MaxDepth >= 1, "MaxDepth must be >= 1")
 	assert(type(config.CompressionEnabled) == "boolean", "CompressionEnabled must be a boolean")
 	assert(type(config.CompressionMinSavingsBytes) == "number" and config.CompressionMinSavingsBytes >= 0, "CompressionMinSavingsBytes must be >= 0")
@@ -7712,6 +7713,7 @@ end
 function Codec._DecodeArgs(data)
 	assert(typeof(data) == "buffer", "NetStream.Codec.Decode expects a buffer")
 	local length = buffer.len(data)
+	if length > Config.MaxIncomingPacketBytes then error("NetStream.Codec.Decode exceeds MaxIncomingPacketBytes", 0) end
 	if length < 1 then
 		error("NetStream.Codec.Decode received an empty buffer", 0)
 	end
