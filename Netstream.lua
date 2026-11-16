@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.22"
+local VERSION = "2.3.25"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -439,6 +439,7 @@ local Stats = {
 	HandshakeTimeouts = 0,
 	HandshakeRejected = 0,
 	HandshakeReplayRejected = 0,
+	HandshakeRecoveredHellos = 0,
 	HandshakeLateRemoteRecovered = 0,
 	HandshakeTrafficHeld = 0,
 	HandshakeTrafficRejected = 0,
@@ -477,6 +478,8 @@ local Stats = {
 	CompressionAttempts = 0,
 	CompressionRealtimeSkips = 0,
 	CompressionCpuBudgetSkips = 0,
+	CompressionEligibilityShortScans = 0,
+	CompressionEligibilityShortSkips = 0,
 	CompressionCpuSamples = 0,
 	CompressionCpuSampleSeconds = 0,
 	CompressionUsed = 0,
@@ -545,6 +548,8 @@ local Stats = {
 	FixedSchemaFastReads = 0,
 	BooleanBitPackWrites = 0,
 	BooleanBitPackReads = 0,
+	U8SchemaFastWrites = 0,
+	U8SchemaFastReads = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -951,28 +956,39 @@ function Internal.canCompressionRoundTrip(value, seen)
 end
 
 function Internal.shouldAttemptCompression(args)
-	-- Cheap structural eligibility first: most one-value scalar messages cannot
-	-- benefit from the bundled dictionary/table codec. Defer recursive validation
-	-- until a table or repeated string makes compression plausible.
-	if args.n == 1 and typeof(args[1]) ~= "table" then return false end
-	local repeatedStrings = nil
-	local candidate = false
-	for i = 1, args.n do
+	local count = args.n
+	if count == 0 then return false end
+	if count == 1 and typeof(args[1]) ~= "table" then return false end
+	-- Short argument lists are common. Scan their earlier strings directly
+	-- instead of creating a temporary dictionary for every ineligible packet.
+	if count <= 8 then
+		Stats.CompressionEligibilityShortScans += 1
+		for i = 1, count do
+			local value = args[i]
+			local kind = typeof(value)
+			if kind == "table" then return Internal.canCompressionRoundTrip(args, {}) end
+			if kind == "string" and #value >= Config.CompressionMinStringBytes then
+				for j = 1, i - 1 do
+					if args[j] == value then return Internal.canCompressionRoundTrip(args, {}) end
+				end
+			end
+		end
+		Stats.CompressionEligibilityShortSkips += 1
+		return false
+	end
+	-- Avoid O(n^2) work for large argument lists.
+	local seenStrings = nil
+	for i = 1, count do
 		local value = args[i]
 		local kind = typeof(value)
-		if kind == "table" then
-			candidate = true
-			break
-		elseif kind == "string" and #value >= Config.CompressionMinStringBytes then
-			repeatedStrings = repeatedStrings or {}
-			if repeatedStrings[value] then
-				candidate = true
-				break
-			end
-			repeatedStrings[value] = true
+		if kind == "table" then return Internal.canCompressionRoundTrip(args, {}) end
+		if kind == "string" and #value >= Config.CompressionMinStringBytes then
+			seenStrings = seenStrings or {}
+			if seenStrings[value] then return Internal.canCompressionRoundTrip(args, {}) end
+			seenStrings[value] = true
 		end
 	end
-	return candidate and Internal.canCompressionRoundTrip(args, {})
+	return false
 end
 
 local SCHEMA_BOOL = 1
@@ -1850,10 +1866,12 @@ function Internal.compileSchema(spec, label)
 	local fixedBytes = 0
 	local isFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
+	local byteRunU8 = #fields > 1 and #fields <= 32
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
+		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
 		local fieldBytes = Internal.schemaFixedBytes(field)
 		if fieldBytes then
 			fixedBytes += fieldBytes
@@ -1873,6 +1891,7 @@ function Internal.compileSchema(spec, label)
 		fixedBytes = if isFixed then fixedBytes else nil,
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
+		byteRunU8 = byteRunU8,
 	}
 end
 
@@ -2435,6 +2454,11 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		Stats.BooleanBitPackWrites += 1
 		return
 	end
+	if schema.byteRunU8 then
+		for i = 1, schema.count do writer:bits(args[offset + i], 8) end
+		Stats.U8SchemaFastWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		local field = schema.fields[i]
 		local value = args[offset + i]
@@ -2459,6 +2483,12 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 			packed = math.floor(packed / 2)
 		end
 		Stats.BooleanBitPackReads += 1
+		return args
+	end
+	if schema.byteRunU8 then
+		local args = acquireArgsCount(schema.count)
+		for i = 1, schema.count do args[i] = reader:bits(8) end
+		Stats.U8SchemaFastReads += 1
 		return args
 	end
 	local args = acquireArgsCount(schema.count)
@@ -6321,9 +6351,14 @@ function Internal.hsServer(player, data)
 			state.serverNonce = Internal.HS_RANDOM:NextInteger(1, 2147483647)
 			state.state = "confirm"
 		end
-		local response = if state.state == "ready" then 4 else 2
-		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(response, nonce, state.serverNonce)) end)
-		if ok and response == 2 then Stats.HandshakeWelcomes += 1 end
+		-- Always resend WELCOME for a matching HELLO. A client may still be in
+		-- "hello" if its earlier WELCOME or READY was lost; sending READY
+		-- directly here cannot advance that client state.
+		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(2, nonce, state.serverNonce)) end)
+		if ok then
+			Stats.HandshakeWelcomes += 1
+			if state.state == "ready" then Stats.HandshakeRecoveredHellos += 1 end
+		end
 	elseif state and state.clientNonce == nonce and state.serverNonce == buffer.readu32(data, 9)
 		and (state.state == "confirm" or state.state == "ready") then
 		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
@@ -7827,6 +7862,8 @@ function NetStream.GetPerformanceStats()
 		FixedSchemaFastReads = stats.FixedSchemaFastReads,
 		BooleanBitPackWrites = stats.BooleanBitPackWrites,
 		BooleanBitPackReads = stats.BooleanBitPackReads,
+		U8SchemaFastWrites = stats.U8SchemaFastWrites,
+		U8SchemaFastReads = stats.U8SchemaFastReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
@@ -7965,6 +8002,8 @@ function NetStream.GetCompressionStats()
 		CpuBudgetEnabled = Config.CompressionCpuBudgetEnabled,
 		MaxEstimatedEncodeSeconds = Config.CompressionMaxEstimatedSeconds,
 		CpuBudgetSkips = stats.CompressionCpuBudgetSkips,
+		EligibilityShortScans = stats.CompressionEligibilityShortScans,
+		EligibilityShortSkips = stats.CompressionEligibilityShortSkips,
 		CpuSamples = stats.CompressionCpuSamples,
 		CpuSampleSeconds = stats.CompressionCpuSampleSeconds,
 		AcceptancePercent = if stats.CompressionAttempts > 0 then stats.CompressionUsed / stats.CompressionAttempts * 100 else 0,
