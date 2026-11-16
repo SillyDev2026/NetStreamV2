@@ -264,15 +264,12 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
-| **2.3.31** | Validate finite F64 components in legacy fixed composite schema reads |
-| **2.3.30** | Preflight U8 BitFrame schema bounds once and directly read/write packed bytes |
-| **2.3.29** | Remove redundant BitFrame varuint validation on the hot path |
-
-
-| Release | Main change |
-|---|---|
-| **2.3.23** | Recover matching HELLO retries after a server reaches READY |
-| **2.3.24** | Specialized 2–32 U8 encode/decode without wire changes |
+| **2.3.31** | Reject malformed F64 components in legacy composite fixed-schema decoding |
+| **2.3.30** | One bounds check per U8 BitFrame schema run |
+| **2.3.29** | Single-validation BitFrame varuint writer |
+| **2.3.28** | Handshake remote rebind and encoding safeguards |
+| **2.3.27** | Reject malformed BitFrame float32/float64 values |
+| **2.3.26** | Adaptive unsigned-integer validation |
 | **2.3.25** | Allocation-free short-list compression eligibility screening |
 
 **More detail:** [Architecture](docs/ARCHITECTURE.md) · [Benchmarking](docs/BENCHMARKING.md) · [Changelog](docs/CHANGELOG.md) · [Prioritized next features](docs/NEXT_OPTIONS.md) · [Previous long-form README archive](docs/README_LEGACY_v2.3.22.md).
