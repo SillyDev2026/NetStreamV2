@@ -57,8 +57,7 @@ function Internal.adaptiveUIntBitLength(value)
 	return count
 end
 
-function Internal.writeAdaptiveUIntBits(target, bitPosition, value)
-	Internal.validateAdaptiveUInt(value)
+function Internal.writeAdaptiveUIntBitsUnchecked(target, bitPosition, value)
 	repeat
 		local byte = value % 128
 		value = math.floor(value / 128)
@@ -69,6 +68,11 @@ function Internal.writeAdaptiveUIntBits(target, bitPosition, value)
 		bitPosition += 8
 	until value == 0
 	return bitPosition
+end
+
+function Internal.writeAdaptiveUIntBits(target, bitPosition, value)
+	Internal.validateAdaptiveUInt(value)
+	return Internal.writeAdaptiveUIntBitsUnchecked(target, bitPosition, value)
 end
 
 function Internal.readAdaptiveUIntBits(source, bitPosition)
@@ -207,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.27"
+local VERSION = "2.3.28"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -368,6 +372,8 @@ local destroyed = false
 local reliableRemote = nil
 local unreliableRemote = nil
 local handshakeRemote = nil
+local handshakeClientConnection = nil
+local handshakeClientConnectionIndex = nil
 local handshakePeers = {}
 local handshakeClient = nil
 local heartbeatConnection = nil
@@ -449,6 +455,7 @@ local Stats = {
 	HandshakeReplayRejected = 0,
 	HandshakeRecoveredHellos = 0,
 	HandshakeLateRemoteRecovered = 0,
+	HandshakeRemoteRebinds = 0,
 	HandshakeTrafficHeld = 0,
 	HandshakeTrafficRejected = 0,
 	SentBytes = 0,
@@ -1535,7 +1542,7 @@ end
 function Internal.BitFrameWriter:adaptiveUInt(value)
 	local bitCount = Internal.adaptiveUIntBitLength(value)
 	self:ensureBits(bitCount)
-	self.bitPosition = Internal.writeAdaptiveUIntBits(self.buffer, self.bitPosition, value)
+	self.bitPosition = Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)
 end
 function Internal.BitFrameWriter:u8(value) self:bits(value, 8) end
 function Internal.BitFrameWriter:u16(value) self:bits(value, 16) end
@@ -6595,6 +6602,22 @@ local function flushAll()
 	end
 end
 
+function Internal.bindClientHandshakeRemote(remote)
+	if IS_SERVER or destroyed or not remote or not remote:IsA("RemoteEvent") then return false end
+	if handshakeRemote == remote and handshakeClientConnection then return false end
+	if handshakeClientConnection then handshakeClientConnection:Disconnect() end
+	handshakeRemote = remote
+	handshakeClientConnection = remote.OnClientEvent:Connect(Internal.hsClient)
+	if handshakeClientConnectionIndex then
+		receiveConnections[handshakeClientConnectionIndex] = handshakeClientConnection
+		Stats.HandshakeRemoteRebinds += 1
+	else
+		receiveConnections[#receiveConnections + 1] = handshakeClientConnection
+		handshakeClientConnectionIndex = #receiveConnections
+	end
+	return true
+end
+
 local function ensureStarted()
 	if started then
 		return
@@ -6622,16 +6645,16 @@ local function ensureStarted()
 			Internal.failPendingForPlayer(player, "Player left before NetStream call completed")
 		end)
 	else
-		if handshakeRemote then receiveConnections[#receiveConnections + 1] = handshakeRemote.OnClientEvent:Connect(Internal.hsClient) end
+		if handshakeRemote then Internal.bindClientHandshakeRemote(handshakeRemote) end
 		if Config.HandshakeEnabled and not handshakeRemote then
 			task.spawn(function()
 				local folder = ReplicatedStorage:FindFirstChild("__NetStream_" .. Config.Namespace)
 				local found = folder and folder:WaitForChild("H", Config.RemoteWaitTimeout)
-				if found and found:IsA("RemoteEvent") and started and not destroyed and not handshakeRemote then
-					handshakeRemote = found
-					receiveConnections[#receiveConnections + 1] = found.OnClientEvent:Connect(Internal.hsClient)
-					Stats.HandshakeLateRemoteRecovered += 1
-					Internal.hsStart()
+				if found and found:IsA("RemoteEvent") and started and not destroyed and (not handshakeRemote or handshakeRemote.Parent ~= folder) then
+					if Internal.bindClientHandshakeRemote(found) then
+						Stats.HandshakeLateRemoteRecovered += 1
+						Internal.hsStart()
+					end
 				end
 			end)
 		end
@@ -7329,12 +7352,14 @@ end
 function NetStream.RetryHandshake()
 	assert(not IS_SERVER, "RetryHandshake is client-only")
 	NetStream.Start()
-	if not handshakeRemote and Config.HandshakeEnabled then
+	if Config.HandshakeEnabled then
 		local folder = ReplicatedStorage:FindFirstChild("__NetStream_" .. Config.Namespace)
 		local found = folder and folder:FindFirstChild("H")
 		if found and found:IsA("RemoteEvent") then
-			handshakeRemote = found
-			receiveConnections[#receiveConnections + 1] = handshakeRemote.OnClientEvent:Connect(Internal.hsClient)
+			Internal.bindClientHandshakeRemote(found)
+		elseif handshakeRemote then
+			if handshakeClientConnection then handshakeClientConnection:Disconnect(); handshakeClientConnection = nil end
+			handshakeRemote = nil
 		end
 	end
 	Internal.hsStart()
@@ -8213,6 +8238,8 @@ function NetStream.Destroy()
 		connection:Disconnect()
 	end
 	table.clear(receiveConnections)
+	handshakeClientConnection = nil
+	handshakeClientConnectionIndex = nil
 	handshakeRemote = nil
 	handshakeClient = nil
 	table.clear(handshakePeers)

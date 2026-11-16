@@ -1,6 +1,13 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.27**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.3.28**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.28 — Control-remote rebind and varuint hot-path handling
+
+- `RetryHandshake()` now re-resolves a replacement `H` RemoteEvent even if an older control remote was referenced.
+- Replace rather than accumulate client handshake listeners; add `HandshakeRemoteRebinds` stats.
+- Skip duplicate varuint validation after the BitFrame writer has already validated the requested encoding size; public writer remains guarded.
+- Add a paired handshake rebind test, preserving BitFrame v1 and compression codec 230.
 
 ## v2.3.27 — Non-finite BitFrame float rejection
 
