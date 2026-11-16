@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.19"
+local VERSION = "2.3.20"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -563,6 +563,8 @@ local Stats = {
 	HybridCompressionThresholdSkips = 0,
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
+	BitFrameEncodeFailures = 0,
+	BitFrameTailPaddingRejected = 0,
 	BitFrameWriterPoolHits = 0,
 	BitFrameReaderPoolHits = 0,
 	BitFrameReadersCreated = 0,
@@ -4332,13 +4334,20 @@ function Internal.bitFrameWriteOne(writer, item)
 	Stats.BitFrameMessagesEncoded += messageLogicalCount(item)
 end
 
+function Internal.finishBitFrameBatch(writer, items)
+	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
+	writer:bits(0, 1)
+	return writer:finish(), writer.bitPosition
+end
+
 function Internal.encodeBitFrame(items)
 	local writer = Internal.acquireBitFrameWriter()
-	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
-	writer:bits(0, 1) -- end-of-frame marker; remaining physical tail bits stay zero
-	local usefulBits = writer.bitPosition
-	local out = writer:finish()
+	local ok, out, usefulBits = pcall(Internal.finishBitFrameBatch, writer, items)
 	Internal.releaseBitFrameWriter(writer)
+	if not ok then
+		Stats.BitFrameEncodeFailures += 1
+		error(out, 0)
+	end
 	local physicalBits = buffer.len(out) * 8
 	Internal._lastEncodedUsefulBits = usefulBits
 	Internal._lastEncodedCodec = "BitFrame"
@@ -5912,9 +5921,11 @@ function Internal.decodeBitFrame(player, data, reader)
 		if logicalCount > Config.MaxIncomingMessages then error("NetStream BitFrame exceeds MaxIncomingMessages", 0) end
 	end
 
-	-- All remaining bits are physical tail padding and must be zero.
-	while reader.bitPosition < reader.bitLength do
-		if reader:bits(1) ~= 0 then error("NetStream BitFrame has non-zero tail padding", 0) end
+	-- A valid BitFrame has at most seven unused bits in its final byte.
+	local tailBits = reader.bitLength - reader.bitPosition
+	if tailBits > 7 or (tailBits > 0 and reader:bits(tailBits) ~= 0) then
+		Stats.BitFrameTailPaddingRejected += 1
+		error("NetStream BitFrame invalid tail padding", 0)
 	end
 	Internal.bitFrameCommitReceive(player, data, logicalCount)
 end
