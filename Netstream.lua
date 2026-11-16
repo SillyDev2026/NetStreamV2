@@ -584,8 +584,9 @@ local Stats = {
 
 -- Bounded, opt-in local performance samples; no telemetry is sent on the wire.
 Internal.PerformanceSamples = {}
-Internal.PerformanceNames = {"EncodeMs", "DecodeMs", "QueueMs", "DispatchMs", "PacketBytes", "RoundTripMs"}
+Internal.PerformanceNames = {"EncodeMs", "DecodeMs", "QueueMs", "DispatchMs", "PacketBytes", "RoundTripMs", "JitterMs"}
 function Internal.resetPerformanceSamples()
+	Internal._lastRoundTripMs = nil
 	local series = Internal.PerformanceSamples
 	for _, name in ipairs(Internal.PerformanceNames) do series[name] = {samples = {}, nextIndex = 1, count = 0, observed = 0, total = 0} end
 end
@@ -7762,6 +7763,8 @@ end
 function NetStream.RecordRoundTripSample(milliseconds)
 	assert(type(milliseconds) == "number" and math.isfinite(milliseconds) and milliseconds >= 0 and milliseconds <= 600000, "RecordRoundTripSample expects 0 to 600000 milliseconds")
 	Internal.recordPerformanceSample("RoundTripMs", milliseconds)
+	if Internal._lastRoundTripMs ~= nil then Internal.recordPerformanceSample("JitterMs", math.abs(milliseconds - Internal._lastRoundTripMs)) end
+	Internal._lastRoundTripMs = milliseconds
 end
 
 function NetStream.GetPerformanceStats()
