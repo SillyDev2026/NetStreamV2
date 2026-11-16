@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.29"
+local VERSION = "2.3.30"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -2474,7 +2474,14 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		return
 	end
 	if schema.byteRunU8 then
-		for i = 1, schema.count do writer:bits(args[offset + i], 8) end
+		local bitPosition = writer.bitPosition
+		writer:ensureBits(schema.count * 8)
+		local data = writer.buffer
+		for i = 1, schema.count do
+			buffer.writebits(data, bitPosition, 8, args[offset + i])
+			bitPosition += 8
+		end
+		writer.bitPosition = bitPosition
 		Stats.U8SchemaFastWrites += 1
 		return
 	end
@@ -2505,8 +2512,15 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 		return args
 	end
 	if schema.byteRunU8 then
+		reader:needBits(schema.count * 8)
 		local args = acquireArgsCount(schema.count)
-		for i = 1, schema.count do args[i] = reader:bits(8) end
+		local bitPosition = reader.bitPosition
+		local data = reader.buffer
+		for i = 1, schema.count do
+			args[i] = buffer.readbits(data, bitPosition, 8)
+			bitPosition += 8
+		end
+		reader.bitPosition = bitPosition
 		Stats.U8SchemaFastReads += 1
 		return args
 	end
