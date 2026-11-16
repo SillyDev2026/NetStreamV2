@@ -6313,10 +6313,14 @@ function Internal.handleHandshakeServer(player, opcode, nonce, extra, version, c
 			Internal.HandshakeRemote:FireClient(player, 4, nonce, "NetStream version or codec mismatch")
 			return
 		end
-		state.Status = "welcome"
-		state.Nonce = nonce
-		state.Challenge = math.random(1, 2147483647)
-		state.SentAt = now
+		-- Retries with the same nonce must reuse the existing challenge. Otherwise
+		-- a delayed first WELCOME/READY pair can be rejected as stale.
+		if state.Status ~= "welcome" or state.Nonce ~= nonce then
+			state.Status = "welcome"
+			state.Nonce = nonce
+			state.Challenge = math.random(1, 2147483647)
+			state.SentAt = now
+		end
 		Internal.HandshakeRemote:FireClient(player, 2, nonce, state.Challenge, VERSION, Internal.CompressionCore.CodecVersion, Config.BitFrameEnabled)
 	elseif opcode == 3 then
 		if state.Status ~= "welcome" or nonce ~= state.Nonce or extra ~= state.Challenge then return end
