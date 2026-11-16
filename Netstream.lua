@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.30"
+local VERSION = "2.3.31"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -2367,6 +2367,12 @@ local function writeSchemaArgs(writer, schema, args)
 	end
 end
 
+local function readFiniteFixedF64(data, position)
+	local value = buffer.readf64(data, position)
+	if not isFiniteNumber(value) then error("NetStream incoming fixed-schema F64 is not finite", 0) end
+	return value
+end
+
 local function readFixedSchemaArgs(reader, schema)
 	reader:need(schema.fixedBytes)
 	local data = reader.buffer
@@ -2407,22 +2413,22 @@ local function readFixedSchemaArgs(reader, schema)
 			value = Color3.fromRGB(buffer.readu8(data, pos), buffer.readu8(data, pos + 1), buffer.readu8(data, pos + 2))
 			pos += 3
 		elseif kind == SCHEMA_EXT.UDIM then
-			value = UDim.new(buffer.readf64(data, pos), buffer.readi32(data, pos + 8))
+			value = UDim.new(readFiniteFixedF64(data, pos), buffer.readi32(data, pos + 8))
 			pos += 12
 		elseif kind == SCHEMA_EXT.UDIM2 then
-			value = UDim2.new(buffer.readf64(data, pos), buffer.readi32(data, pos + 8), buffer.readf64(data, pos + 12), buffer.readi32(data, pos + 20))
+			value = UDim2.new(readFiniteFixedF64(data, pos), buffer.readi32(data, pos + 8), readFiniteFixedF64(data, pos + 12), buffer.readi32(data, pos + 20))
 			pos += 24
 		elseif kind == SCHEMA_EXT.RECT then
-			value = Rect.new(buffer.readf64(data, pos), buffer.readf64(data, pos + 8), buffer.readf64(data, pos + 16), buffer.readf64(data, pos + 24))
+			value = Rect.new(readFiniteFixedF64(data, pos), readFiniteFixedF64(data, pos + 8), readFiniteFixedF64(data, pos + 16), readFiniteFixedF64(data, pos + 24))
 			pos += 32
 		elseif kind == SCHEMA_EXT.NUMBER_RANGE then
-			value = NumberRange.new(buffer.readf64(data, pos), buffer.readf64(data, pos + 8))
+			value = NumberRange.new(readFiniteFixedF64(data, pos), readFiniteFixedF64(data, pos + 8))
 			pos += 16
 		elseif kind == SCHEMA_EXT.BRICK_COLOR then
 			value = BrickColor.new(buffer.readu16(data, pos))
 			pos += 2
 		elseif kind == SCHEMA_EXT.DATETIME then
-			local millis = buffer.readf64(data, pos)
+			local millis = readFiniteFixedF64(data, pos)
 			if not isFiniteNumber(millis) then error("NetStream incoming DateTime timestamp is not finite", 0) end
 			value = DateTime.fromUnixTimestampMillis(millis)
 			pos += 8
