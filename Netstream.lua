@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.14"
+local VERSION = "2.3.15"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -266,6 +266,7 @@ local DEFAULTS = {
 	MaxPooledStrings = 2048,
 	MaxBatchPoolSize = 64,
 	MaxWriterPoolSize = 32,
+	MaxBitFrameReaderPoolSize = 32,
 	MaxScratchWriterPoolSize = 16,
 	InitialWriterBytes = 1024,
 	MaxTargetsPerFlush = 128,
@@ -554,6 +555,8 @@ local Stats = {
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
 	BitFrameWriterPoolHits = 0,
+	BitFrameReaderPoolHits = 0,
+	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
@@ -1421,6 +1424,10 @@ function Internal.acquireBitFrameWriter()
 end
 
 function Internal.releaseBitFrameWriter(writer)
+	-- Pooled writers must not retain per-packet dictionary keys or values.
+	if #writer.strings > Config.MaxPooledStrings then writer.strings = {} else table.clear(writer.strings) end
+	table.clear(writer.stringToIndex)
+	writer.bitPosition = 0
 	if writer.capacity <= Config.MaxPooledWriterBytes and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
 		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
 	end
@@ -1532,13 +1539,36 @@ end
 Internal.BitFrameReader = {}
 Internal.BitFrameReader.__index = Internal.BitFrameReader
 
+Internal.BitFrameReaderPool = {}
 function Internal.BitFrameReader.new(data)
+	Stats.BitFrameReadersCreated += 1
 	return setmetatable({
 		buffer = data,
 		bitPosition = 0,
 		bitLength = buffer.len(data) * 8,
 		strings = {},
 	}, Internal.BitFrameReader)
+end
+function Internal.acquireBitFrameReader(data)
+	local pool = Internal.BitFrameReaderPool
+	local reader = pool[#pool]
+	if reader then
+		pool[#pool] = nil
+		reader.buffer = data
+		reader.bitPosition = 0
+		reader.bitLength = buffer.len(data) * 8
+		Stats.BitFrameReaderPoolHits += 1
+		return reader
+	end
+	return Internal.BitFrameReader.new(data)
+end
+function Internal.releaseBitFrameReader(reader)
+	reader.buffer = nil
+	reader.bitPosition = 0
+	reader.bitLength = 0
+	if #reader.strings > Config.MaxPooledStrings then reader.strings = {} else table.clear(reader.strings) end
+	local pool = Internal.BitFrameReaderPool
+	if #pool < Config.MaxBitFrameReaderPoolSize then pool[#pool + 1] = reader end
 end
 function Internal.BitFrameReader:needBits(count)
 	if self.bitPosition + count > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
@@ -5728,8 +5758,8 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 	return 1
 end
 
-function Internal.decodeBitFrame(player, data)
-	local reader = Internal.BitFrameReader.new(data)
+function Internal.decodeBitFrame(player, data, reader)
+	-- Caller owns reader lifecycle so exceptions still release pooled scratch.
 	local logicalCount = 0
 	while true do
 		local present = reader:bits(1)
@@ -6042,9 +6072,10 @@ local function receive(player, data)
 		Stats.RejectedMalformedPackets += 1
 		return
 	end
-	local reader = acquireReader(data)
+	local bitFrame = Config.BitFrameEnabled
+	local reader = if bitFrame then Internal.acquireBitFrameReader(data) else acquireReader(data)
 	local ok, err = pcall(decodeBatch, player, data, reader)
-	releaseReader(reader)
+	if bitFrame then Internal.releaseBitFrameReader(reader) else releaseReader(reader) end
 	if not ok then
 		Stats.DecodeErrors += 1
 		Stats.RejectedMalformedPackets += 1
@@ -7045,6 +7076,7 @@ function Internal.validateConfig(config)
 	assert(type(config.TransportEstimatedPacketOverheadBytes) == "number" and isFiniteNumber(config.TransportEstimatedPacketOverheadBytes) and config.TransportEstimatedPacketOverheadBytes >= 0, "TransportEstimatedPacketOverheadBytes must be >= 0")
 	assert(type(config.TransportTargetMessagesPerPacket) == "number" and isInteger(config.TransportTargetMessagesPerPacket) and config.TransportTargetMessagesPerPacket >= 1, "TransportTargetMessagesPerPacket must be an integer >= 1")
 	assert(type(config.MaxWriterPoolSize) == "number" and isInteger(config.MaxWriterPoolSize) and config.MaxWriterPoolSize >= 0, "MaxWriterPoolSize must be a non-negative integer")
+	assert(type(config.MaxBitFrameReaderPoolSize) == "number" and isInteger(config.MaxBitFrameReaderPoolSize) and config.MaxBitFrameReaderPoolSize >= 0 and config.MaxBitFrameReaderPoolSize <= 256, "MaxBitFrameReaderPoolSize must be an integer from 0 to 256")
 	assert(type(config.MaxScratchWriterPoolSize) == "number" and isInteger(config.MaxScratchWriterPoolSize) and config.MaxScratchWriterPoolSize >= 0, "MaxScratchWriterPoolSize must be a non-negative integer")
 	assert(type(config.InitialWriterBytes) == "number" and isInteger(config.InitialWriterBytes) and config.InitialWriterBytes >= 64, "InitialWriterBytes must be an integer >= 64")
 	assert(type(config.FastSchemaEnabled) == "boolean", "FastSchemaEnabled must be a boolean")
@@ -7587,6 +7619,7 @@ function NetStream.GetStats()
 	copy.WriterPoolSize = #writerPool
 	copy.ScratchWriterPoolSize = #scratchWriterPool
 	copy.ReaderPoolSize = #readerPool
+	copy.BitFrameReaderPoolSize = #Internal.BitFrameReaderPool
 	copy.BatchPoolSize = #batchPool
 	copy.PackedValuePoolSize = #packedValuePool
 	copy.CompressionRatio = if copy.CompressionInputBytes > 0 then copy.CompressionOutputBytes / copy.CompressionInputBytes else 1
@@ -7961,6 +7994,7 @@ function NetStream.Destroy()
 	dispatchHead = 1
 
 	table.clear(Internal.BitFrameWriterPool)
+	table.clear(Internal.BitFrameReaderPool)
 	Internal.releaseBucket(clientBucket)
 	Internal.releaseBucket(broadcastBucket)
 	for _, bucket in pairs(targetBuckets) do
