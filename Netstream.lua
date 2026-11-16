@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.11"
+local VERSION = "2.3.12"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -285,6 +285,9 @@ local DEFAULTS = {
 	MaxDepth = 32,
 	CompressionEnabled = true,
 	CompressionMinSavingsBytes = 1,
+	CompressionAdaptiveBackoff = true,
+	CompressionNoGainThreshold = 3,
+	CompressionBackoffMessages = 12,
 	CompressionMinStringBytes = 6,
 	CompressionStringStrategy = "Auto",
 	CompressionUseStringDictionary = true,
@@ -543,6 +546,8 @@ local Stats = {
 	HandshakeMismatch = 0,
 	HandshakeTimeouts = 0,
 	HandshakePendingData = 0,
+	CompressionBackoffSkips = 0,
+	CompressionBackoffActivations = 0,
 	BitFramePacketsEncoded = 0,
 	BitFrameWriterPoolHits = 0,
 	TransportPredictedBatchCaps = 0,
@@ -3483,6 +3488,15 @@ function Internal.observeCompressionStrategy(route, data, usedCachedStrategy)
 end
 
 function Internal.tryCompressDynamicArgs(writer, item, isTail)
+	local route = Internal.routeForItem(item)
+	if Config.CompressionAdaptiveBackoff and route and route.Compression ~= true then
+		local remaining = route._compressionBackoffRemaining or 0
+		if remaining > 0 then
+			route._compressionBackoffRemaining = remaining - 1
+			Stats.CompressionBackoffSkips += 1
+			return nil, nil, false, false
+		end
+	end
 	if not Internal.routeCompressionEnabled(item) then
 		return nil, nil, false, false
 	end
@@ -3501,7 +3515,6 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 		mode = 2
 	end
 
-	local route = Internal.routeForItem(item)
 	local compressionOptions, usedCachedStrategy = Internal.compressionOptionsForRoute(route)
 	local ok, packet = pcall(Compression.Compress, source, compressionOptions)
 	if not ok or type(packet) ~= "table" or typeof(packet.Data) ~= "buffer" then
@@ -3528,6 +3541,7 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 	end
 
 	if compressedCost + Config.CompressionMinSavingsBytes <= rawCost then
+		if route then route._compressionNoGainStreak = 0; route._compressionBackoffRemaining = 0 end
 		Stats.CompressionUsed += 1
 		Stats.CompressionInputBytes += rawCost
 		Stats.CompressionOutputBytes += compressedCost
@@ -3555,6 +3569,16 @@ function Internal.tryCompressDynamicArgs(writer, item, isTail)
 
 	Stats.CompressionRejected += 1
 	Stats.CompressionNoGain += 1
+	if route and route.Compression ~= true and Config.CompressionAdaptiveBackoff then
+		local misses = (route._compressionNoGainStreak or 0) + 1
+		if misses >= Config.CompressionNoGainThreshold then
+			route._compressionNoGainStreak = 0
+			route._compressionBackoffRemaining = Config.CompressionBackoffMessages
+			Stats.CompressionBackoffActivations += 1
+		else
+			route._compressionNoGainStreak = misses
+		end
+	end
 	return nil, nil, false, false
 end
 
@@ -6907,6 +6931,9 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxDepth) == "number" and config.MaxDepth >= 1, "MaxDepth must be >= 1")
 	assert(type(config.CompressionEnabled) == "boolean", "CompressionEnabled must be a boolean")
 	assert(type(config.CompressionMinSavingsBytes) == "number" and config.CompressionMinSavingsBytes >= 0, "CompressionMinSavingsBytes must be >= 0")
+	assert(type(config.CompressionAdaptiveBackoff) == "boolean", "CompressionAdaptiveBackoff must be boolean")
+	assert(type(config.CompressionNoGainThreshold) == "number" and isInteger(config.CompressionNoGainThreshold) and config.CompressionNoGainThreshold >= 1 and config.CompressionNoGainThreshold <= 64, "CompressionNoGainThreshold must be 1..64")
+	assert(type(config.CompressionBackoffMessages) == "number" and isInteger(config.CompressionBackoffMessages) and config.CompressionBackoffMessages >= 0 and config.CompressionBackoffMessages <= 4096, "CompressionBackoffMessages must be 0..4096")
 	assert(type(config.CompressionMinStringBytes) == "number" and config.CompressionMinStringBytes >= 0, "CompressionMinStringBytes must be >= 0")
 	assert(
 		config.CompressionStringStrategy == "Auto"
