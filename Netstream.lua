@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.31"
+local VERSION = "2.3.32"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -277,6 +277,7 @@ local DEFAULTS = {
 	MaxPooledWriterBytes = 128 * 1024,
 	MaxPooledStrings = 2048,
 	MaxBatchPoolSize = 64,
+	MaxPooledPackedValues = 64,
 	MaxWriterPoolSize = 32,
 	MaxBitFrameReaderPoolSize = 32,
 	PerformanceTelemetryEnabled = false,
@@ -570,6 +571,7 @@ local Stats = {
 	PackedSchemaRunMessages = 0,
 	PackedSchemaRunAppends = 0,
 	PackedValuePoolHits = 0,
+	PackedValuePoolOversizeDrops = 0,
 	ScalarDispatches = 0,
 	BitPacketCallsSent = 0,
 	BitPacketCallsReceived = 0,
@@ -3302,8 +3304,10 @@ local function acquirePackedValues(capacity)
 	return table.create(capacity or 8)
 end
 
-local function releasePackedValues(values)
-	if not values then
+local function releasePackedValues(values, usedCount)
+	if not values then return end
+	if usedCount > Config.MaxPooledPackedValues then
+		Stats.PackedValuePoolOversizeDrops += 1
 		return
 	end
 	table.clear(values)
@@ -3362,7 +3366,7 @@ end
 
 local function makePackedRunMessage(route, valueCount, runLimit, ...)
 	local message = acquireMessage()
-	local values = acquirePackedValues(math.max(8, valueCount * math.min(Config.MaxBatchMessages, 512)))
+	local values = acquirePackedValues(math.max(8, valueCount))
 	for i = 1, valueCount do
 		values[i] = select(i, ...)
 	end
@@ -3391,7 +3395,7 @@ releaseMessage = function(message)
 	end
 	releaseArgs(message.args)
 	if message.packedValues then
-		releasePackedValues(message.packedValues)
+		releasePackedValues(message.packedValues, (message.runCount or 1) * (message.fieldCount or 0))
 	end
 	message.kind = nil
 	message.id = nil
@@ -7229,6 +7233,7 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxPooledWriterBytes) == "number" and config.MaxPooledWriterBytes >= 512, "MaxPooledWriterBytes must be >= 512")
 	assert(type(config.MaxPooledStrings) == "number" and config.MaxPooledStrings >= 0, "MaxPooledStrings must be >= 0")
 	assert(type(config.MaxBatchPoolSize) == "number" and config.MaxBatchPoolSize >= 0, "MaxBatchPoolSize must be >= 0")
+	assert(type(config.MaxPooledPackedValues) == "number" and isInteger(config.MaxPooledPackedValues) and config.MaxPooledPackedValues >= 0 and config.MaxPooledPackedValues <= 8192, "MaxPooledPackedValues must be between 0 and 8192")
 	assert(type(config.MaxTargetsPerFlush) == "number" and config.MaxTargetsPerFlush >= 1, "MaxTargetsPerFlush must be >= 1")
 	assert(type(config.MaxIncomingMessagesPerSecond) == "number" and config.MaxIncomingMessagesPerSecond >= 1, "MaxIncomingMessagesPerSecond must be >= 1")
 	assert(type(config.MaxIncomingBytesPerSecond) == "number" and config.MaxIncomingBytesPerSecond >= 1, "MaxIncomingBytesPerSecond must be >= 1")
