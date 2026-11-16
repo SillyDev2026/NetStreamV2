@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v2.3.22. **Candidate:** v2.3.25. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v2.3.28. **Candidate:** v2.3.31. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,7 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `LegacyFixedFiniteGuard` | Reject three malformed legacy fixed-schema composite F64 payloads and accept subsequent valid traffic |
 | `HandshakeRecovery` | Validates HELLO/WELCOME/CONFIRM/READY retry after server is READY |
 | `U8FastPath` | 4/32-U8 tuples, bounds 0/128/255, FIFO, counters |
 | `CompressionEligibility` | 64 ineligible short arguments, 32 repeated strings, lossless decode |
