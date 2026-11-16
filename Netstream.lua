@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.8"
+local VERSION = "2.3.9"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -871,28 +871,28 @@ function Internal.canCompressionRoundTrip(value, seen)
 end
 
 function Internal.shouldAttemptCompression(args)
-	if not Internal.canCompressionRoundTrip(args, {}) then
-		return false
-	end
-
-	-- Compression v2.3 is structural. A single raw string cannot shrink because
-	-- its bytes are preserved plus packet framing; repeated strings and nested
-	-- tables are the cases where its dictionary/table encoding can win.
+	-- Cheap structural eligibility first: most one-value scalar messages cannot
+	-- benefit from the bundled dictionary/table codec. Defer recursive validation
+	-- until a table or repeated string makes compression plausible.
+	if args.n == 1 and typeof(args[1]) ~= "table" then return false end
 	local repeatedStrings = nil
+	local candidate = false
 	for i = 1, args.n do
 		local value = args[i]
 		local kind = typeof(value)
 		if kind == "table" then
-			return true
+			candidate = true
+			break
 		elseif kind == "string" and #value >= Config.CompressionMinStringBytes then
 			repeatedStrings = repeatedStrings or {}
 			if repeatedStrings[value] then
-				return true
+				candidate = true
+				break
 			end
 			repeatedStrings[value] = true
 		end
 	end
-	return false
+	return candidate and Internal.canCompressionRoundTrip(args, {})
 end
 
 local SCHEMA_BOOL = 1
