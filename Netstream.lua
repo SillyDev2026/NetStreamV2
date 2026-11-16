@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.6"
+local VERSION = "2.3.7"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -531,6 +531,7 @@ local Stats = {
 	HybridCompressionThresholdAttempts = 0,
 	BitFramePacketsEncoded = 0,
 	BitFrameWriterPoolHits = 0,
+	TransportPredictedBatchCaps = 0,
 	BitFramePacketsSent = 0,
 	BitFramePacketsReceived = 0,
 	BitFrameMessagesEncoded = 0,
@@ -2900,7 +2901,7 @@ local function messageLogicalCount(item)
 end
 
 function Internal.newQueue()
-	return { items = {}, head = 1, tail = 0, logicalCount = 0 }
+	return { items = {}, head = 1, tail = 0, logicalCount = 0, estimatedBytesPerMessage = nil }
 end
 
 local function queueCount(queue)
@@ -4530,7 +4531,8 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	local ok, data = pcall(encodeBatch, items)
 	while ok and Config.BandwidthGovernorEnabled and #items > 1 and buffer.len(data) > Config.BandwidthMaxPacketBytes do
 		local originalCount = #items
-		local keepCount = math.max(1, math.floor(originalCount / 2))
+		local idealCount = math.floor(originalCount * Config.BandwidthMaxPacketBytes / buffer.len(data))
+		local keepCount = math.max(1, math.min(originalCount - 1, idealCount))
 		local deferred = acquireBatch(originalCount - keepCount)
 		for i = keepCount + 1, originalCount do
 			deferred[#deferred + 1] = items[i]
@@ -4540,6 +4542,14 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
 		ok, data = pcall(encodeBatch, items)
+	end
+	if ok and Config.BandwidthGovernorEnabled then
+		local logical = batchLogicalCount(items)
+		if logical > 0 then
+			local observed = buffer.len(data) / logical
+			local previous = queue.estimatedBytesPerMessage
+			queue.estimatedBytesPerMessage = if previous then previous * 0.3 + observed * 0.7 else observed
+		end
 	end
 	return ok, data
 end
@@ -4588,7 +4598,16 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 			Stats.BandwidthDeferredFlushes += 1
 			break
 		end
-		local items = collectBatch(queue, latest, Config.MaxBatchMessages)
+		local messageLimit = Config.MaxBatchMessages
+		local average = queue.estimatedBytesPerMessage
+		if Config.BandwidthGovernorEnabled and average and average > 0 then
+			local predictedLimit = math.max(1, math.floor(Config.BandwidthMaxPacketBytes / average))
+			if predictedLimit < messageLimit then
+				messageLimit = predictedLimit
+				Stats.TransportPredictedBatchCaps += 1
+			end
+		end
+		local items = collectBatch(queue, latest, messageLimit)
 		if #items == 0 then
 			releaseBatch(items)
 			break
