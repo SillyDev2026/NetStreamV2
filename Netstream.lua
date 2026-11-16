@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.18"
+local VERSION = "2.3.19"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -3251,6 +3251,7 @@ local function makeMessage(kind, id, request, args, schema, priority)
 	message.schema = schema
 	message.priority = priority
 	message.latestKey = nil
+	message._queuedAt = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	message.packedRun = false
 	message.packedValues = nil
 	message.runCount = nil
@@ -3273,6 +3274,7 @@ local function makePackedRunMessage(route, valueCount, runLimit, ...)
 	message.schema = route._schema
 	message.priority = route.Priority or "Normal"
 	message.latestKey = nil
+	message._queuedAt = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	message.packedRun = true
 	message.packedValues = values
 	message.runCount = 1
@@ -3299,6 +3301,7 @@ releaseMessage = function(message)
 	message.schema = nil
 	message.priority = nil
 	message.latestKey = nil
+	message._queuedAt = nil
 	message.packedRun = nil
 	message.packedValues = nil
 	message.runCount = nil
@@ -4700,6 +4703,15 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	return ok, data
 end
 
+function Internal.recordQueueAge(items)
+	if not Config.PerformanceTelemetryEnabled then return end
+	local now = os.clock()
+	for i = 1, #items do
+		local item = items[i]
+		if item and item._queuedAt then Internal.recordPerformanceSample("QueueMs", math.max(0, (now - item._queuedAt) * 1000)) end
+	end
+end
+
 function Internal.sendIsolatedMessages(target, unreliable, items)
 	for i = 1, #items do
 		local item = items[i]
@@ -4710,6 +4722,7 @@ function Internal.sendIsolatedMessages(target, unreliable, items)
 		if ok then
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
+				if Config.PerformanceTelemetryEnabled and item._queuedAt then Internal.recordPerformanceSample("QueueMs", math.max(0, (os.clock() - item._queuedAt) * 1000)) end
 				local logical = messageLogicalCount(item)
 				Stats.SentMessages += logical
 				trafficWindowSentMessages += logical
@@ -4779,6 +4792,7 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		else
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
+				Internal.recordQueueAge(items)
 				local logical = batchLogicalCount(items)
 				Stats.SentMessages += logical
 				trafficWindowSentMessages += logical
@@ -7724,6 +7738,25 @@ end
 
 function NetStream.ResetPerformanceTelemetry()
 	Internal.resetPerformanceSamples()
+end
+
+function NetStream.GetMemoryDiagnostics()
+	local writerBytes = 0
+	for _, writer in ipairs(Internal.BitFrameWriterPool) do writerBytes += writer.capacity end
+	local legacyBytes = 0
+	for _, writer in ipairs(writerPool) do legacyBytes += writer.capacity or 0 end
+	return {
+		BitFrameWriterPooledBytes = writerBytes,
+		LegacyWriterPooledBytes = legacyBytes,
+		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
+		LegacyReaderPoolSize = #readerPool,
+		ArgsPoolSize = #argsPool,
+		MessagePoolSize = #messagePool,
+		BatchPoolSize = #batchPool,
+		PooledWriterBytes = writerBytes + legacyBytes,
+		-- gcinfo() reports the current Luau heap broadly, not NetStream-owned memory.
+		LuaHeapKB = gcinfo(),
+	}
 end
 
 function NetStream.RecordRoundTripSample(milliseconds)
