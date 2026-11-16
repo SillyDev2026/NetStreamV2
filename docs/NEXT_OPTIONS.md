@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v2.3.25. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v2.3.31. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
-## What was selected for this three-patch cycle?
+## Latest completed three-patch cycle (source-level)
+
+| Release | Change | Status |
+|---|---|---|
+| 2.3.29 | Avoid duplicate BitFrame varuint validation | Committed; Studio benchmarking pending |
+| 2.3.30 | Optimize U8 BitFrame runs with one bounds check | Committed; Studio benchmarking pending |
+| 2.3.31 | Reject nonfinite legacy composite fixed-schema floats | Committed; Studio regression pending |
+
+## Earlier three-patch cycle
 
 | Chosen option | Release | Priority | Status |
 |---|---|---:|---|
@@ -32,14 +40,13 @@ The releases above retain BitFrame v1 and the Compression v2.3.5 codec. Dedicate
 | 14 | **Automatic cost-based batch-size prediction** | 8.1 | Fewer split/re-encode cycles | Feedback can become unstable |
 | 15 | **Docs site, API search, recipes and examples** | 7.9 | Better adoption and onboarding | No direct packet-speed improvement |
 
-## Suggested next three releases (after measuring v2.3.25)
+## Next work after measuring v2.3.31
 
 ```mermaid
 flowchart LR
-    A["Run baseline Studio tests"] --> B["v2.3.26: Atomic decode/side-effect safeguards"]
-    B --> C["v2.3.27: Generated schema fast paths"]
-    C --> D["v2.3.28: CI & regression gates"]
-    D --> E["Review p95/p99, allocations, bandwidth"]
+    A["Run Studio v2.3.28 vs v2.3.31 benchmarks"] --> B["Stage inbound packet effects until validation passes"]
+    B --> C["Schema-specialization profiling"]
+    C --> D["CI lint and regression checks"]
 ```
 
 **Default recommendation:** prioritize **#1, #2, #3 in that order**. Atomic packet validation closes a meaningful correctness gap in the existing BitFrame receiver. Generated fixed-schema code is the highest prospective CPU optimization, and automated checks reduce regressions across repeated releases.
@@ -54,7 +61,7 @@ flowchart LR
 - Keep schema IDs consistent between server and client.
 - Retain reliability, session-replay and rate-limiter protections.
 - Add tests for error paths, high-bit values, empty payloads, retry recovery, queue pressure and large batches.
-- Compare same-workload v2.3.22/v2.3.25 results before claiming CPU or memory improvements.
+- Compare same-workload v2.3.28/v2.3.31 results before claiming CPU or memory improvements.
 - Require a clean source build and Studio multi-client regression run before a production deployment recommendation.
 
 [Current README](../README.md) · [Architecture](ARCHITECTURE.md) · [Benchmark guide](BENCHMARKING.md).
