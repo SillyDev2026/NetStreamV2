@@ -2,7 +2,7 @@
 -- ServerScriptService; place Netstream (and its Compression child) in ReplicatedStorage.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.28", "Expected NetStream v2.3.28")
+assert(NetStream.GetVersion() == "2.3.31", "Expected NetStream v2.3.31")
 local reliable = NetStream.Event("__NSBatchReliable", {Id = 34001, Compression = false})
 local unreliable = NetStream.Unreliable("__NSBatchUnreliable", {Id = 34002, Compression = false})
 local ack = NetStream.Event("__NSBatchAck", {Id = 34003, Compression = false})
@@ -27,4 +27,4 @@ unreliable:Connect(function(player, sequence, payload)
 	state.Unreliable += 1
 end)
 game:GetService("Players").PlayerRemoving:Connect(function(player) totals[player] = nil end)
-print("NetStream v2.3.28 batching regression server ready")
+print("NetStream v2.3.31 batching regression server ready")
