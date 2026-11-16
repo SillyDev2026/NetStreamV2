@@ -14,3 +14,16 @@ jobs:
           node-version: '22'
       - name: Deterministic source and wire-layout checks
         run: node scripts/source-audit.mjs
+
+  luau-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build official Luau parser
+        run: |
+          git clone --depth 1 https://github.com/luau-lang/luau.git /tmp/luau-src
+          cmake -S /tmp/luau-src -B /tmp/luau-build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
+          cmake --build /tmp/luau-build --target Luau.Compile.CLI --parallel 2
+      - name: Parse NetStream and test Luau scripts
+        run: |
+          find . -type f -name '*.lua' -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile --only-parse > /dev/null
