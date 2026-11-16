@@ -41,7 +41,14 @@ function Internal.cloneBits(source, bitCount)
 	return output
 end
 
+function Internal.validateAdaptiveUInt(value)
+	if type(value) ~= "number" or value ~= value or value < 0 or value > 9007199254740991 or value % 1 ~= 0 then
+		error("NetStream adaptive uint expects an integer from 0 to 2^53-1", 0)
+	end
+end
+
 function Internal.adaptiveUIntBitLength(value)
+	Internal.validateAdaptiveUInt(value)
 	local count = 8
 	while value >= 128 do
 		value = math.floor(value / 128)
@@ -51,6 +58,7 @@ function Internal.adaptiveUIntBitLength(value)
 end
 
 function Internal.writeAdaptiveUIntBits(target, bitPosition, value)
+	Internal.validateAdaptiveUInt(value)
 	repeat
 		local byte = value % 128
 		value = math.floor(value / 128)
@@ -199,7 +207,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.25"
+local VERSION = "2.3.26"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30

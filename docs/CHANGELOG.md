@@ -1,6 +1,13 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.25**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.3.26**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.26 — Adaptive uint encoding input safety
+
+- Reject negative, fractional, non-finite, non-number, or over-safe-range integers before the adaptive encoder can loop or emit invalid data.
+- Apply the same bounded integer contract to adaptive byte-length estimates so the size predictor matches the encoder.
+- Extend `VarUIntRegression.server.lua` with invalid-input and maximum safe integer coverage.
+- Preserve the existing canonical varuint wire representation and decoder.
 
 ## v2.3.25 — Compression eligibility allocation reduction
 

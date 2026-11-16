@@ -18,6 +18,13 @@ checkNumber(128)
 checkNumber(16384)
 checkNumber(9007199254740991)
 
+for _, value in ipairs({ -1, 0.5, 9007199254740992, math.huge, -math.huge, 0 / 0 }) do
+    local target = buffer.create(16)
+    assert(not pcall(bits.AdaptiveUIntBitLength, value), "Invalid adaptive uint size accepted")
+    assert(not pcall(bits.WriteAdaptiveUIntBits, target, 0, value), "Invalid adaptive uint write accepted")
+end
+assert(not pcall(bits.WriteAdaptiveUIntBits, buffer.create(16), 0, "1"), "String accepted as uint")
+
 local empty = buffer.create(0)
 assert(not pcall(bits.ReadAdaptiveUIntBits, empty, 0), "Empty varuint accepted")
 
@@ -34,4 +41,4 @@ local packet = NetStream.Codec.Encode(0, 127, 128, 16384)
 local first, second, third, fourth = NetStream.Codec.Decode(packet)
 assert(first == 0 and second == 127 and third == 128 and fourth == 16384,
     "Codec integer roundtrip changed")
-print("NetStream v2.3.1 varuint regression PASS")
+print("NetStream v2.3.26 varuint input regression PASS")
