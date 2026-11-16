@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.22"
+local VERSION = "2.3.23"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -439,6 +439,7 @@ local Stats = {
 	HandshakeTimeouts = 0,
 	HandshakeRejected = 0,
 	HandshakeReplayRejected = 0,
+	HandshakeRecoveredHellos = 0,
 	HandshakeLateRemoteRecovered = 0,
 	HandshakeTrafficHeld = 0,
 	HandshakeTrafficRejected = 0,
@@ -6321,9 +6322,14 @@ function Internal.hsServer(player, data)
 			state.serverNonce = Internal.HS_RANDOM:NextInteger(1, 2147483647)
 			state.state = "confirm"
 		end
-		local response = if state.state == "ready" then 4 else 2
-		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(response, nonce, state.serverNonce)) end)
-		if ok and response == 2 then Stats.HandshakeWelcomes += 1 end
+		-- Always resend WELCOME for a matching HELLO. A client may still be in
+		-- "hello" if its earlier WELCOME or READY was lost; sending READY
+		-- directly here cannot advance that client state.
+		local ok = pcall(function() handshakeRemote:FireClient(player, Internal.hsPacket(2, nonce, state.serverNonce)) end)
+		if ok then
+			Stats.HandshakeWelcomes += 1
+			if state.state == "ready" then Stats.HandshakeRecoveredHellos += 1 end
+		end
 	elseif state and state.clientNonce == nonce and state.serverNonce == buffer.readu32(data, 9)
 		and (state.state == "confirm" or state.state == "ready") then
 		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
