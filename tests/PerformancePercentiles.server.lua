@@ -2,7 +2,7 @@
 -- Standalone ServerScriptService unit test for rolling nearest-rank p50/p95/p99.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.25")
+assert(NetStream.GetVersion() == "2.3.28")
 NetStream.Configure({PerformanceTelemetryEnabled = true, PerformanceTelemetryCapacity = 16, PerformanceTelemetrySampleEvery = 2})
 for i = 1, 100 do NetStream.RecordRoundTripSample(i) end
 local result = NetStream.GetLatencyStats()
@@ -20,4 +20,4 @@ local empty = NetStream.GetLatencyStats()
 assert(empty.RoundTripMs.Count == 0 and empty.RoundTripMs.P95 == nil and empty.JitterMs.Count == 0, "Reset should clear metrics")
 local memory = NetStream.GetMemoryDiagnostics()
 assert(memory.PooledWriterBytes >= 0 and memory.LuaHeapKB >= 0, "Memory diagnostics invalid")
-print("NetStream v2.3.25 rolling p50/p95/p99, sampling, jitter, reset and memory diagnostic test PASS")
+print("NetStream v2.3.28 rolling p50/p95/p99, sampling, jitter, reset and memory diagnostic test PASS")
