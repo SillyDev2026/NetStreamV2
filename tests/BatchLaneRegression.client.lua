@@ -8,7 +8,8 @@ local reliable = NetStream.Event("__NSBatchReliable", {Id = 34001, Compression =
 local unreliable = NetStream.Unreliable("__NSBatchUnreliable", {Id = 34002, Compression = false})
 local ack = NetStream.Event("__NSBatchAck", {Id = 34003, Compression = false})
 local folder = ReplicatedStorage:WaitForChild("__NetStream_NetStream")
-assert(folder:FindFirstChild("U") and folder.U:IsA("UnreliableRemoteEvent"), "UnreliableRemoteEvent required to verify lane budget")
+local lane = folder:FindFirstChild("U")
+assert(lane and lane:IsA("UnreliableRemoteEvent"), "UnreliableRemoteEvent required to verify lane budget")
 local done = false
 ack:Connect(function(count, observedUnreliable)
 	if done then return end
