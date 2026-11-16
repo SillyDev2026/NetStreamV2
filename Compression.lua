@@ -135,8 +135,20 @@ type WriterObject = {
 	Finish: (self: WriterObject) -> buffer,
 }
 
+local writerPool: {WriterObject} = {}
+local WRITER_POOL_MAX = 12
+local WRITER_POOL_BYTES = 262144
+
 function Writer.new(initialCapacity: number?): WriterObject
 	local capacity = math.max(64, initialCapacity or 4096)
+	for i = #writerPool, 1, -1 do
+		local candidate = writerPool[i]
+		if candidate.Capacity >= capacity then
+			table.remove(writerPool, i)
+			candidate.Position = 0
+			return candidate
+		end
+	end
 	return setmetatable({
 		Buffer = buffer.create(capacity),
 		Position = 0,
@@ -243,11 +255,12 @@ function Writer:String(value: string)
 end
 
 function Writer:Finish(): buffer
-	if self.Position == self.Capacity then
-		return self.Buffer
-	end
+	-- Always detach the wire output: the backing buffer may be reused.
 	local output = buffer.create(self.Position)
-	buffer.copy(output, 0, self.Buffer, 0, self.Position)
+	if self.Position > 0 then buffer.copy(output, 0, self.Buffer, 0, self.Position) end
+	if self.Capacity <= WRITER_POOL_BYTES and #writerPool < WRITER_POOL_MAX then
+		writerPool[#writerPool + 1] = self
+	end
 	return output
 end
 
@@ -747,7 +760,7 @@ end
 
 -- Returns the codec version exposed to dependent modules.
 function Compression.Version(): string
-	return "2.3.4"
+	return "2.3.5"
 end
 
 -- Returns the stable table codec mode identifier.

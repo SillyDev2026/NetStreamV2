@@ -3,8 +3,8 @@
 local NetStream = require(script.Parent:WaitForChild("Netstream"))
 local Compression = require(script.Parent:WaitForChild("Netstream"):WaitForChild("Compression"))
 
-assert(NetStream.GetVersion() == "2.3.10", "Expected patched NetStream v2.3.4")
-assert(Compression.Version() == "2.3.4", "Expected patched Compression v2.3.4")
+assert(NetStream.GetVersion() == "2.3.13", "Expected patched NetStream v2.3.13")
+assert(Compression.Version() == "2.3.5", "Expected patched Compression v2.3.5")
 
 local previousLimit = NetStream.GetConfig().MaxIncomingPacketBytes
 local acceptedFraction = pcall(NetStream.Configure, {MaxIncomingPacketBytes = 1024.5})
@@ -41,4 +41,4 @@ buffer.writeu8(withoutDictionary, 6, 1)
 local acceptedEmptyDictionary = pcall(Compression.DecompressTable, withoutDictionary)
 assert(not acceptedEmptyDictionary, "Empty dictionary with dictionary flag accepted")
 
-print("NetStream v2.3.2 -> v2.3.10 maintenance regression PASS")
+print("NetStream v2.3.2 -> v2.3.13 maintenance regression PASS")
