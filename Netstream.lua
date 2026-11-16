@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.33"
+local VERSION = "2.3.34"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1709,7 +1709,7 @@ function Internal.BitFrameReader:rawString(length)
 		self.bitPosition = bitPosition + length * 8
 		return value
 	end
-	if length >= 64 then
+	if length >= 16 then
 		local output = buffer.create(length)
 		local offset = 0
 		while offset + 4 <= length do
@@ -7889,11 +7889,30 @@ function NetStream.ResetPerformanceTelemetry()
 	Internal.resetPerformanceSamples()
 end
 
+-- Releases only idle pooled storage; active messages and queued traffic are preserved.
+-- Call after load spikes, not from per-frame gameplay paths.
+function NetStream.TrimPools()
+	local before = NetStream.GetMemoryDiagnostics()
+	Internal.BitFrameWriterPool = {}
+	Internal.BitFrameReaderPool = {}
+	Internal._nativeMeasurePool = {}
+	writerPool = {}
+	scratchWriterPool = {}
+	readerPool = {}
+	messagePool = {}
+	argsPool = {}
+	batchPool = {}
+	packedValuePool = {}
+	return before
+end
+
 function NetStream.GetMemoryDiagnostics()
 	local writerBytes = 0
 	for _, writer in ipairs(Internal.BitFrameWriterPool) do writerBytes += writer.capacity end
 	local legacyBytes = 0
 	for _, writer in ipairs(writerPool) do legacyBytes += writer.capacity or 0 end
+	local scratchBytes = 0
+	for _, writer in ipairs(scratchWriterPool) do scratchBytes += writer.capacity or 0 end
 	return {
 		BitFrameWriterPooledBytes = writerBytes,
 		BitFrameWriterPoolSize = #Internal.BitFrameWriterPool,
@@ -7903,6 +7922,8 @@ function NetStream.GetMemoryDiagnostics()
 		MaxPooledPackedValues = Config.MaxPooledPackedValues,
 		PackedValuePoolOversizeDrops = Stats.PackedValuePoolOversizeDrops,
 		LegacyWriterPooledBytes = legacyBytes,
+		ScratchWriterPooledBytes = scratchBytes,
+		AllWriterPoolsBytes = writerBytes + legacyBytes + scratchBytes,
 		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
