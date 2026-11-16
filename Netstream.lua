@@ -6029,7 +6029,7 @@ local function receive(player, data)
 		Stats.ReceivedBytes += bytes
 		return
 	end
-	if not Internal.hsCanSend(player) then Stats.HandshakeTrafficRejected += 1; return end
+	if not Internal.hsCanReceive(player) then Stats.HandshakeTrafficRejected += 1; return end
 	if isBuffer and bytes > Config.MaxIncomingPacketBytes then
 		Stats.RejectedOversizedPackets += 1
 		Stats.DecodeErrors += 1
@@ -6080,6 +6080,14 @@ function Internal.hsCanSend(target)
 		return state ~= nil and state.state == "ready"
 	end
 	return handshakeClient ~= nil and handshakeClient.state == "ready"
+end
+
+function Internal.hsCanReceive(player)
+	if not Config.HandshakeRequireReady then return true end
+	if IS_SERVER then return Internal.hsCanSend(player) end
+	-- READY arrives on a different RemoteEvent from gameplay data, so a
+	-- valid server packet may precede READY. Outbound client data remains held.
+	return handshakeClient ~= nil and (handshakeClient.state == "hello" or handshakeClient.state == "confirm" or handshakeClient.state == "ready")
 end
 
 function Internal.hsStatus(state)
