@@ -1,0 +1,47 @@
+# NetStreamV2 Changelog
+
+The current release is **v2.3.25**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.25 — Compression eligibility allocation reduction
+
+- Scans argument lists containing at most eight values for compressible tables or repeated eligible strings **without constructing a temporary dictionary**.
+- Uses a dictionary for longer argument lists to keep lookup work bounded.
+- Preserves the existing compression candidate decision and encoding format.
+- Adds `CompressionEligibilityShortScans` and `CompressionEligibilityShortSkips` in `GetStats()`, and `EligibilityShortScans` / `EligibilityShortSkips` in `GetCompressionStats()`.
+- Adds the `CompressionEligibility.server.lua` / `.client.lua` Studio regression pair.
+
+## v2.3.24 — Homogeneous U8 schema fast path
+
+- Compiles a `byteRunU8` flag for schemas with **2–32 U8 fields**.
+- Encodes/decodes these fields directly using eight-bit buffer operations, avoiding the generic schema kind-dispatch loop.
+- Preserves the same 8-bit-per-field wire representation and default BitFrame v1 protocol.
+- Adds `U8SchemaFastWrites` and `U8SchemaFastReads` counters and 4/32-field Studio probes.
+
+## v2.3.23 — Handshake HELLO retry recovery
+
+- When a server peer is already READY but receives a matching duplicate HELLO, it **resends WELCOME**, not READY. This allows a client that is still waiting in HELLO to move through CONFIRM and READY.
+- Maintains stale-nonce replay protection, compatibility checks and retry limits.
+- Adds `HandshakeRecoveredHellos` counter and an explicit handshake recovery Studio probe.
+- This change is not encryption, authentication or a new anti-cheat mechanism.
+
+## Earlier releases (selected)
+
+| Version | Focus |
+|---|---|
+| 2.3.22 | Allocation-free deferred queue restoration |
+| 2.3.21 | BitFrame Boolean schema fast path, 2–32 fields |
+| 2.3.20 | Writer-pool error cleanup and strict BitFrame tail padding |
+| 2.3.19 | Queue/payload/memory diagnostics, p50/p95/p99 RTT and jitter |
+| 2.3.18 | Encoder, decoder, dispatch and outgoing packet size timing |
+| 2.3.17 | Bounded percentile samples and public telemetry API |
+| 2.3.16 | Adaptive per-route compression CPU budget |
+| 2.3.15 | BitFrame reader pooling and dictionary cleanup |
+| 2.3.14 | Handshake nonce replay and duplicate handling |
+| 2.3.13 | Fast flush scheduling |
+| 2.3.12 | Realtime compression skip and scratch writer pooling |
+| 2.3.11 | Dedicated HELLO/WELCOME/CONFIRM/READY control handshake |
+| 2.3.8–2.3.10 | Reliability fixes, compression/packet bounds and lane splitting |
+| 2.3.5–2.3.7 | BitFrame/packing and performance maintenance |
+| 2.3.2–2.3.4 | Regression fixes and source hardening |
+
+The original detailed v2.3.22 README is preserved in [README_LEGACY_v2.3.22.md](README_LEGACY_v2.3.22.md). For the current usage guide see [README](../README.md).
