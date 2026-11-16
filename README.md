@@ -3162,3 +3162,56 @@ These releases are stacked on the unmerged v2.3.7 performance branch and preserv
 - Unreliable delivery is **not guaranteed**. The lane regression intentionally reports the observed unreliable count without asserting 100% delivery. Repeat with 2+ clients, mixed payload sizes and deliberate congestion; use MicroProfiler / network stats to compare real CPU time, GC pressure and packet counts with v2.3.7.
 
 **Validation limits:** Remote source re-reads and static invariants are not equivalent to compiling or executing Luau. The new tests have not been run in Roblox Studio here, and no throughput / latency improvement is being claimed without a controlled benchmark.
+
+
+## NetStreamV2 v2.3.11 → v2.3.13: handshake, compression, and latency diagnostics
+
+Three sequential releases follow v2.3.10. The **application BitFrame wire format and bundled compression codec 230 are unchanged**. However, **handshake is enabled by default**, so clients and servers must both deploy the same NetStream version. A dedicated reliable `H` RemoteEvent is created alongside `R` and `U`.
+
+| Release | Changes |
+|---|---|
+| **v2.3.11 — Peer handshake** | Reliable `HELLO → WELCOME → READY` control exchange, checked NetStream version / codec ID / BitFrame mode, client nonce and server challenge echoed back, capped retry/timeout, connection-ready APIs, rejects mismatched peers before processing normal data, and defers per-player outgoing queues until READY. |
+| **v2.3.12 — Adaptive compression CPU** | Per-route miss tracking. After repeated compression attempts without net byte savings, automatically skips a bounded number of heuristic attempts before resampling. Explicit `Compression = true` routes always bypass cooldown. Compression bytes and codec ID are unchanged. |
+| **v2.3.13 — RTT-aware application latency** | Lightweight client RTT/jitter samples over the reliable handshake remote every 15 seconds, a configurable high-RTT *normal-message batching-window cap*, and bounded buffering/replay of reliable packets that arrive at a client before handshake finishes. Unreliable pre-ready packets are not buffered. |
+
+### Configuration
+
+Configure **before** calling `Start()` or creating a route (and set matching wire/handshake options on both sides):
+
+```lua
+NetStream.Configure({
+    HandshakeEnabled = true,
+    HandshakeRetrySeconds = 1,
+    HandshakeTimeoutSeconds = 12,
+    HandshakeMaxAttempts = 6,
+    HandshakePingIntervalSeconds = 15, -- 0 disables periodic probes
+    HandshakePendingMaxPackets = 32,
+    HandshakePendingMaxBytes = 131072,
+    CompressionAdaptiveBackoff = true,
+    CompressionNoGainThreshold = 3,
+    CompressionBackoffMessages = 12,
+    TransportLatencyAwareBatching = true,
+    TransportHighRTTThresholdMs = 120,
+    TransportHighRTTBatchWindowSeconds = 0.004,
+})
+```
+
+- Client: `NetStream.GetHandshakeStatus()` returns `Status` (idle/pending/ready/rejected/timeout), initial/latest `RTTMs`, `SmoothedRTTMs`, `JitterMs`, sample count and attempt count. `NetStream.GetPingStats()` exposes the timing samples. `NetStream.IsPeerReady()` returns readiness.
+- Server: `NetStream.IsPeerReady(player)` and `NetStream.GetHandshakeStatus(player)` inspect each client's handshake state. The server's `HandshakeElapsedMs` is the WELCOME→READY elapsed time, **not** a full network RTT.
+- Rejection means a protocol version/codec/BitFrame mismatch, not authentication failure. Client nonces/challenges detect stale or malformed control messages; **they are not cryptographic authentication** and do not replace server-side input validation.
+- The handshake adds initial round-trip overhead before normal client/server unicast data is released. It **cannot** reduce geographical/network RTT. Its value is eliminating wrong-version processing and making readiness measurable.
+- The **client** uses smoothed RTT (if ≥120ms by default) to cap the normal-message batching wait to 4ms. Critical/Reatime priority behavior and configured flush cadence remain unchanged; a 60Hz heartbeat may still incur a frame of scheduling delay. Reducing this window trades potential packet count/CPU for less *application-added* waiting.
+- Server `FireAllClients` broadcasts retain their existing broadcast semantics, including best-effort delivery to peers whose handshake is not complete. The client buffers only a bounded set of **reliable** early frames (defaults: up to 32 frames / 128KiB) and replays them when ready. Packets beyond this cap and early unreliable frames may be dropped. Use per-player ready checks for guaranteed initial state delivery.
+- The handshake and periodic RTT probe use a distinct **reliable** RemoteEvent. This adds a small amount of control traffic. Set `HandshakeEnabled = false` **on both sides** only if intentionally using legacy no-handshake deployments.
+- `CompressionAdaptiveBackoff` may temporarily miss compression opportunities on traffic whose content changes rapidly; tune `CompressionNoGainThreshold` / `CompressionBackoffMessages` based on representative workloads.
+
+### Roblox Studio regression plan
+
+**Do not install multiple standalone test pairs at once** because some configure the module differently.
+
+1. Pair `tests/HandshakeRegression.server.lua` (ServerScriptService) with `tests/HandshakeRegression.client.lua` (StarterPlayerScripts). Place a `Netstream` ModuleScript in ReplicatedStorage with `Compression` underneath it. Check two-way event delivery, per-player READY status and at least one periodic RTT reply.
+2. Pair `tests/CompressionBackoffRegression.server.lua` with `tests/CompressionBackoffRegression.client.lua` to verify 20 valid, unmodified payloads and that deliberate no-gain compression triggers cooldown counters.
+3. Run the prior `MaintenanceRegression.server.lua`, `BatchLaneRegression.*` and `BitFramePerfProbe.*` tests, all updated for v2.3.13. Repeat with multiple players, joining/leaving, reconnects, and a simulated version mismatch; verify failures return rejected/timeout and no early unvalidated application data is dispatched.
+4. Benchmark matched v2.3.10 versus v2.3.13 workloads with Roblox MicroProfiler: bytes/sec, packets/sec, memory allocations/GC, encode/decode CPU, event dispatch time, handshake startup time, and p50/p95 application RTT. Reproduce results before comparing with Jolt/Blink/Zap.
+
+**Current verification:** Source-level/static invariants and GitHub changes only. Studio Luau tests, two-peer and multi-player runtime verification, and matched performance benchmarks have **not** been run in this environment.
