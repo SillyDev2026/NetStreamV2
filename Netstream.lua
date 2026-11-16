@@ -246,6 +246,7 @@ local DEFAULTS = {
 	Namespace = "NetStream",
 	RemoteWaitTimeout = 10,
 	HandshakeEnabled = true,
+	HandshakeRequireReady = false,
 	HandshakeRetrySeconds = 1,
 	HandshakeMaxAttempts = 5,
 	FlushRate = 60,
@@ -430,6 +431,8 @@ local Stats = {
 	HandshakeRetries = 0,
 	HandshakeTimeouts = 0,
 	HandshakeRejected = 0,
+	HandshakeTrafficHeld = 0,
+	HandshakeTrafficRejected = 0,
 	SentBytes = 0,
 	ReceivedBatches = 0,
 	ReceivedBytes = 0,
@@ -4632,6 +4635,7 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 		if queueCount(queue) <= 0 and next(latest) == nil then
 			break
 		end
+		if not Internal.hsCanSend(target) then Stats.HandshakeTrafficHeld += 1; break end
 		local ready = Internal.bandwidthReady(target)
 		if not ready then
 			Stats.BandwidthDeferredFlushes += 1
@@ -6025,6 +6029,7 @@ local function receive(player, data)
 		Stats.ReceivedBytes += bytes
 		return
 	end
+	if not Internal.hsCanSend(player) then Stats.HandshakeTrafficRejected += 1; return end
 	if isBuffer and bytes > Config.MaxIncomingPacketBytes then
 		Stats.RejectedOversizedPackets += 1
 		Stats.DecodeErrors += 1
@@ -6061,6 +6066,22 @@ function Internal.hsPacket(op, clientNonce, serverNonce)
 	if serverNonce then buffer.writeu32(data, 9, serverNonce) end
 	return data
 end
+function Internal.hsCanSend(target)
+	if not Config.HandshakeRequireReady then return true end
+	if IS_SERVER then
+		if target == ALL then
+			for _, player in ipairs(Players:GetPlayers()) do
+				local state = handshakePeers[player]
+				if not state or state.state ~= "ready" then return false end
+			end
+			return true
+		end
+		local state = handshakePeers[target]
+		return state ~= nil and state.state == "ready"
+	end
+	return handshakeClient ~= nil and handshakeClient.state == "ready"
+end
+
 function Internal.hsStatus(state)
 	return {State = if state then state.state else "idle", Ready = state ~= nil and state.state == "ready", RoundTripMs = if state then state.rttMs else nil, HelloAttempts = if state then state.helloAttempts or 0 else 0, ConfirmAttempts = if state then state.confirmAttempts or 0 else 0}
 end
@@ -6887,6 +6908,7 @@ function Internal.validateConfig(config)
 	assert(type(config.Namespace) == "string" and #config.Namespace > 0, "Namespace must be a non-empty string")
 	assert(type(config.RemoteWaitTimeout) == "number" and isFiniteNumber(config.RemoteWaitTimeout) and config.RemoteWaitTimeout > 0, "RemoteWaitTimeout must be a finite number greater than 0")
 	assert(type(config.HandshakeEnabled) == "boolean", "HandshakeEnabled must be boolean")
+	assert(type(config.HandshakeRequireReady) == "boolean" and (not config.HandshakeRequireReady or config.HandshakeEnabled), "HandshakeRequireReady requires HandshakeEnabled")
 	assert(type(config.HandshakeRetrySeconds) == "number" and isFiniteNumber(config.HandshakeRetrySeconds) and config.HandshakeRetrySeconds >= 0.2 and config.HandshakeRetrySeconds <= 10, "HandshakeRetrySeconds must be between 0.2 and 10 seconds")
 	assert(type(config.HandshakeMaxAttempts) == "number" and isInteger(config.HandshakeMaxAttempts) and config.HandshakeMaxAttempts >= 1 and config.HandshakeMaxAttempts <= 20, "HandshakeMaxAttempts must be an integer from 1 to 20")
 	assert(type(config.FlushRate) == "number" and isFiniteNumber(config.FlushRate) and config.FlushRate > 0, "FlushRate must be a finite number greater than 0")
@@ -7042,6 +7064,14 @@ end
 function NetStream.RetryHandshake()
 	assert(not IS_SERVER, "RetryHandshake is client-only")
 	NetStream.Start()
+	if not handshakeRemote and Config.HandshakeEnabled then
+		local folder = ReplicatedStorage:FindFirstChild("__NetStream_" .. Config.Namespace)
+		local found = folder and folder:FindFirstChild("H")
+		if found and found:IsA("RemoteEvent") then
+			handshakeRemote = found
+			receiveConnections[#receiveConnections + 1] = handshakeRemote.OnClientEvent:Connect(Internal.hsClient)
+		end
+	end
 	Internal.hsStart()
 	return NetStream.GetHandshakeStatus()
 end
