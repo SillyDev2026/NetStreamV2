@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.17"
+local VERSION = "2.3.18"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -4607,6 +4607,7 @@ local function sendBatch(target, unreliable, data)
 	trafficWindowSentBatches += 1
 	trafficWindowSentBytes += bytes
 	Internal.commitLastSendStats(bytes)
+	Internal.recordPerformanceSample("PacketBytes", bytes)
 	return true, "sent"
 end
 
@@ -4663,9 +4664,17 @@ function Internal.packetByteBudget(unreliable)
 	return budget
 end
 
+function Internal.measuredEncodeBatch(items)
+	if not Config.PerformanceTelemetryEnabled then return pcall(encodeBatch, items) end
+	local begin = os.clock()
+	local ok, data = pcall(encodeBatch, items)
+	Internal.recordPerformanceSample("EncodeMs", (os.clock() - begin) * 1000)
+	return ok, data
+end
+
 function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	local byteBudget = Internal.packetByteBudget(unreliable)
-	local ok, data = pcall(encodeBatch, items)
+	local ok, data = Internal.measuredEncodeBatch(items)
 	while ok and #items > 1 and buffer.len(data) > byteBudget do
 		local originalCount = #items
 		local idealCount = math.floor(originalCount * byteBudget / buffer.len(data))
@@ -4678,7 +4687,7 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 		Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
 		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
-		ok, data = pcall(encodeBatch, items)
+		ok, data = Internal.measuredEncodeBatch(items)
 	end
 	if ok and (Config.BandwidthGovernorEnabled or (unreliable and unreliableRemote)) then
 		local logical = batchLogicalCount(items)
@@ -4696,7 +4705,7 @@ function Internal.sendIsolatedMessages(target, unreliable, items)
 		local item = items[i]
 		local single = acquireBatch(1)
 		single[1] = item
-		local ok, data = pcall(encodeBatch, single)
+		local ok, data = Internal.measuredEncodeBatch(single)
 		releaseBatch(single)
 		if ok then
 			local sent, reason = sendBatch(target, unreliable, data)
@@ -5146,6 +5155,7 @@ local function runDispatch()
 		dispatchCount = 0
 		dispatchHead = 1
 	end
+	if processed > 0 then Internal.recordPerformanceSample("DispatchMs", (os.clock() - startedAt) * 1000) end
 end
 
 local function enqueueDispatch(route, player, args)
@@ -6137,7 +6147,9 @@ local function receive(player, data)
 	end
 	local bitFrame = Config.BitFrameEnabled
 	local reader = if bitFrame then Internal.acquireBitFrameReader(data) else acquireReader(data)
+	local decodeStarted = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	local ok, err = pcall(decodeBatch, player, data, reader)
+	if decodeStarted then Internal.recordPerformanceSample("DecodeMs", (os.clock() - decodeStarted) * 1000) end
 	if bitFrame then Internal.releaseBitFrameReader(reader) else releaseReader(reader) end
 	if not ok then
 		Stats.DecodeErrors += 1
