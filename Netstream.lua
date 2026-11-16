@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.28"
+local VERSION = "2.3.29"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1608,9 +1608,9 @@ function Internal.BitFrameWriter:rawBuffer(value)
 	self.bitPosition = bitPosition
 end
 function Internal.BitFrameWriter:varUInt(value)
-	assert(value >= 0 and value <= MAX_SAFE_INTEGER and isInteger(value), "NetStream BitFrame varuint expects a non-negative safe integer")
-	self:ensureBits(Internal.adaptiveUIntBitLength(value))
-	self.bitPosition = Internal.writeAdaptiveUIntBits(self.buffer, self.bitPosition, value)
+	local bitCount = Internal.adaptiveUIntBitLength(value)
+	self:ensureBits(bitCount)
+	self.bitPosition = Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)
 end
 function Internal.BitFrameWriter:varInt(value)
 	self:varUInt(if value >= 0 then value * 2 else -value * 2 - 1)
