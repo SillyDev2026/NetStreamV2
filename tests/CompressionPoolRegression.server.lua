@@ -2,7 +2,7 @@
 -- ServerScriptService: verify the codec writer pool never aliases finished payload buffers.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.19", "Wrong NetStream version")
+assert(NetStream.GetVersion() == "2.3.22", "Wrong NetStream version")
 local Compression = NetStream.Compression
 assert(Compression.Version() == "2.3.5", "Wrong Compression version")
 assert(Compression.CodecVersion == 230, "Codec wire version changed")
