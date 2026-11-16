@@ -199,7 +199,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.7"
+local VERSION = "2.3.8"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1587,8 +1587,8 @@ function Internal.BitFrameReader:rawString(length)
 	self.bitPosition = bitPosition
 	return table.concat(chars)
 end
-function Internal.BitFrameReader:rawBuffer(length)
-	if length > Config.MaxBufferBytes or length > Config.MaxIncomingPacketBytes then error("NetStream BitFrame buffer is too large", 0) end
+function Internal.BitFrameReader:rawBuffer(length, compressed)
+	if length < 0 or length % 1 ~= 0 or length > Config.MaxIncomingPacketBytes or (not compressed and length > Config.MaxBufferBytes) then error("NetStream BitFrame buffer is too large", 0) end
 	local bitPosition = self.bitPosition
 	if bitPosition + length * 8 > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
 	local out = buffer.create(length)
@@ -1878,7 +1878,7 @@ function Internal.readSchemaString(reader)
 		if payload > Config.MaxIncomingPacketBytes then
 			error("NetStream incoming compressed schema string is too large", 0)
 		end
-		local packed = reader:rawBuffer(payload)
+		local packed = reader:rawBuffer(payload, true)
 		local value = Compression.DecompressString(packed)
 		if #value > Config.MaxStringBytes then
 			error("NetStream incoming schema string exceeds MaxStringBytes", 0)
@@ -1911,7 +1911,7 @@ function Internal.readSchemaBuffer(reader)
 	local payload = math.floor(meta / 2)
 	if compressed then
 		if payload > Config.MaxIncomingPacketBytes then error("NetStream incoming compressed schema buffer is too large", 0) end
-		local packed = reader:rawBuffer(payload)
+		local packed = reader:rawBuffer(payload, true)
 		local value = Compression.DecompressBuffer(packed)
 		if buffer.len(value) > Config.MaxBufferBytes then error("NetStream incoming schema buffer exceeds MaxBufferBytes", 0) end
 		Stats.CompressionDecodeCount += 1
@@ -5637,7 +5637,7 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 	else
 		local compressedBytes = reader:adaptiveUInt()
 		if compressedBytes <= 0 or compressedBytes > Config.MaxIncomingPacketBytes then error("NetStream BitFrame compressed payload size invalid", 0) end
-		local compressedData = reader:rawBuffer(compressedBytes)
+		local compressedData = reader:rawBuffer(compressedBytes, true)
 		local decoded = Compression.Decode(compressedData, Internal.compressionOptions())
 		Stats.CompressionDecodeCount += 1
 		if mode == 2 then
