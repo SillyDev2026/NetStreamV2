@@ -3213,3 +3213,50 @@ print(clientStatus.State, clientStatus.Ready, clientStatus.RoundTripMs)
 Run each standalone server/client test pair in its own Studio Play session; configure the same handshake flags on client and server. Test malformed H buffers, duplicate HELLO/CONFIRM/READY, mismatched BitFrame modes, simulated 0–500ms latency, multi-player churn, unreliable loss, aggressive real-time sends, 1000+ events per frame, GC, and byte allocations before deploying. The source checks do not replace Studio execution or benchmarks.
 
 **Performance claims:** all speed benefits are hypotheses until replicated Roblox MicroProfiler, byte, packet, and data-ping measurements are available. Initial handshake `RoundTripMs` includes engine scheduling and must not be labeled as raw physical ping. Compression writer pooling trades retained memory for potentially fewer allocations.
+
+
+## Handshake reliability + maximum CPU/memory focus: v2.3.14 → v2.3.16
+
+Three sequential patches stacked on the unmerged **v2.3.13** handshake/latency branch. These releases deliberately preserve **BitFrame wire version 1**, **Compression codec 230**, route IDs and the existing Event/State/RPC APIs.
+
+| Release | Changes | Trade-off |
+|---|---|---|
+| **2.3.14 — Handshake correctness** | Validates HELLO/CONFIRM shape and capabilities *before* allocating peer session state; retains a bounded history of eight prior client nonces per peer; rejects replay of a superseded nonce; responds idempotently to duplicate messages without changing an established READY session; makes confirm retries less aggressive; discovers a late-created `H` control RemoteEvent automatically during the configured wait interval. | Replay detection is **session-level stale nonce protection**, not cryptographic authentication or authorization. It retains at most eight old nonces per active peer. |
+| **2.3.15 — Fewer hot-path allocations** | Uses a bounded BitFrame reader pool instead of allocating a new reader and separately acquiring a legacy reader on every BitFrame packet. Reader state and string dictionaries are cleared when released, including on decoding failure; pooled writers clear per-packet string dictionaries before retention. Adds reader allocation/pool counters and `MaxBitFrameReaderPoolSize`. | Reduces potential garbage collection and retained string references, but has a bounded reusable-reader memory footprint. |
+| **2.3.16 — Compression CPU control** | Measures the `Compression.Compress` call in each of the three existing compression paths. For automatically compressed routes, maintains an EMA of observed encode time and temporarily bypasses compression if cost exceeds a configurable threshold; periodically retries compression to learn whether cost has fallen. Explicit per-route `Compression=true` always overrides automatic CPU suppression. | Skipping compression sends more native bytes and can increase network usage; lower encoding CPU is not proof of lower geographic/network RTT. |
+
+### CPU-focused configuration
+
+```luau
+local NetStream = require(game:GetService("ReplicatedStorage"):WaitForChild("Netstream"))
+NetStream.Configure({
+    HandshakeEnabled = true,
+    HandshakeRequireReady = false, -- keep non-strict when supporting older clients
+    HandshakeRetrySeconds = 1,
+    HandshakeMaxAttempts = 5,
+    MaxBitFrameReaderPoolSize = 32, -- 0 disables BitFrame reader reuse
+    CompressionSkipRealtime = true,
+    CompressionCpuBudgetEnabled = true,
+    CompressionMaxEstimatedSeconds = 0.002, -- observed encode-call EMA threshold, 2ms
+    CompressionCpuProbeEvery = 32, -- recheck 1 out of 32 skipped candidates
+    TransportFastFlushEnabled = true,
+})
+NetStream.Start()
+
+local snapshot = NetStream.GetStats()
+print(snapshot.BitFrameReadersCreated, snapshot.BitFrameReaderPoolHits, snapshot.BitFrameReaderPoolSize)
+local compression = NetStream.GetCompressionStats()
+print(compression.CpuBudgetSkips, compression.CpuSamples, compression.CpuSampleSeconds)
+```
+
+The compression threshold is **per candidate compression call**, not a hard aggregate CPU budget or maximum per-frame execution time. Only automatically compressed routes participate; no additional compression mode or over-the-wire framing was introduced. The compression EMA is local to a route. An explicit `Compression=true` is intended for data that should still attempt compression even on slower machines.
+
+### Regression tests
+
+- `tests/HandshakeReplayRegression.server.lua` and `tests/HandshakeReplayRegression.client.lua`: start with READY, send two successive test HELLO nonces, replay the superseded one, restart the client handshake and verify READY recovery plus a server replay-rejection counter. Run **only in a dedicated Studio Play Test**, not production.
+- `tests/CpuMemoryRegression.server.lua` and `tests/CpuMemoryRegression.client.lua`: send 120 structured auto-compressible messages in several batches; assert decode integrity, nonzero BitFrame reader pooling, and compression CPU sampling. Logs compression suppression counters but does not require the scheduler to suppress any messages on fast hardware.
+- Prior `BitFramePerfProbe`, `MaintenanceRegression`, `HandshakeRegression`, `CompressionPoolRegression` and `BatchLaneRegression` scripts have their NetStream assertions updated to v2.3.16. Bundled Compression remains **v2.3.5 / codec 230**.
+
+**Validation status**: Remote GitHub source checks can establish the presence of features and preserve version/codec invariants, but they cannot substitute for a Luau typecheck, a Play Test, and measured CPU, memory, latency, packet and roundtrip benchmarks. These tests are written but **not executed in Roblox Studio**. Avoid claiming higher measured FPS or lower ping before running them.
+
+**Deployment dependency**: this branch is based on the unmerged v2.3.13 PR. Merge the earlier stacked pull requests and complete their test suites before deploying v2.3.16.

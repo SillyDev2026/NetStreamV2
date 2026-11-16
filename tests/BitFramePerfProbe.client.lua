@@ -2,7 +2,7 @@
 -- Studio setup: ReplicatedStorage.Netstream (with Compression child); this LocalScript in StarterPlayerScripts.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.13")
+assert(NetStream.GetVersion() == "2.3.16")
 local event = NetStream.Event("__NetStreamPerfProbe", {Compression = false})
 local ack = NetStream.Event("__NetStreamPerfAck", {Compression = false})
 local total = 300
