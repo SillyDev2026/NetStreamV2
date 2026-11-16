@@ -3162,3 +3162,54 @@ These releases are stacked on the unmerged v2.3.7 performance branch and preserv
 - Unreliable delivery is **not guaranteed**. The lane regression intentionally reports the observed unreliable count without asserting 100% delivery. Repeat with 2+ clients, mixed payload sizes and deliberate congestion; use MicroProfiler / network stats to compare real CPU time, GC pressure and packet counts with v2.3.7.
 
 **Validation limits:** Remote source re-reads and static invariants are not equivalent to compiling or executing Luau. The new tests have not been run in Roblox Studio here, and no throughput / latency improvement is being claimed without a controlled benchmark.
+
+
+## Handshake and lower app-added latency: v2.3.11 → v2.3.13
+
+Three stacked patches on v2.3.10 (the previous maintenance PR). The **BitFrame v1 data wire format and Compression codec 230 remain unchanged**. Both client and server should run the same NetStream version for handshake capability checks.
+
+| NetStream | Improvement |
+|---|---|
+| **2.3.11** | Adds a separate `H` reliable control RemoteEvent and a versioned four-step session handshake: HELLO (client nonce) → WELCOME (echo nonce plus server nonce) → CONFIRM (both nonces) → READY. Validates codec/mode, retries dropped control messages, bounds attempts, rate-limits repeated HELLO messages, reports status and initial HELLO/WELCOME RTT. |
+| **2.3.12** | `Compression` module v2.3.5 uses a bounded, detached-output writer buffer pool. `CompressionSkipRealtime=true` prevents CPU-heavy *automatic* structural compression for routes with `Priority="Realtime"` unless that route sets `Compression=true`. This is a deliberate CPU-versus-bandwidth trade-off. |
+| **2.3.13** | `TransportFastFlushEnabled=true` coalesces same-resumption Critical/Realtime writes into one deferred per-target fast flush, instead of relying only on the 60 Hz heartbeat; later realtime updates advance their queue release deadline. Fast HELLO→CONFIRM exchanges are no longer falsely rejected by the repeated-HELLO throttle. Optional handshake readiness gating and wake-on-READY are available. |
+
+### Handshake API
+
+```luau
+local NetStream = require(game:GetService("ReplicatedStorage"):WaitForChild("Netstream"))
+NetStream.Configure({
+    HandshakeEnabled = true,
+    HandshakeRequireReady = false, -- default; preserve older peers
+    HandshakeRetrySeconds = 1,
+    HandshakeMaxAttempts = 5,
+    TransportFastFlushEnabled = true,
+    CompressionSkipRealtime = true,
+})
+NetStream.Start()
+
+-- Client: readiness and initial control-exchange RTT, not physical network ping.
+local clientStatus = NetStream.GetHandshakeStatus()
+print(clientStatus.State, clientStatus.Ready, clientStatus.RoundTripMs)
+-- Client: optionally restart HELLO with a new nonce after unavailable/timeout:
+-- NetStream.RetryHandshake()
+
+-- Server: NetStream.GetHandshakeStatus(player)
+-- Both:   NetStream.IsHandshakeReady(player) (client can omit player)
+```
+
+**Strict handshake mode:** set `HandshakeRequireReady=true` on **both** client and server *before* calling `Start` or creating a route. Normal incoming data is rejected until READY and outbound queues remain pending; queued packets are awakened on READY. For broadcast traffic, strict mode holds a broadcast while any currently connected player is not READY. A mixed-version game with strict mode can therefore stall until incompatible/legacy players leave. This option is **disabled by default** for backwards compatibility and is not a replacement for server-side authorization, input validation, or anti-cheat.
+
+**Retry behavior:** each HELLO/CONFIRM phase has up to `HandshakeMaxAttempts` attempts with `HandshakeRetrySeconds` between attempts. Client states include `idle`, `hello`, `confirm`, `ready`, `timeout`, `incompatible` and `unavailable`. Both sides need the new `H` RemoteEvent to see READY. When older peers lack `H`, ordinary R/U messages still work in default non-strict mode.
+
+**Ping reality:** this does not alter Roblox server region, physical transit time, or the engine's transport. A control exchange adds startup messages; deferred flushes can reduce application-side *queueing* for Critical/Realtime priorities but may use more packets per second. Use `Priority="Realtime"` with unreliable traffic only when loss and reordering are acceptable.
+
+### Regression tests
+
+- `tests/HandshakeRegression.server.lua` and `tests/HandshakeRegression.client.lua`: in a dedicated Studio Play test, test a pre-ready queued message under strict mode, verify 4-step readiness and the client RTT sample.
+- `tests/CompressionPoolRegression.server.lua`: 120 independent compressed outputs are retained while pool buffers are reused, then decoded to prove output ownership and field integrity.
+- Earlier `MaintenanceRegression`, `BundledCompressionRegression`, `BatchLaneRegression`, and `BitFramePerfProbe` scripts now assert NetStream 2.3.13 / Compression 2.3.5.
+
+Run each standalone server/client test pair in its own Studio Play session; configure the same handshake flags on client and server. Test malformed H buffers, duplicate HELLO/CONFIRM/READY, mismatched BitFrame modes, simulated 0–500ms latency, multi-player churn, unreliable loss, aggressive real-time sends, 1000+ events per frame, GC, and byte allocations before deploying. The source checks do not replace Studio execution or benchmarks.
+
+**Performance claims:** all speed benefits are hypotheses until replicated Roblox MicroProfiler, byte, packet, and data-ping measurements are available. Initial handshake `RoundTripMs` includes engine scheduling and must not be labeled as raw physical ping. Compression writer pooling trades retained memory for potentially fewer allocations.
