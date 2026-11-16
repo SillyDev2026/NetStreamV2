@@ -6152,7 +6152,10 @@ function Internal.hsClient(data)
 	if n ~= 9 and n ~= 13 then Stats.HandshakeRejected += 1; return end
 	local op = buffer.readu8(data, 0)
 	if buffer.readu32(data, 5) ~= state.clientNonce then Stats.HandshakeRejected += 1; return end
-	if op == 5 and n == 9 then state.state = "incompatible"; Stats.HandshakeRejected += 1; return end
+	if op == 5 and n == 9 then
+		if state.state ~= "ready" then state.state = "incompatible"; Stats.HandshakeRejected += 1 end
+		return
+	end
 	if buffer.readu8(data, 1) ~= Internal.HS_PROTOCOL or buffer.readu16(data, 2) ~= Internal.HS_CODEC
 		or buffer.readu8(data, 4) ~= (if Config.BitFrameEnabled then 1 else 0) then
 		state.state = "incompatible"; Stats.HandshakeRejected += 1; return
@@ -6168,9 +6171,9 @@ function Internal.hsClient(data)
 		elseif state.state == "confirm" and state.serverNonce == serverNonce then
 			Internal.hsSend()
 		end
-	elseif op == 4 and n == 13 and state.state == "confirm" and state.serverNonce == buffer.readu32(data, 9) then
+	elseif op == 4 and n == 13 and (state.state == "confirm" or state.state == "ready") and state.serverNonce == buffer.readu32(data, 9) then
+		if state.state ~= "ready" then Stats.HandshakeReadyCount += 1 end
 		state.state = "ready"
-		Stats.HandshakeReadyCount += 1
 	else
 		Stats.HandshakeRejected += 1
 	end
