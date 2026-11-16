@@ -5855,7 +5855,7 @@ end
 
 local function decodeBatch(player, data, reader)
 	if Config.BitFrameEnabled then
-		Internal.decodeBitFrame(player, data)
+		Internal.decodeBitFrame(player, data, reader)
 		return
 	end
 	if buffer.len(data) > 0 then
