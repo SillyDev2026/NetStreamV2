@@ -20,6 +20,29 @@ assert(source.includes("BitFrameRetainWriterMaxBytes = 4096,"), "Binary writer r
 assert(source.includes("function NetStream.TrimPools()"), "Idle memory trim API missing");
 assert(source.includes("if length >= 16 then"), "Unaligned binary string buffer decoder missing");
 assert(source.includes("PackedValuePoolOversizeDrops"), "Oversized packed pool diagnostics missing");
+
+
+const fixedStart = source.indexOf("local function readFixedSchemaArgs(reader, schema)");
+const fixedEnd = source.indexOf("local function readSchemaArgs(reader, schema)", fixedStart);
+assert(fixedStart >= 0 && fixedEnd > fixedStart, "Legacy fixed decoder not found");
+const fixed = source.slice(fixedStart, fixedEnd);
+assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Legacy composite finite guards missing");
+assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
+
+const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
+assert(tests.length >= 41, "Regression suite unexpectedly missing");
+for (const name of tests) {
+    const content = read("tests/" + name);
+    assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
+    const guards = [...content.matchAll(/NetStream\.GetVersion\(\) == "([^"]+)"/g)];
+    for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
+}
+
+let state = 0x31415926;
+function random() {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state;
+}
 assert(source.includes("function Internal.splitPackedRunMessage(message, keepCount)"), "Packed-run splitting is missing");
 assert(source.includes("Stats.PackedRunBatchSplits += 1"), "Packed split counter is missing");
 assert(source.includes("while ok and buffer.len(data) > byteBudget do"), "Packet budget splitter must include single packed runs");
@@ -53,27 +76,6 @@ for (let run = 0; run < 5000; run++) {
 }
 
 
-const fixedStart = source.indexOf("local function readFixedSchemaArgs(reader, schema)");
-const fixedEnd = source.indexOf("local function readSchemaArgs(reader, schema)", fixedStart);
-assert(fixedStart >= 0 && fixedEnd > fixedStart, "Legacy fixed decoder not found");
-const fixed = source.slice(fixedStart, fixedEnd);
-assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Legacy composite finite guards missing");
-assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
-
-const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 41, "Regression suite unexpectedly missing");
-for (const name of tests) {
-    const content = read("tests/" + name);
-    assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
-    const guards = [...content.matchAll(/NetStream\.GetVersion\(\) == "([^"]+)"/g)];
-    for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
-}
-
-let state = 0x31415926;
-function random() {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state;
-}
 function put(bytes, position, value) {
     for (let bit = 0; bit < 8; bit++) {
         const at = position + bit;
