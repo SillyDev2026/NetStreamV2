@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.37"
+local VERSION = "2.4.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -5960,7 +5960,88 @@ function Internal.bitFrameCommitReceive(player, data, logicalCount)
 	trafficWindowReceivedMessages += logicalCount
 end
 
-function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, route, allowMessage)
+-- Stage decoded actions until the final packet tail has passed validation.
+-- One pooled structure-of-arrays avoids allocating a Lua table for each message.
+Internal.BitFrameStagePool = {}
+
+function Internal.acquireBitFrameStage()
+	local pool = Internal.BitFrameStagePool
+	local stage = pool[#pool]
+	if stage then
+		pool[#pool] = nil
+	else
+		stage = {kinds = {}, routes = {}, routeIds = {}, requestIds = {}, args = {}, groups = {}, count = 0}
+	end
+	stage.count = 0
+	return stage
+end
+
+function Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, group)
+	local index = stage.count + 1
+	stage.count = index
+	stage.kinds[index] = kind
+	stage.routes[index] = route
+	stage.routeIds[index] = routeId
+	stage.requestIds[index] = requestId
+	stage.args[index] = args
+	stage.groups[index] = group
+end
+
+function Internal.releaseBitFrameStage(stage)
+	for i = 1, stage.count do
+		local args = stage.args[i]
+		if args then releaseArgs(args) end
+	end
+	table.clear(stage.kinds)
+	table.clear(stage.routes)
+	table.clear(stage.routeIds)
+	table.clear(stage.requestIds)
+	table.clear(stage.args)
+	table.clear(stage.groups)
+	stage.count = 0
+	local pool = Internal.BitFrameStagePool
+	if #pool < Config.MaxBatchPoolSize then pool[#pool + 1] = stage end
+end
+
+function Internal.commitBitFrameStage(player, stage)
+	local remainingEventAllowance = 0
+	for i = 1, stage.count do
+		local kind = stage.kinds[i]
+		local route = stage.routes[i]
+		local routeId = stage.routeIds[i]
+		local requestId = stage.requestIds[i]
+		local args = stage.args[i]
+		stage.args[i] = nil
+		if kind == KIND_EVENT then
+			local group = stage.groups[i]
+			if group > 0 then remainingEventAllowance = consumeRouteAllowance(route, player, group) end
+			if remainingEventAllowance > 0 then
+				remainingEventAllowance -= 1
+				enqueueDispatch(route, player, args)
+			else
+				releaseArgs(args)
+			end
+		elseif kind == KIND_CALL then
+			if Internal.chargeIncomingCall(player) then
+				task.spawn(Internal.handleCall, player, routeId, requestId, args)
+			else
+				releaseArgs(args)
+			end
+		elseif kind == KIND_RETURN then
+			Internal.processReturn(player, requestId, args)
+		elseif kind == KIND_STATE then
+			if consumeRouteAllowance(route, player, 1) > 0 then
+				local state = Internal.getPeerState(player)
+				state[routeId] = args[1]
+				enqueueDispatch(route, player, args)
+			else
+				releaseArgs(args)
+			end
+		end
+	end
+end
+
+function Internal.bitFrameReadDynamic(reader, kind, routeId, requestId, route, allowMessage, stage)
 	if kind == KIND_RETURN then
 		local ok = reader:bits(1) ~= 0
 		local resultCount = reader:adaptiveUInt()
@@ -5969,7 +6050,7 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 		args[1] = ok
 		for i = 1, resultCount do args[i + 1] = readValue(reader, 0) end
 		args.n = resultCount + 1
-		if allowMessage then Internal.processReturn(player, requestId, args) else releaseArgs(args) end
+		if allowMessage then Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1) else releaseArgs(args) end
 		return 1
 	end
 
@@ -6010,38 +6091,20 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 		end
 	end
 
-	if not allowMessage then
-		releaseArgs(args)
-	elseif kind == KIND_EVENT then
-		if consumeRouteAllowance(route, player, 1) > 0 then enqueueDispatch(route, player, args) else releaseArgs(args) end
-	elseif kind == KIND_CALL then
-		if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) else releaseArgs(args) end
-	elseif kind == KIND_STATE then
-		if consumeRouteAllowance(route, player, 1) > 0 then
-			local state = Internal.getPeerState(player)
-			state[routeId] = args[1]
-			enqueueDispatch(route, player, args)
-		else
-			releaseArgs(args)
-		end
+	if allowMessage then
+		Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1)
 	else
 		releaseArgs(args)
-		error("NetStream BitFrame invalid message kind", 0)
 	end
 	return 1
 end
 
-function Internal.decodeBitFrame(player, data, reader)
-	-- Caller owns reader lifecycle so exceptions still release pooled scratch.
+function Internal.parseBitFrame(player, reader, stage)
 	local logicalCount = 0
 	while true do
 		local present = reader:bits(1)
 		if present == 0 then break end
-        -- Enforce the packet-wide message limit before parsing or dispatching
-        -- the next message, instead of only detecting the overrun afterward.
-        if logicalCount >= Config.MaxIncomingMessages then
-            error("NetStream BitFrame exceeds MaxIncomingMessages", 0)
-        end
+		if logicalCount >= Config.MaxIncomingMessages then error("NetStream BitFrame exceeds MaxIncomingMessages", 0) end
 		local kind = reader:bits(2)
 		local routeId = 0
 		local requestId = 0
@@ -6060,54 +6123,54 @@ function Internal.decodeBitFrame(player, data, reader)
 			if kind == KIND_EVENT then
 				local run = reader:bits(1) ~= 0
 				local count = if run then reader:adaptiveUInt() else 1
-				if count < 1 or logicalCount + count > Config.MaxIncomingMessages then
-                    error("NetStream BitFrame schema run count invalid", 0)
-                end
-				if not canAcceptIncomingMessages(player, logicalCount + count) then
-					Stats.RateLimitedBatches += 1
-					-- Decode to keep framing valid, but do not dispatch.
-					for _ = 1, count do local dropped = Internal.bitFrameReadSchemaArgs(reader, route._schema); if dropped ~= EMPTY_ARGS and dropped ~= TRUE_ARGS and dropped ~= FALSE_ARGS then releaseArgs(dropped) end end
-				else
-					local allowance = consumeRouteAllowance(route, player, count)
-					for index = 1, count do
-						local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
-						if index <= allowance then enqueueDispatch(route, player, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+				if count < 1 or logicalCount + count > Config.MaxIncomingMessages then error("NetStream BitFrame schema run count invalid", 0) end
+				local allowed = canAcceptIncomingMessages(player, logicalCount + count)
+				if not allowed then Stats.RateLimitedBatches += 1 end
+				for index = 1, count do
+					local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
+					if allowed then
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
+					else
+						releaseArgs(args)
 					end
 				end
 				logicalCount += count
 			else
-				local allowMessage = canAcceptIncomingMessages(player, logicalCount + 1)
-				if not allowMessage then Stats.RateLimitedBatches += 1 end
+				local allowed = canAcceptIncomingMessages(player, logicalCount + 1)
+				if not allowed then Stats.RateLimitedBatches += 1 end
 				local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
-				if not allowMessage then
-					if args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
-				elseif kind == KIND_CALL then
-					if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
-				elseif kind == KIND_STATE then
-					if consumeRouteAllowance(route, player, 1) > 0 then
-						local state = Internal.getPeerState(player)
-						state[routeId] = args[1]
-						enqueueDispatch(route, player, args)
-						else
-						if args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
-						end
+				if allowed then
+					Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1)
+				else
+					releaseArgs(args)
 				end
 				logicalCount += 1
 			end
 		else
-			local allowMessage = canAcceptIncomingMessages(player, logicalCount + 1)
-			if not allowMessage then Stats.RateLimitedBatches += 1 end
-			logicalCount += Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, route, allowMessage)
+			local allowed = canAcceptIncomingMessages(player, logicalCount + 1)
+			if not allowed then Stats.RateLimitedBatches += 1 end
+			logicalCount += Internal.bitFrameReadDynamic(reader, kind, routeId, requestId, route, allowed, stage)
 		end
 		if logicalCount > Config.MaxIncomingMessages then error("NetStream BitFrame exceeds MaxIncomingMessages", 0) end
 	end
 
-	-- A valid BitFrame has at most seven unused bits in its final byte.
 	local tailBits = reader.bitLength - reader.bitPosition
 	if tailBits > 7 or (tailBits > 0 and reader:bits(tailBits) ~= 0) then
 		Stats.BitFrameTailPaddingRejected += 1
 		error("NetStream BitFrame invalid tail padding", 0)
 	end
+	return logicalCount
+end
+
+function Internal.decodeBitFrame(player, data, reader)
+	local stage = Internal.acquireBitFrameStage()
+	local ok, logicalCount = pcall(Internal.parseBitFrame, player, reader, stage)
+	if not ok then
+		Internal.releaseBitFrameStage(stage)
+		error(logicalCount, 0)
+	end
+	Internal.commitBitFrameStage(player, stage)
+	Internal.releaseBitFrameStage(stage)
 	Internal.bitFrameCommitReceive(player, data, logicalCount)
 end
 
@@ -7963,6 +8026,7 @@ end
 -- Call after load spikes, not from per-frame gameplay paths.
 function NetStream.TrimPools()
 	local before = NetStream.GetMemoryDiagnostics()
+	Internal.BitFrameStagePool = {}
 	Internal.BitFrameWriterPool = {}
 	Internal.BitFrameReaderPool = {}
 	Internal._nativeMeasurePool = {}
@@ -7995,6 +8059,7 @@ function NetStream.GetMemoryDiagnostics()
 		ScratchWriterPooledBytes = scratchBytes,
 		AllWriterPoolsBytes = writerBytes + legacyBytes + scratchBytes,
 		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
+		BitFrameStagePoolSize = #Internal.BitFrameStagePool,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
 		MessagePoolSize = #messagePool,
@@ -8388,6 +8453,7 @@ function NetStream.Destroy()
 
 	table.clear(Internal.BitFrameWriterPool)
 	table.clear(Internal.BitFrameReaderPool)
+	table.clear(Internal.BitFrameStagePool)
 	Internal.resetPerformanceSamples()
 	Internal.releaseBucket(clientBucket)
 	Internal.releaseBucket(broadcastBucket)
