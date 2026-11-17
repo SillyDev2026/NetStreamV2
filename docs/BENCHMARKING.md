@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v2.3.34. **Candidate:** v2.3.37. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v2.3.37. **Candidate:** v2.6.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,8 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `AtomicPacketRegression` | Stage a valid state frame with corrupt padding; confirm no dispatch/state mutation; then recover |
+| `AtomicScalarRegression` | Test tiny scalars including nil, schema U8/Bool, scalar states and response |
 | `StateThrottleRegression` | Schema and dynamic state rate-limits reject state mutation |
 | `PackedBudgetRegression` | FIFO and batch packet splits under a 48-byte byte-budget |
 | `BinaryPrecisionRegression` | F64 values and hybrid short-string binary round-trips |
@@ -118,3 +120,15 @@ Measure v2.3.31 and v2.3.34 with the **same** settings, payloads and player coun
 ## v2.3.35–v2.3.37 performance comparison
 
 Run each paired Studio regression in a **separate Play session**, then execute `PerformanceP95` and `CpuMemoryRegression` at identical settings on v2.3.34 and v2.3.37. Report 128, 1,024 and 10,000 probe runs where practical. Compare binary writer retained bytes, Luau VM heap after GC stabilization, encode/decode p95, dispatch p95, queue p95, packet bytes p95 and RTT p50/p95/p99. Do not infer total VM heap savings or lower transport ping solely from source-level checks. CI parsing does not execute Roblox multiplayer scripts.
+
+## Release-line performance matrix
+
+| Dimension | v2.3.37 baseline | v2.4.0 | v2.5.0 | v2.6.0 |
+|---|---|---|---|---|
+| Corrupt BitFrame tail side effects | Possible | Transactional decode | Retained | Retained |
+| Staging memory bound | N/A | Pooled scratch | MaxPooledBitFrameActions=64 | Same |
+| One-byte uint fast-path read/write | Generic | Generic | Read | Read + write |
+| Direct staged tiny scalar | No | No | No | Yes |
+| Studio RTT p95/p99 and Luau heap | Measure | Measure | Measure | Measure |
+
+Run paired Studio scripts **separately**, checking server and client Output for PASS and unexpected warnings. For performance claims use controlled identical workloads, garbage-collection stabilization, and a minimum of several trials per release; CI source checks alone do not quantify a speed-up.

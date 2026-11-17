@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v2.3.37. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v2.6.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
-## Latest correctness and binary suboptimization cycle (source-level)
+## New minor-version optimization sequence (source-level)
+
+| Release | Scope | Status |
+|---|---|---|
+| 2.4.0 | Atomic BitFrame decode before delivering gameplay effects | Committed; Studio verification pending |
+| 2.5.0 | Bound staged allocations and fast-path 1-byte varuint decoding | Committed; Studio heap benchmarks pending |
+| 2.6.0 | Elide tiny-scalar argument tables and specialize 1-byte encoding | Committed; Studio benchmarks pending |
+
+## Previous correctness and binary suboptimization cycle (source-level)
 
 | Release | Change | Status |
 |---|---|---|
@@ -40,7 +48,7 @@ The releases above retain BitFrame v1 and the Compression v2.3.5 codec. Dedicate
 
 | Rank | Improvement | Priority /10 | Expected benefit | Important trade-off |
 |---:|---|---:|---|---|
-| 1 | **Atomic inbound BitFrame validation before gameplay side effects** | **9.8** | Prevent malformed late packet tails from committing earlier messages | May add decode work or require staging |
+| 1 | **Runtime profiling and atomic decode optimization** | **9.8** | Validate new staging semantics and reduce its additional per-packet overhead | Requires paired Studio benchmarks |
 | 2 | **Compiled/generated fixed-schema encoders and decoders** | **9.7** | Reduce per-field runtime kind dispatch | Generator maintenance, type-checking and compatibility |
 | 3 | **CI-based Luau lint/typecheck + Studio regression harness** | **9.6** | Catch faulty releases before main | Roblox Studio tests may need a dedicated runner |
 | 4 | **Field-level delta state replication** | 9.5 | Reduce bytes for slowly changing entity fields | Needs baselines, resync/reliability design |

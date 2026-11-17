@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v2.3.37-2563eb)
+![Release](https://img.shields.io/badge/release-v2.6.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v2.3.37.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.3.37 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v2.6.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.6.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **2.6.0** | Zero-argument-table scalar staging for tiny dynamic and single schema U8/Bool events/states; one-byte varUInt writer fast path |
+| **2.5.0** | Bound atomic stage pool retention; add malformed-packet statistics; optimize 1-byte varUInt decode |
+| **2.4.0** | Atomic BitFrame decode staging: validate full packet and tail before delivering events, RPC, or state changes |
 | **2.3.37** | Preflight 64-bit binary reads/writes once; decode small hybrid strings with a bounded buffer |
 | **2.3.36** | Split oversized packed schema runs and bound run sizes to transport byte budgets |
 | **2.3.35** | Prevent rate-limited state packets from mutating stored state; validate batch-count configuration |
@@ -306,3 +309,14 @@ On a client, call `NetStream.RetryHandshake()` after a control `H` RemoteEvent i
 ## v2.3.37 verification
 
 New standalone Roblox Studio test pairs: `StateThrottleRegression` (rejected state updates cannot overwrite accepted state), `PackedBudgetRegression` (reliable FIFO and packet-size splitting under a 48-byte budget), and `BinaryPrecisionRegression` (F64 fields and hybrid string round-trips). The source audit also models 5,000 randomized packed splits and preserves existing U8/varuint checks. Live Studio results and CPU/heap/RTT improvements remain unverified until tested under identical loads.
+
+
+## 2.4.0 → 2.5.0 → 2.6.0 optimization releases
+
+**2.4.0 — Correctness.** BitFrame decoding stages events, RPC calls/results and state updates in pooled structure-of-arrays storage. Only after the final end marker and zero tail padding validate does it dispatch or mutate game state. Malformed packets release their staged arguments rather than delivering partial gameplay effects. The legacy non-BitFrame fallback is unchanged.
+
+**2.5.0 — Heap discipline and bit reading.** Pooled staging arrays are bounded by `MaxPooledBitFrameActions` (default **64**). A malformed large packet will not pin oversized staging arrays. The BitFrame uint decoder has an inlined one-byte fast path with canonical multi-byte overflow and truncation checks. `GetMemoryDiagnostics()` includes `BitFrameStagePoolSize`, `BitFrameStagePoolHits`, `BitFrameAtomicRejectedPackets` and `BitFrameAtomicDiscardedActions`.
+
+**2.6.0 — Scalar specialization.** Tiny one-value dynamic events/states and single U8/Bool schema events/states stage direct values without creating argument tables, then use scalar dispatch. BitFrame uint encoding specializes 0–127 in one byte.
+
+Dedicated paired Studio tests `AtomicPacketRegression` (malformed tail + successful recovery) and `AtomicScalarRegression` (nil, booleans, integers, string, schema U8/Bool and state) were added. **GitHub CI compiles Luau but cannot run Roblox networking or measure RTT, CPU p95, or heap.** Profile against v2.3.37 in the same Roblox Studio session and traffic conditions.

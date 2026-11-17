@@ -1,6 +1,28 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.37**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.6.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.6.0 — Allocation-free scalar staging and unsigned integer encoding
+
+- Specialize BitFrame dynamic tiny scalar events/states and single U8/Bool schema events/states to avoid per-message args tables.
+- Dispatch scalar values through the existing scalar lane after packet validation.
+- Encode 0–127 BitFrame unsigned integers using a direct one-byte write; reuse the same writer function for `varUInt` and `adaptiveUInt`.
+- Add paired `AtomicScalarRegression` Studio tests.
+
+## v2.5.0 — Retained-heap discipline and small-integer decode
+
+- Bound retained decoded action staging arrays with `MaxPooledBitFrameActions` (default 64).
+- Record `BitFrameStagePoolHits`, `BitFrameAtomicRejectedPackets`, and `BitFrameAtomicDiscardedActions`.
+- Inline the common one-byte adaptive uint decoder, preserving noncanonical, truncation, overflow and safe-integer rejection.
+
+## v2.4.0 — Transactional inbound BitFrame decoding
+
+- Parse entire BitFrame into reusable structure-of-arrays staging storage before applying event dispatch, RPC effects or state updates.
+- Validate the end bit and all trailing padding, then commit staged actions in FIFO order; reject malformed packets without partial gameplay mutations.
+- Keep schema-run token-bucket allowance applied as a group only after validation.
+- Recycle staged scratch and release argument objects on parsing failures.
+- Add paired `AtomicPacketRegression` malformed-packet recovery tests.
+- The legacy non-BitFrame decoder is unchanged.
 
 ## v2.3.37 — Binary F64 and small-string decoding optimization
 

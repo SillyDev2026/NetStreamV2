@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "2.3.37";
+const version = "2.6.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -30,7 +30,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 41, "Regression suite unexpectedly missing");
+assert(tests.length >= 45, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -52,15 +52,23 @@ assert(source.includes("if bitPosition + len * 8 > buffer.len(data) * 8 then err
 assert(source.includes("self:ensureBits(64)"), "F64 write fast path missing");
 assert(source.includes("self:needBits(64)"), "F64 read fast path missing");
 
-const stateStart = source.indexOf("function Internal.bitFrameReadDynamic(reader");
-const stateEnd = source.indexOf("function Internal.decodeBitFrame(", stateStart);
-assert(stateStart >= 0 && stateEnd > stateStart, "BitFrame dynamic parser missing");
-const dynamicParser = source.slice(stateStart, stateEnd);
-assert(/elseif kind == KIND_STATE then\s*if consumeRouteAllowance\(route, player, 1\) > 0 then/.test(dynamicParser), "Dynamic State must be rate limited before mutation");
-const schemaParser = source.slice(stateEnd, source.indexOf("local function decodeBatch(", stateEnd));
-assert(/elseif kind == KIND_STATE then\s*if consumeRouteAllowance\(route, player, 1\) > 0 then/.test(schemaParser), "Schema State must be rate limited before mutation");
+const commitStart = source.indexOf("function Internal.commitBitFrameStage(player, stage)");
+const commitEnd = source.indexOf("function Internal.bitFrameReadDynamic(", commitStart);
+const parseStart = source.indexOf("function Internal.parseBitFrame(", commitEnd);
+const parseEnd = source.indexOf("function Internal.decodeBitFrame(", parseStart);
+assert(commitStart >= 0 && commitEnd > commitStart && parseStart > commitEnd && parseEnd > parseStart, "Atomic parser and committer boundaries missing");
+const commit = source.slice(commitStart, commitEnd);
+const parser = source.slice(parseStart, parseEnd);
+assert(/elseif kind == KIND_STATE then\s*if consumeRouteAllowance\(route, player, 1\) > 0 then/.test(commit), "State must be rate-limited before mutation");
+assert(!/consumeRouteAllowance\(|enqueueDispatch\(|Internal\.processReturn\(|task\.spawn\(Internal\.handleCall|state\[routeId\]\s*=/.test(parser), "BitFrame parser must not trigger gameplay effects");
+assert(source.includes("pcall(Internal.parseBitFrame, player, reader, stage)"), "Atomic BitFrame parser must protect staged actions");
+assert(source.includes("Stats.BitFrameAtomicDiscardedActions += stage.count"), "Malformed BitFrame actions must be counted and discarded");
+assert(source.includes("if actionCount > Config.MaxPooledBitFrameActions then return end"), "Large decoder staging arrays must not remain pooled");
+assert(source.includes("function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)"), "Allocation-free scalar staging missing");
+assert(source.includes("Internal.BitFrameWriter.varUInt = Internal.BitFrameWriter.adaptiveUInt"), "BitFrame varUInt alias missing");
+assert(source.includes("byte < 128 then"), "One-byte varUInt fast path missing");
 
-for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression"]) {
+for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression"]) {
     assert(tests.includes(pair + ".client.lua") && tests.includes(pair + ".server.lua"), `Missing Studio regression pair: ${pair}`);
 }
 
@@ -134,6 +142,6 @@ for (const value of [NaN, Infinity, -Infinity, 0, -0, 1, -3.5, Number.MAX_VALUE]
     assert.equal(Number.isFinite(data.getFloat64(0, true)), Number.isFinite(value));
 }
 
-for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37"]) assert(read("docs/CHANGELOG.md").includes(label));
+for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0"]) assert(read("docs/CHANGELOG.md").includes(label));
 assert(read("README.md").includes(`v${version}`));
-console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, ${tests.length} Studio-script static scans`);
+console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser checks, ${tests.length} Studio-script static scans`);
