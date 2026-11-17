@@ -15,10 +15,10 @@ Ack:Connect(function(code)
     completed = true
     print("NetStream v2.6.0 scalar staging PASS")
 end)
+assert(Tiny:FireServerNow(nil), "Nil scalar event failed")
 for _, value in ipairs({true, false, 0, 127, 128, -1, "tiny"}) do
     assert(Tiny:FireServerNow(value), "Dynamic scalar event failed")
 end
-assert(Tiny:FireServerNow(nil), "Nil scalar event failed")
 assert(ScalarU8:FireServerNow(0), "U8 zero failed")
 assert(ScalarU8:FireServerNow(128), "U8 middle failed")
 assert(ScalarU8:FireServerNow(255), "U8 max failed")
