@@ -28,3 +28,6 @@ jobs:
       - name: Parse NetStream and test Luau scripts
         run: |
           find . -type f -name '*.lua' -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile --only-parse > /dev/null
+      - name: Compile every Luau source and regression script
+        run: |
+          find . -type f -name '*.lua' -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile > /dev/null
