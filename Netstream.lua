@@ -1669,6 +1669,7 @@ function Internal.acquireBitFrameReader(data)
 	return Internal.BitFrameReader.new(data)
 end
 function Internal.releaseBitFrameReader(reader)
+	reader._bitFrameStage = nil
 	reader.buffer = nil
 	reader.bitPosition = 0
 	reader.bitLength = 0
@@ -6233,13 +6234,9 @@ end
 
 function Internal.decodeBitFrame(player, data, reader)
 	local stage = Internal.acquireBitFrameStage()
-	local ok, logicalCount = pcall(Internal.parseBitFrame, player, reader, stage)
-	if not ok then
-		Stats.BitFrameAtomicRejectedPackets += 1
-		Stats.BitFrameAtomicDiscardedActions += stage.count
-		Internal.releaseBitFrameStage(stage)
-		error(logicalCount, 0)
-	end
+	reader._bitFrameStage = stage
+	local logicalCount = Internal.parseBitFrame(player, reader, stage)
+	reader._bitFrameStage = nil
 	Internal.commitBitFrameStage(player, stage)
 	Internal.releaseBitFrameStage(stage)
 	Internal.bitFrameCommitReceive(player, data, logicalCount)
@@ -6490,6 +6487,13 @@ local function receive(player, data)
 	local reader = if bitFrame then Internal.acquireBitFrameReader(data) else acquireReader(data)
 	local decodeStarted = if Config.PerformanceTelemetryEnabled then os.clock() else nil
 	local ok, err = pcall(decodeBatch, player, data, reader)
+	if bitFrame and reader._bitFrameStage then
+		local stage = reader._bitFrameStage
+		Stats.BitFrameAtomicRejectedPackets += 1
+		Stats.BitFrameAtomicDiscardedActions += stage.count
+		Internal.releaseBitFrameStage(stage)
+		reader._bitFrameStage = nil
+	end
 	if decodeStarted then Internal.recordPerformanceSample("DecodeMs", (os.clock() - decodeStarted) * 1000) end
 	if bitFrame then Internal.releaseBitFrameReader(reader) else releaseReader(reader) end
 	if not ok then
