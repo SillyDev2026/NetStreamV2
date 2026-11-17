@@ -2,7 +2,7 @@
 -- Isolated StarterPlayerScripts test; pair with HandshakeRebind.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.37")
+assert(NetStream.GetVersion() == "2.6.0")
 NetStream.Configure({HandshakeEnabled = true, HandshakeRequireReady = true, HandshakeRetrySeconds = 0.25})
 NetStream.Start()
 local folder = ReplicatedStorage:WaitForChild("__NetStream_NetStream")
@@ -21,7 +21,7 @@ folder.ChildAdded:Connect(function(child)
         for _ = 1, 100 do if NetStream.IsHandshakeReady() then break end; task.wait(0.1) end
         assert(NetStream.IsHandshakeReady(), "Retry on current H failed")
         done = true
-        print("NetStream v2.3.37 rebind and retry PASS")
+        print("NetStream v2.6.0 rebind and retry PASS")
     end)
 end)
 task.delay(18, function() assert(done, "Handshake control rebind timed out") end)
