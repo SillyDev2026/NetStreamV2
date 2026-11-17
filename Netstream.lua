@@ -6181,12 +6181,19 @@ function Internal.parseBitFrame(player, reader, stage)
 				if count < 1 or logicalCount + count > Config.MaxIncomingMessages then error("NetStream BitFrame schema run count invalid", 0) end
 				local allowed = canAcceptIncomingMessages(player, logicalCount + count)
 				if not allowed then Stats.RateLimitedBatches += 1 end
-				for index = 1, count do
-					local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
-					if allowed then
-						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
-					else
-						releaseArgs(args)
+				local schema = route._schema
+				local scalarField = if count == 1 and schema.count == 1 then schema.fields[1] else nil
+				if scalarField and (scalarField.Kind == SCHEMA_U8 or scalarField.Kind == SCHEMA_BOOL) then
+					local value = if scalarField.Kind == SCHEMA_BOOL then reader:bits(1) ~= 0 else reader:bits(8)
+					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
+				else
+					for index = 1, count do
+						local args = Internal.bitFrameReadSchemaArgs(reader, schema)
+						if allowed then
+							Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
+						else
+							releaseArgs(args)
+						end
 					end
 				end
 				logicalCount += count
