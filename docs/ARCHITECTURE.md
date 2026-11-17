@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v2.9.0, BitFrame v1, Compression v2.3.5 (codec 230).**
+**Applies to NetStream v3.2.0, BitFrame v1, Compression v2.3.5 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -171,3 +171,7 @@ Incoming BitFrame data passes through a protected one-pass decoder that stages r
 ### v2.9.0 memory behavior
 
 Atomic BitFrame staging retains five parallel arrays rather than the original eight. Committed routes supply their own `Id`. Scalar values occupy the existing argument slot, marked by negative group count, with nil preserved as an absent array value and the group tag retaining scalar identity. At most eight idle stages are pooled by default; oversized batches still respect `MaxPooledBitFrameActions`. Rate-limited schema input is parsed without materializing an argument table, yet field readers continue validating mixed-schema values.
+
+## v3.0.0–v3.2.0 hot-path refinements
+
+`compileSchema` precomputes `discardBits` only when **every** encoded field is a fixed-width, fully representable primitive; rejected packets advance the reader after a single bounds preflight. Floating-point, compressed, domain-restricted and variable-size fields keep normal decoding and validation. Unaligned short strings no longer require a Lua character table. Single-field numeric schema events and states use `scalarKind` and direct scalar staging instead of allocated argument arrays, with non-finite float rejection preserved. These changes do not change the on-wire layout.

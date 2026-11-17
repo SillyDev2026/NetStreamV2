@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v2.9.0-2563eb)
+![Release](https://img.shields.io/badge/release-v3.2.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v2.9.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.9.0 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v3.2.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v3.2.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **3.2.0** | Direct numeric single-field BitFrame scalar schemas, avoiding args tables for U16/I16/U32/I32/F32/F64 |
+| **3.1.0** | No per-character Lua tables for short unaligned binary strings; single-byte fast paths |
+| **3.0.0** | Precompile exact bit lengths for safe fixed-width schema rejection, with one bounds check |
 | **2.9.0** | Validate and skip rejected binary schema payloads without allocating temporary argument arrays |
 | **2.8.0** | Pack scalar stage flags/values into existing argument/group slots; preserve nil and FIFO |
 | **2.7.0** | Remove duplicate staged route ID arrays; independently cap pooled decoder staging at 8 objects |
@@ -331,3 +334,11 @@ Dedicated paired Studio tests `AtomicPacketRegression` (malformed tail + success
 - **2.9.0:** When an incoming schema payload fails message-rate validation, `bitFrameDiscardSchemaArgs` still validates framing without creating an argument array. Packed boolean payloads and fixed U8 runs skip bits directly after a bounds check. Mixed fields still use their normal field readers to preserve validation. `BitFrameDiscardedSchemaArgs` counts discarded schema tuples.
 
 New isolated Roblox Studio test pairs: `HeapDiscardRegression` and `StagePoolMemoryRegression`. The source audit now verifies 5,000 randomized signed-group staging models as well as existing layout/varuint tests. Test CPU p95, allocations, full Luau heap and packet p95/p99 in Studio before claiming a performance gain.
+
+## Heap and binary hot-path cycle (v3.0.0–v3.2.0)
+
+- **3.0.0:** Compile `discardBits` for boolean, unsigned/signed fixed integers, U8 and Color3 schema combinations. Rate-limited, fully representable schemas advance by their known bit widths using one bounds check; floats, compressed or variable-width types remain on the validating decode path. `BitFrameDiscardedFixedBits` counts skipped bits.
+- **3.1.0:** An unaligned string of one byte becomes a direct `string.char` read. Lengths 2–15 use buffer-based decoding, eliminating the former table-of-characters and per-character string allocation. Empty and byte-aligned string paths are preserved.
+- **3.2.0:** Precompile `scalarKind` for single numeric schemas and decode directly into atomic scalar staging. Supported kinds are Bool, U8, U16, I16, U32, I32, F32, and F64; finite-value validation remains active. `BitFrameScalarSchemaReads` is exposed in performance statistics.
+
+Paired Studio scripts: `FixedDiscardRegression` and `ExtendedScalarStringRegression`. These updates preserve **BitFrame v1** and **Compression v2.3.5**. CPU, Luau-heap and RTT improvements remain **unmeasured** until comparable Roblox Studio workloads are run.

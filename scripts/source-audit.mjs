@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "2.9.0";
+const version = "3.2.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -18,7 +18,9 @@ assert(source.includes("MaxPooledPackedValues = 64,"), "Bounded retained packed-
 assert(source.includes("BitFrameInitialWriterBytes = 128,"), "BitFrame initial writer size missing");
 assert(source.includes("BitFrameRetainWriterMaxBytes = 4096,"), "Binary writer retention cap missing");
 assert(source.includes("function NetStream.TrimPools()"), "Idle memory trim API missing");
-assert(source.includes("if length >= 16 then"), "Unaligned binary string buffer decoder missing");
+assert(source.includes("if length == 1 then"), "Unaligned single-byte string fast decoder missing");
+assert(source.includes("local output = buffer.create(length)"), "Unaligned multi-byte buffer decoder missing");
+assert(!source.includes("local chars = table.create(length)"), "Unaligned string decoder must not allocate a table of characters");
 assert(source.includes("PackedValuePoolOversizeDrops"), "Oversized packed pool diagnostics missing");
 
 
@@ -30,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 49, "Regression suite unexpectedly missing");
+assert(tests.length >= 53, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -78,12 +80,19 @@ assert(!/stage\.(scalarFlags|scalarValues)/.test(source), "Scalar stages must no
 assert(source.includes("stage.groups[index] = -1"), "Scalar tag must distinguish nil from args tables");
 assert(source.includes("if stage.groups[i] >= 0 and args then releaseArgs(args) end"), "Cleanup must not release a scalar as an args table");
 assert(source.includes("function Internal.bitFrameDiscardSchemaArgs(reader, schema)"), "Allocation-free rejected schema parser missing");
-assert(source.includes("reader.bitPosition += bits"), "Homogeneous U8 reject path should skip bits without constructing fields");
+assert(source.includes("reader.bitPosition += skipBits"), "Fixed-schema reject path should skip prevalidated bits");
+assert(source.includes("Stats.BitFrameDiscardedFixedBits += skipBits"), "Discarded fixed-schema bits statistic missing");
+assert(source.includes("discardBits = if discardFixed then discardBits else nil"), "Fixed skip lengths must be derived at schema compilation");
+assert(source.includes("elseif kind == SCHEMA_COLOR3 then discardBits += 24"), "Color3 fixed skip size is missing");
+assert(source.includes("else discardFixed = false end"), "Unsafe schema types must be excluded from skip optimization");
+assert(source.includes("function Internal.bitFrameReadScalarSchema(reader, kind)"), "Single-field numeric decoder fast path missing");
+for (const name of ["SCHEMA_U16", "SCHEMA_I16", "SCHEMA_U32", "SCHEMA_I32", "SCHEMA_F32", "SCHEMA_F64"]) assert(source.includes("if kind == " + name + " then return reader:"), `Scalar fast path missing ${name}`);
+assert(source.includes("BitFrameScalarSchemaReads = stats.BitFrameScalarSchemaReads"), "Scalar hot-path diagnostics missing");
 assert(source.includes("Stats.BitFrameDiscardedSchemaArgs += 1"), "Rejected schema decode counter missing");
 assert(source.includes("for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end"), "Rejected schema runs must use allocation-free skip");
 
 
-for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression"]) {
+for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression", "FixedDiscardRegression", "ExtendedScalarStringRegression"]) {
     assert(tests.includes(pair + ".client.lua") && tests.includes(pair + ".server.lua"), `Missing Studio regression pair: ${pair}`);
 }
 
@@ -175,6 +184,6 @@ for (let run = 0; run < 5000; run++) {
     }
 }
 
-for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]) assert(read("docs/CHANGELOG.md").includes(label));
+for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "3.0.0", "3.1.0", "3.2.0"]) assert(read("docs/CHANGELOG.md").includes(label));
 assert(read("README.md").includes(`v${version}`));
-console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + signed-scalar models, ${tests.length} Studio-script static scans`);
+console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + signed-scalar models, fixed-discard and numeric scalar guards, ${tests.length} Studio-script static scans`);

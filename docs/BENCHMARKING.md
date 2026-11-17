@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v2.6.0. **Candidate:** v2.9.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v2.9.0. **Candidate:** v3.2.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,8 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `FixedDiscardRegression` | Mixed fixed-width rate-limited schema skipping, float fallback, no unwanted event dispatch |
+| `ExtendedScalarStringRegression` | Numeric U16/I16/U32/I32/F32/F64 scalar events, F64 state, short binary strings |
 | `HeapDiscardRegression` | Prove rejected U8/packed-boolean schema messages validate without args-table materialization |
 | `StagePoolMemoryRegression` | Validate stage pool cap zero and 16 scalar packets without retaining idle stages |
 | `AtomicPacketRegression` | Stage a valid state frame with corrupt padding; confirm no dispatch/state mutation; then recover |
@@ -140,3 +142,7 @@ Run paired Studio scripts **separately**, checking server and client Output for 
 Run `AtomicPacketRegression`, `AtomicScalarRegression`, `HeapDiscardRegression`, and `StagePoolMemoryRegression` as separate Play sessions; compare the two versions under identical packet payloads and settings. Verify `BitFrameDiscardedSchemaArgs` for rejected traffic. Record idle `BitFrameStagePoolSize`, `BitFrameWriterPooledBytes`, `gcinfo()` after garbage-collection stabilization, decoded messages, CPU encode/decode p95, queue p95, packet p95 bytes, and RTT p95/p99.
 
 Static checks confirm structural changes and binary layouts, not actual runtime memory reductions or ping improvements.
+
+## v3.2.0 comparison protocol
+
+Use separate identical server/client sessions for each paired Studio script. Measure v2.9.0 and v3.2.0 with matching players, event rates, schemas, packets, compression configuration and telemetry sampling. Report server and client Luau heap KB (with stabilized garbage collection), encoded packet bytes p95, encode and decode CPU p95, dispatch/queue p95, RTT p50/p95/p99 and jitter. Source-level CI checks prove syntax and invariants only; they **do not** prove lower network ping, fewer GC cycles, or speed improvements.

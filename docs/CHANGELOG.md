@@ -1,6 +1,26 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.9.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v3.2.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v3.2.0 — Single numeric schemas without allocated argument tables
+
+- Compile `scalarKind` for one-field Bool, U8, U16, I16, U32, I32, F32 and F64 schemas.
+- Decode single-field numeric event/state messages directly to atomic scalar storage and use scalar dispatch, instead of creating args tables.
+- Retain F32/F64 nonfinite validation and original message order.
+- Add `BitFrameScalarSchemaReads` to statistics and paired `ExtendedScalarStringRegression` Studio coverage.
+
+## v3.1.0 — Short unaligned binary strings without per-character tables
+
+- Decode a single byte directly into `string.char`, without allocating a buffer.
+- Decode unaligned 2–15 byte strings into one buffer instead of a Lua table and individual character strings.
+- Preserve byte-aligned and empty-string behavior, and use the single-byte fast path for hybrid strings.
+
+## v3.0.0 — Fixed-width rejected schema skip
+
+- Precompute bit lengths for fully representable BOOL, U8, U16/I16, U32/I32 and Color3 field combinations at schema compilation.
+- Consume rate-limited fixed schemas with one bounds check and a bit-position increment rather than per-field decoding.
+- Keep float, variable-width and domain-restricted types on the original validating decoder path.
+- Add `BitFrameDiscardedFixedBits` and paired `FixedDiscardRegression` Studio scripts.
 
 ## v2.9.0 — Rejected schema payloads without args-table allocations
 

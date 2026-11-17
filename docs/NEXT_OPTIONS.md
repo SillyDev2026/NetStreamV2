@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v2.9.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v3.2.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
 ## Latest minor-version heap/overhead cycle (source-level)
+
+| Release | Focus | Verification |
+|---|---|---|
+| 3.0.0 | Skip fully representable fixed-width rejected schema bits with one preflight | Implemented; Studio validation pending |
+| 3.1.0 | Remove short-string per-character decode tables | Implemented; Studio heap benchmark pending |
+| 3.2.0 | Avoid args tables on single numeric schema event/state dispatch | Implemented; Studio performance benchmark pending |
+
+## Previous minor-version heap/overhead cycle (source-level)
 
 | Release | Focus | Verification |
 |---|---|---|
