@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.5.0"
+local VERSION = "2.6.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1554,6 +1554,13 @@ function Internal.BitFrameWriter:bits(value, count)
 	self.bitPosition += count
 end
 function Internal.BitFrameWriter:adaptiveUInt(value)
+	local bitPosition = self.bitPosition
+	if type(value) == "number" and value >= 0 and value < 128 and value % 1 == 0 then
+		self:ensureBits(8)
+		buffer.writebits(self.buffer, bitPosition, 8, value)
+		self.bitPosition = bitPosition + 8
+		return
+	end
 	local bitCount = Internal.adaptiveUIntBitLength(value)
 	self:ensureBits(bitCount)
 	self.bitPosition = Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)
@@ -1625,11 +1632,7 @@ function Internal.BitFrameWriter:rawBuffer(value)
 	end
 	self.bitPosition = bitPosition
 end
-function Internal.BitFrameWriter:varUInt(value)
-	local bitCount = Internal.adaptiveUIntBitLength(value)
-	self:ensureBits(bitCount)
-	self.bitPosition = Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)
-end
+Internal.BitFrameWriter.varUInt = Internal.BitFrameWriter.adaptiveUInt
 function Internal.BitFrameWriter:varInt(value)
 	self:varUInt(if value >= 0 then value * 2 else -value * 2 - 1)
 end
@@ -5997,7 +6000,7 @@ function Internal.acquireBitFrameStage()
 		pool[#pool] = nil
 		Stats.BitFrameStagePoolHits += 1
 	else
-		stage = {kinds = {}, routes = {}, routeIds = {}, requestIds = {}, args = {}, groups = {}, count = 0}
+		stage = {kinds = {}, routes = {}, routeIds = {}, requestIds = {}, args = {}, groups = {}, scalarFlags = {}, scalarValues = {}, count = 0}
 	end
 	stage.count = 0
 	return stage
@@ -6012,6 +6015,21 @@ function Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, ar
 	stage.requestIds[index] = requestId
 	stage.args[index] = args
 	stage.groups[index] = group
+	stage.scalarFlags[index] = false
+	stage.scalarValues[index] = nil
+end
+
+function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)
+	local index = stage.count + 1
+	stage.count = index
+	stage.kinds[index] = kind
+	stage.routes[index] = route
+	stage.routeIds[index] = routeId
+	stage.requestIds[index] = 0
+	stage.args[index] = nil
+	stage.groups[index] = 1
+	stage.scalarFlags[index] = true
+	stage.scalarValues[index] = value
 end
 
 function Internal.releaseBitFrameStage(stage)
@@ -6027,6 +6045,8 @@ function Internal.releaseBitFrameStage(stage)
 	table.clear(stage.requestIds)
 	table.clear(stage.args)
 	table.clear(stage.groups)
+	table.clear(stage.scalarFlags)
+	table.clear(stage.scalarValues)
 	stage.count = 0
 	local pool = Internal.BitFrameStagePool
 	if #pool < Config.MaxBatchPoolSize then pool[#pool + 1] = stage end
@@ -6041,12 +6061,14 @@ function Internal.commitBitFrameStage(player, stage)
 		local requestId = stage.requestIds[i]
 		local args = stage.args[i]
 		stage.args[i] = nil
+		local scalar = stage.scalarFlags[i] == true
+		local scalarValue = stage.scalarValues[i]
 		if kind == KIND_EVENT then
 			local group = stage.groups[i]
 			if group > 0 then remainingEventAllowance = consumeRouteAllowance(route, player, group) end
 			if remainingEventAllowance > 0 then
 				remainingEventAllowance -= 1
-				enqueueDispatch(route, player, args)
+				if scalar then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
 			else
 				releaseArgs(args)
 			end
@@ -6061,8 +6083,8 @@ function Internal.commitBitFrameStage(player, stage)
 		elseif kind == KIND_STATE then
 			if consumeRouteAllowance(route, player, 1) > 0 then
 				local state = Internal.getPeerState(player)
-				state[routeId] = args[1]
-				enqueueDispatch(route, player, args)
+				state[routeId] = if scalar then scalarValue else args[1]
+				if scalar then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
 			else
 				releaseArgs(args)
 			end
@@ -6088,6 +6110,10 @@ function Internal.bitFrameReadDynamic(reader, kind, routeId, requestId, route, a
 	if mode == 0 then
 		local value
 		value, reader.bitPosition = Internal.hybridReadScalar(reader.buffer, reader.bitPosition)
+		if kind == KIND_EVENT or kind == KIND_STATE then
+			if allowMessage then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
+			return 1
+		end
 		args = acquireArgsCount(1); args[1] = value; args.n = 1
 	elseif mode == 1 then
 		local argc = reader:adaptiveUInt()
@@ -6167,11 +6193,18 @@ function Internal.parseBitFrame(player, reader, stage)
 			else
 				local allowed = canAcceptIncomingMessages(player, logicalCount + 1)
 				if not allowed then Stats.RateLimitedBatches += 1 end
-				local args = Internal.bitFrameReadSchemaArgs(reader, route._schema)
-				if allowed then
-					Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1)
+				local schema = route._schema
+				local scalarField = if schema.count == 1 and (kind == KIND_STATE or kind == KIND_EVENT) then schema.fields[1] else nil
+				if scalarField and (scalarField.Kind == SCHEMA_U8 or scalarField.Kind == SCHEMA_BOOL) then
+					local value = if scalarField.Kind == SCHEMA_BOOL then reader:bits(1) ~= 0 else reader:bits(8)
+					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
 				else
-					releaseArgs(args)
+					local args = Internal.bitFrameReadSchemaArgs(reader, schema)
+					if allowed then
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1)
+					else
+						releaseArgs(args)
+					end
 				end
 				logicalCount += 1
 			end
