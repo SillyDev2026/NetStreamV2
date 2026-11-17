@@ -5,7 +5,7 @@ local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
 local T = NetStream.Types
 
 NetStream.ConfigureLowTraffic({HandshakeEnabled = false, PerformanceTelemetryEnabled = true})
-assert(NetStream.GetVersion() == "4.1.0")
+assert(NetStream.GetVersion() == "4.1.1")
 local settings = NetStream.GetConfig()
 assert(settings.FlushRate == 30 and settings.TransportBatchWindowSeconds == 0.05 and settings.TransportTargetMessagesPerPacket == 32)
 
@@ -30,13 +30,13 @@ local function run(player: Player)
 		assert(Value:SetClient(player, 18))
 		assert(NetStream.GetStats().LowTrafficStateDuplicatesSuppressed - before == 65, "Second state was not cached")
 		assert(Value:SetClientNow(player, 18), "Force-send failed")
-		print("NetStream 4.1.0 LowTraffic SERVER PASS", "duplicates", stats.LowTrafficStateDuplicatesSuppressed)
+		print("NetStream 4.1.1 LowTraffic SERVER PASS", "duplicates", stats.LowTrafficStateDuplicatesSuppressed)
 	end)
 end
 
 StepAck:Connect(function(player, value)
 	assert(value == 3, "Client failed to receive initial, changed and forced state")
-	print("NetStream 4.1.0 LowTraffic CLIENT ACK PASS", player.UserId)
+	print("NetStream 4.1.1 LowTraffic CLIENT ACK PASS", player.UserId)
 end)
 for _, player in ipairs(Players:GetPlayers()) do run(player) end
 Players.PlayerAdded:Connect(run)

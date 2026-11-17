@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.1.0")
+assert(NetStream.GetVersion() == "4.1.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local State = NetStream.State("__NSAtomicState", {Id = 35801, Schema = {T.U8}, Compression = false})
@@ -18,4 +18,4 @@ State:Connect(function(player, value)
     assert(stats.BitFrameAtomicDiscardedActions >= 1, "Malformed packet did not discard staged state")
     assert(Ack:FireClientNow(player, 1), "Atomic packet ACK failed")
 end)
-print("NetStream v4.1.0 atomic packet server ready")
+print("NetStream v4.1.1 atomic packet server ready")

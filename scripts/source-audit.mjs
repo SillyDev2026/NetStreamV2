@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.1.0";
+const version = "4.1.1";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 74, "Regression suite unexpectedly missing");
+assert(tests.length >= 76, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -102,6 +102,38 @@ for (const state of [false, true, 0, 1, -1, 255, "same"]) {
         assert.equal(suppressed,model,"Low-traffic explicit guard model mismatch");
     }
 }
+
+
+assert(tests.includes("PacketSizeAuditRegression.server.lua") && tests.includes("PacketSizeAuditRegression.client.lua"), "Paired packet byte-audit Studio regression missing");
+for (const fragment of [
+    "PacketSizeAuditEnabled = false,",
+    'assert(type(config.PacketSizeAuditEnabled) == "boolean"',
+    "function Internal.bitFrameWriteOne(writer, item, audit)",
+    "local metadataBits = 3 + routeBits + requestBits + runMarkerBits + runCountBits",
+    "audit.PayloadBits += consumed - metadataBits",
+    "function Internal.finishBitFrameBatch(writer, items, audit)",
+    "audit.PhysicalBytes = math.ceil(writer.bitPosition / 8)",
+    "local audit = if Config.PacketSizeAuditEnabled then newPacketAudit() else nil",
+    "Internal._lastEncodedPacketAudit = audit",
+    "if audit and audit.PhysicalBytes == bytes then",
+    "function NetStream.GetPacketSizeAudit()",
+    "Internal.PacketAuditTotals[field] += audit[field]",
+]) assert(source.includes(fragment), "Packet-size audit guard missing: " + fragment);
+const auditFields = ["Packets","LogicalMessages","Items","PresenceBits","KindBits","RouteIdBits","RequestIdBits","RunMarkerBits","RunCountBits","PayloadBits","EndBits","PaddingBits","UsefulBits","PhysicalBits","PhysicalBytes"];
+for (const field of auditFields) assert(source.includes('"' + field + '"'), "Packet audit missing category " + field);
+function adaptiveBits(value) { let bits=8; while(value>=128) {value=Math.floor(value/128);bits+=8;} return bits; }
+function modelEvent(route,payloadBits,count=1) {
+    const isRun=count>1;
+    const presence=1, kind=2, routeBits=adaptiveBits(route), marker=1, runCount=isRun?adaptiveBits(count):0, ending=1;
+    const useful=presence+kind+routeBits+marker+runCount+payloadBits*count+ending;
+    return {bytes:Math.ceil(useful/8),useful,padding:Math.ceil(useful/8)*8-useful};
+}
+for (const [route,width,count,bytes] of [[1001,32,1,7],[1002,16,1,5],[1,16,1,4],[1002,16,8,20],[1001,32,27,112]]) {
+    const m=modelEvent(route,width,count);
+    assert.equal(m.bytes,bytes,"Packet audit reference byte size mismatch");
+    assert.equal(m.useful + m.padding,m.bytes*8,"Packet audit pad/model mismatch");
+}
+assert.equal([modelEvent(1001,32,1),modelEvent(1002,16,1),modelEvent(1,16,1),modelEvent(1002,16,8)].reduce((sum,p)=>sum+p.bytes,0),36,"Packet audit mixed workload model mismatch");
 
 let state = 0x31415926;
 function random() {

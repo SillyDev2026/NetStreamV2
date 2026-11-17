@@ -2,7 +2,7 @@
 -- Dedicated ServerScriptService regression with Netstream + Compression in ReplicatedStorage.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.1.0", "Expected NetStream 4.1.0")
+assert(NetStream.GetVersion() == "4.1.1", "Expected NetStream 4.1.1")
 NetStream.Configure({BandwidthGovernorEnabled = false, MaxBatchMessages = 8, TransportAdaptiveBatching = false, TransportFastFlushEnabled = false, CompressionCpuBudgetEnabled = true, CompressionMaxEstimatedSeconds = 0.0001, CompressionCpuProbeEvery = 2})
 local data = NetStream.Event("__NSCpuMemoryProbe", {Id = 34210, Priority = "Normal"})
 local ack = NetStream.Event("__NSCpuMemoryAck", {Id = 34211, Compression = false})

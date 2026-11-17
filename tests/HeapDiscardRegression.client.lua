@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.1.0")
+assert(NetStream.GetVersion() == "4.1.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Bytes = NetStream.Event("__NSHeapDiscardBytes", {Id = 35901, Schema = {T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8}, Compression = false})
@@ -11,7 +11,7 @@ local completed = false
 Ack:Connect(function(code)
     assert(code == 1, "Unexpected heap discard ACK")
     completed = true
-    print("NetStream 4.1.0 heap discard PASS")
+    print("NetStream 4.1.1 heap discard PASS")
 end)
 assert(Bytes:FireServerNow(1, 2, 3, 4, 5, 6, 7, 8), "First U8 event failed")
 assert(Bytes:FireServerNow(9, 10, 11, 12, 13, 14, 15, 16), "Second U8 event failed")

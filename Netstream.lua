@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.1.0"
+local VERSION = "4.1.1"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -287,6 +287,7 @@ local DEFAULTS = {
 	MaxWriterPoolSize = 32,
 	MaxBitFrameReaderPoolSize = 32,
 	PerformanceTelemetryEnabled = false,
+	PacketSizeAuditEnabled = false,
 	PerformanceTelemetryCapacity = 512,
 	PerformanceTelemetrySampleEvery = 4,
 	MaxScratchWriterPoolSize = 16,
@@ -452,6 +453,16 @@ local trafficSnapshot = {
 	EstimatedTransportUtilization = 0,
 	EstimatedTransportHeadroomBytesPerSecond = 0,
 }
+
+local PACKET_AUDIT_FIELDS = table.freeze({"Packets", "LogicalMessages", "Items", "PresenceBits", "KindBits", "RouteIdBits", "RequestIdBits", "RunMarkerBits", "RunCountBits", "PayloadBits", "EndBits", "PaddingBits", "UsefulBits", "PhysicalBits", "PhysicalBytes"})
+local function newPacketAudit()
+	local audit = {}
+	for _, field in ipairs(PACKET_AUDIT_FIELDS) do audit[field] = 0 end
+	return audit
+end
+Internal.PacketAuditTotals = newPacketAudit()
+Internal.LastPacketAudit = newPacketAudit()
+Internal._lastEncodedPacketAudit = nil
 
 local EMPTY_ARGS = table.freeze({ n = 0 })
 local TRUE_ARGS = table.freeze({ true, n = 1 })
@@ -4587,7 +4598,8 @@ function Internal.bitFrameWriteDynamic(writer, item)
 	Stats.BitFrameNativeValues += item.n
 end
 
-function Internal.bitFrameWriteOne(writer, item)
+function Internal.bitFrameWriteOne(writer, item, audit)
+	local startBits = if audit then writer.bitPosition else 0
 	writer:bits(1, 1) -- another message follows
 	writer:bits(item.kind, 2)
 	if item.kind ~= KIND_RETURN then writer:adaptiveUInt(item.id) end
@@ -4641,24 +4653,52 @@ function Internal.bitFrameWriteOne(writer, item)
 		Internal.bitFrameWriteDynamic(writer, item)
 		Stats.DynamicMessages += 1
 	end
+	if audit then
+		local routeBits = if item.kind ~= KIND_RETURN then Internal.adaptiveUIntBitLength(item.id) else 0
+		local requestBits = if item.kind == KIND_CALL or item.kind == KIND_RETURN then Internal.adaptiveUIntBitLength(item.request) else 0
+		local runMarkerBits = if item.schema and item.kind == KIND_EVENT then 1 else 0
+		local runCountBits = if runMarkerBits == 1 and item.packedRun and item.runCount and item.runCount > 1 then Internal.adaptiveUIntBitLength(item.runCount) else 0
+		local metadataBits = 3 + routeBits + requestBits + runMarkerBits + runCountBits
+		local consumed = writer.bitPosition - startBits
+		audit.PresenceBits += 1
+		audit.KindBits += 2
+		audit.RouteIdBits += routeBits
+		audit.RequestIdBits += requestBits
+		audit.RunMarkerBits += runMarkerBits
+		audit.RunCountBits += runCountBits
+		audit.PayloadBits += consumed - metadataBits
+		audit.Items += 1
+		audit.LogicalMessages += messageLogicalCount(item)
+	end
 	Stats.BitFrameMessagesEncoded += messageLogicalCount(item)
 end
 
-function Internal.finishBitFrameBatch(writer, items)
-	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i]) end
+function Internal.finishBitFrameBatch(writer, items, audit)
+	for i = 1, #items do Internal.bitFrameWriteOne(writer, items[i], audit) end
 	writer:bits(0, 1)
+	if audit then
+		audit.EndBits = 1
+		audit.UsefulBits = writer.bitPosition
+		audit.PhysicalBytes = math.ceil(writer.bitPosition / 8)
+		audit.PhysicalBits = audit.PhysicalBytes * 8
+		audit.PaddingBits = audit.PhysicalBits - audit.UsefulBits
+		audit.Packets = 1
+	end
 	return writer:finish(), writer.bitPosition
 end
 
 function Internal.encodeBitFrame(items)
 	local writer = Internal.acquireBitFrameWriter()
-	local ok, out, usefulBits = pcall(Internal.finishBitFrameBatch, writer, items)
+	local audit = if Config.PacketSizeAuditEnabled then newPacketAudit() else nil
+	Internal._lastEncodedPacketAudit = nil
+	local ok, out, usefulBits = pcall(Internal.finishBitFrameBatch, writer, items, audit)
 	Internal.releaseBitFrameWriter(writer)
 	if not ok then
 		Stats.BitFrameEncodeFailures += 1
 		error(out, 0)
 	end
 	local physicalBits = buffer.len(out) * 8
+	Internal._lastEncodedPacketAudit = audit
 	Internal._lastEncodedUsefulBits = usefulBits
 	Internal._lastEncodedCodec = "BitFrame"
 	Stats.BitFramePacketsEncoded += 1
@@ -4671,6 +4711,7 @@ function Internal.encodeBitFrame(items)
 end
 
 local function encodeBatch(items)
+	Internal._lastEncodedPacketAudit = nil
 	if Config.BitFrameEnabled then
 		return Internal.encodeBitFrame(items)
 	end
@@ -4915,6 +4956,13 @@ function Internal.commitLastSendStats(bytes)
 		Stats.BitFramePaddingBits += stats.PaddingBits
 		Stats.BitFrameProtocolBytesElided += Internal._lastEncodedProtocolBytesElided or 0
 		Stats.BitFrameBatchCountBytesElided += Internal._lastEncodedBatchCountBytesElided or 0
+		local audit = Internal._lastEncodedPacketAudit
+		if audit and audit.PhysicalBytes == bytes then
+			for _, field in ipairs(PACKET_AUDIT_FIELDS) do
+				Internal.PacketAuditTotals[field] += audit[field]
+				Internal.LastPacketAudit[field] = audit[field]
+			end
+		end
 	end
 end
 
@@ -7798,6 +7846,7 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxWriterPoolSize) == "number" and isInteger(config.MaxWriterPoolSize) and config.MaxWriterPoolSize >= 0, "MaxWriterPoolSize must be a non-negative integer")
 	assert(type(config.MaxBitFrameReaderPoolSize) == "number" and isInteger(config.MaxBitFrameReaderPoolSize) and config.MaxBitFrameReaderPoolSize >= 0 and config.MaxBitFrameReaderPoolSize <= 256, "MaxBitFrameReaderPoolSize must be an integer from 0 to 256")
 	assert(type(config.PerformanceTelemetryEnabled) == "boolean", "PerformanceTelemetryEnabled must be boolean")
+	assert(type(config.PacketSizeAuditEnabled) == "boolean", "PacketSizeAuditEnabled must be boolean")
 	assert(type(config.PerformanceTelemetryCapacity) == "number" and isInteger(config.PerformanceTelemetryCapacity) and config.PerformanceTelemetryCapacity >= 16 and config.PerformanceTelemetryCapacity <= 8192, "PerformanceTelemetryCapacity must be an integer from 16 to 8192")
 	assert(type(config.PerformanceTelemetrySampleEvery) == "number" and isInteger(config.PerformanceTelemetrySampleEvery) and config.PerformanceTelemetrySampleEvery >= 1 and config.PerformanceTelemetrySampleEvery <= 1024, "PerformanceTelemetrySampleEvery must be an integer from 1 to 1024")
 	assert(type(config.MaxScratchWriterPoolSize) == "number" and isInteger(config.MaxScratchWriterPoolSize) and config.MaxScratchWriterPoolSize >= 0, "MaxScratchWriterPoolSize must be a non-negative integer")
@@ -8285,6 +8334,16 @@ function NetStream.ConsumeLastSendStats()
 	return copy
 end
 
+function NetStream.GetPacketSizeAudit()
+	return {
+		Enabled = Config.PacketSizeAuditEnabled,
+		Codec = if Config.BitFrameEnabled then "BitFrame" else "Legacy",
+		Scope = "successful encoded BitFrame buffers, not Roblox remote overhead",
+		Totals = table.clone(Internal.PacketAuditTotals),
+		LastPacket = table.clone(Internal.LastPacketAudit),
+	}
+end
+
 function NetStream.GetBitFrameStats()
 	local physical = Stats.BitFramePhysicalBits
 	return {
@@ -8309,6 +8368,11 @@ function NetStream.ResetStats()
 	for key in pairs(Stats) do
 		Stats[key] = 0
 	end
+	for _, field in ipairs(PACKET_AUDIT_FIELDS) do
+		Internal.PacketAuditTotals[field] = 0
+		Internal.LastPacketAudit[field] = 0
+	end
+	Internal._lastEncodedPacketAudit = nil
 	overflowWarned = false
 	Internal.clearLastSendStats()
 	Internal._lastEncodedUsefulBits = 0
@@ -8812,6 +8876,7 @@ function NetStream.Destroy()
 	end
 	destroyed = true
 	started = false
+	Internal._lastEncodedPacketAudit = nil
 	table.clear(stateDeliveryCache)
 	if heartbeatConnection then
 		heartbeatConnection:Disconnect()

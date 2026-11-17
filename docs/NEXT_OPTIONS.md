@@ -1,6 +1,6 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.1.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.1.1. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
 ## v4.1.0 — bandwidth-conscious scheduling and state suppression
 

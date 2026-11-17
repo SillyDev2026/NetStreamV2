@@ -1,6 +1,13 @@
 # NetStreamV2 Changelog
 
-The current release is **v4.1.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v4.1.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.1.1 — Exact BitFrame packet-size audit
+
+- Adds opt-in `PacketSizeAuditEnabled` (off by default) with `NetStream.GetPacketSizeAudit()`: last successfully transmitted packet plus aggregate counts, presence flags, message kind, route IDs, request IDs, packed-run markers/counts, payload, end markers, byte padding and physical encoded bytes.
+- Records actual BitFrame writer bit positions and commits totals only when the remote send succeeds; budget probes, oversized-batch re-encodes, deferrals and failures do not inflate sent totals.
+- Wire encoding and decoder remain unchanged (BitFrame v1 + Compression codec 230), with optional measurement bookkeeping only. Adds paired PacketSizeAuditRegression tests for 7-byte U32, 5-byte U16, 4-byte short-route U16 and 20-byte U16 packed run cases; byte arithmetic is also modeled in source-audit. Real Studio execution still required.
+- Audit data excludes Roblox RemoteEvent envelope and engine replication; Packet Profiler's estimated remote call size is not the encoded buffer length.
 
 ## v4.1.0 — Low-traffic batching and safe State deduplication
 

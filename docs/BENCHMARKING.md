@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v4.0.2. **Candidate:** v4.1.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.0.2. **Candidate:** v4.1.1. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -212,3 +212,10 @@ Compare NetStream v4.0.1/Compression v2.4.1 with v4.0.2/v2.4.2 on identical Robl
 Run `tests/LowTrafficRegression.server.lua` and `.client.lua` as a paired Studio Play session. It opts into `ConfigureLowTraffic` on both peers, sends a reliable coalesced U16 state once, attempts 64 identical values, changes the value, then repeats the new value and forces a resync using `SetClientNow`. Validate exactly three observed client deliveries and the corresponding suppression counter; running one file without the other cannot pass.
 
 For real savings, run a matched 60-second Roblox Studio autoclick workload using (A) original per-click networking, (B) server-authoritative autoclick and coalesced State updates, and (C) B plus `ConfigureLowTraffic` and `SuppressUnchanged`. Keep player count, scene, click rate, server activity and instrumentation equal. Compare the Roblox overlay's Sent/Recv KB/s **and** `GetBandwidthStats()`/`GetStats()` logical packet counts, messages, bytes, CPU, GC and application RTT percentiles. Record median and p95 over several trials, not just a screenshot. Note that the Roblox overlay includes engine replication and cannot prove all bytes were produced by NetStream. Critical traffic bypasses the Normal-priority batching window.
+
+
+## v4.1.1 packet-size audit verification
+
+Enable `PacketSizeAuditEnabled = true` before creating routes on the client. Run `tests/PacketSizeAuditRegression.server.lua` and `.client.lua` as a matched Studio Play session. The client checks the precise encoded BitFrame bytes for one U32 route 1001 (7 B), one U16 route 1002 (5 B), one U16 route 1 (4 B), and eight packed U16 route 1002 values (20 B). The last packet's metadata bit categories must sum to UsefulBits, with padding summing to PhysicalBits. The total is 36 encoded bytes across 11 logical messages; this is not an estimate of total Roblox network traffic. Report `NetStream.GetPacketSizeAudit().Totals`, `LastPacket`, `NetStream.GetStats()`, Packet Profiler buffer and remote-call totals, and RTT. Enable auditing only during diagnosis; repeat with instrumentation disabled to characterize application performance.
+
+Read [Packet Size Audit](PACKET_SIZE_AUDIT.md) for derivations and measurement limitations.

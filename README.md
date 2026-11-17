@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.1.0-2563eb)
+![Release](https://img.shields.io/badge/release-v4.1.1-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v4.1.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v4.1.1.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **4.1.1** | Optional exact BitFrame packet-size instrumentation, sent-only bit breakdown, 76 paired/runtime scripts |
 | **4.1.0** | Opt-in low-traffic batching preset and reliable coalesced state duplicate suppression (with cache invalidation) |
 | **4.0.2** | Repair isolated retry data-loss and sparse deferred queue indices; reduce Compression no-dictionary allocations and reject invalid composite map keys early |
 | **4.0.1** | Bound dispatch queue indices during sustained backlog; trim Compression map decoding allocations; skip scalar dictionary scan and reduce small writer buffers; regression tests |
@@ -439,3 +440,20 @@ local Currency = NetStream.State("Currency", {
 **Clicker Simulator 2D:** Use a single server-validated AutoClick Boolean toggle (an Event) when autoclicking starts/stops; let the server calculate automatic rewards on a timer. Send currency changes at a modest rate through the coalesced State route instead of sending one request and one full UI update for every auto-click. Never suppress purchase, click-intent, damage, RPC or other actions that must execute every time. Never assume this module can remove Roblox engine character/physics replication or lower the player's baseline network ping.
 
 **Trade-off:** The Normal-priority 50 ms batching window can add application-level latency. Turn the preset off, or override `TransportBatchWindowSeconds`, for timing-critical games. Use `Priority = "Critical"` sparingly for truly urgent actions. To test, compare matched v4.0.2/v4.1.0 Roblox Studio sessions for packet count, bytes/sec, p95 application RTT, CPU and memory, and run `LowTrafficRegression` scripts. Actual bytes/sec reductions are not yet measured.
+
+
+## v4.1.1 — Binary packet-size audit (opt-in)
+
+```luau
+-- Before creating any routes on the peer you want to measure:
+NetStream.ConfigureLowTraffic({PacketSizeAuditEnabled = true})
+
+-- Once your actual workload has run:
+local audit = NetStream.GetPacketSizeAudit()
+print("Encoded bytes:", audit.Totals.PhysicalBytes, "logical messages:", audit.Totals.LogicalMessages)
+print("Payload bits:", audit.Totals.PayloadBits, "route bits:", audit.Totals.RouteIdBits)
+print("Run-count bits:", audit.Totals.RunCountBits, "padding bits:", audit.Totals.PaddingBits)
+print("Last successfully sent packet:", audit.LastPacket.PhysicalBytes)
+```
+
+The audit reports actual BitFrame **encoded buffer** bits on **successful sends**; it does not count packets merely encoded for budget sizing, deferred sends, failed sends, Roblox replication, or Roblox remote-call framing. The optional code path adds measurement overhead and should be disabled for production performance comparisons unless explicitly measuring packet layout. `NetStream.ResetStats()` also resets the audit. See [Packet Size Audit](docs/PACKET_SIZE_AUDIT.md) for exact U32/U16 examples, bit formulas, the Packet Profiler interpretation and paired Studio regression instructions.

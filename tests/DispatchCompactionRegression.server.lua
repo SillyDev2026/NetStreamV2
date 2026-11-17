@@ -2,7 +2,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.1.0")
+assert(NetStream.GetVersion() == "4.1.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, MaxBatchMessages = 128})
 local T = NetStream.Types
 local Data = NetStream.Event("__NSDispatchCompactionData", {Id = 40101, Schema = {T.U16}, Compression = false})
@@ -21,4 +21,4 @@ Start:Connect(function(player, flag)
 		active[player] = nil
 	end)
 end)
-print("NetStream v4.1.0 dispatch compaction server ready")
+print("NetStream v4.1.1 dispatch compaction server ready")

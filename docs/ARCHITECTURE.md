@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.1.0, BitFrame v1, Compression v2.4.2 (codec 230).**
+**Applies to NetStream v4.1.1, BitFrame v1, Compression v2.4.2 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -193,3 +193,8 @@ The BitFrame parser skips entire rejected fixed-width schema runs after a single
 The optional `ConfigureLowTraffic` scheduling preset adjusts only existing flush/batch parameters. There is no extra handshake, control remote or wire header. Normal traffic is delayed up to the chosen batching window, while Critical and Realtime fast-flush behavior remains unchanged.
 
 Per-target reliable `State` suppression maintains bounded, weak-keyed last-**successfully-sent** scalar values, with no payload content hashing or table comparisons. Suppression requires explicit `Coalesce=true` and `SuppressUnchanged=true` and an empty outbound bucket; `Now` and unreliable sends bypass it. A broadcast invalidates the per-player cache because all existing clients may observe the new value, while resetting a client handshake invalidates its local cache. This optimization is **semantic deduplication**, not compression; it should never be used for events or commands that must execute on every invocation.
+
+
+## v4.1.1 packet-size audit instrumentation
+
+When `PacketSizeAuditEnabled` is true, the existing writer separately accounts for each BitFrame message's presence bit, two message-kind bits, variable-length route/request IDs, schema-event run bit and optional run count, plus all remaining payload bits. One end bit finishes the packet and byte padding fills the remainder. Only a **successfully dispatched RemoteEvent** records these logical packet bits; encoding attempts and budget re-encodes do not affect totals. `GetPacketSizeAudit()` returns `LastPacket` and `Totals`. The wire grammar and public send/receive behavior are unchanged. Detailed examples: [Packet Size Audit](PACKET_SIZE_AUDIT.md).
