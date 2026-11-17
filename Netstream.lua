@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.3.0"
+local VERSION = "3.4.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -407,7 +407,6 @@ local dispatchRoutes = {}
 local dispatchPlayers = {}
 local dispatchArgs = {}
 local dispatchScalarFlags = {}
-local dispatchScalarValues = {}
 local dispatchCount = 0
 local dispatchHead = 1
 local lastPacketBytes = 0
@@ -603,6 +602,7 @@ local Stats = {
 	BitFrameDiscardedSchemaArgs = 0,
 	BitFrameDiscardedFixedBits = 0,
 	BitFrameBulkDiscardedRuns = 0,
+	BitFrameRejectedDynamicArgsAvoided = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -5406,16 +5406,14 @@ local function runDispatch()
 		local player = dispatchPlayers[index]
 		local args = dispatchArgs[index]
 		local scalar = dispatchScalarFlags[index] == true
-		local scalarValue = dispatchScalarValues[index]
 		dispatchRoutes[index] = nil
 		dispatchPlayers[index] = nil
 		dispatchArgs[index] = nil
 		dispatchScalarFlags[index] = nil
-		dispatchScalarValues[index] = nil
 		dispatchHead += 1
 		processed += 1
 		if scalar then
-			dispatchRouteScalar(route, player, scalarValue)
+			dispatchRouteScalar(route, player, args)
 		else
 			dispatchRoute(route, player, args)
 			releaseArgs(args)
@@ -5461,9 +5459,8 @@ local function enqueueDispatchScalar(route, player, value)
 	dispatchCount += 1
 	dispatchRoutes[dispatchCount] = route
 	dispatchPlayers[dispatchCount] = player
-	dispatchArgs[dispatchCount] = nil
+	dispatchArgs[dispatchCount] = value
 	dispatchScalarFlags[dispatchCount] = true
-	dispatchScalarValues[dispatchCount] = value
 	Stats.ScalarDispatches += 1
 	return true
 end
@@ -6136,6 +6133,11 @@ function Internal.bitFrameReadDynamic(reader, kind, routeId, requestId, route, a
 		local ok = reader:bits(1) ~= 0
 		local resultCount = reader:adaptiveUInt()
 		if resultCount > Config.MaxTableEntries then error("NetStream BitFrame return result count too large", 0) end
+		if not allowMessage then
+			for _ = 1, resultCount do readValue(reader, 0) end
+			Stats.BitFrameRejectedDynamicArgsAvoided += 1
+			return 1
+		end
 		local args = acquireArgsCount(resultCount + 1)
 		args[1] = ok
 		for i = 1, resultCount do args[i + 1] = readValue(reader, 0) end
@@ -6157,6 +6159,11 @@ function Internal.bitFrameReadDynamic(reader, kind, routeId, requestId, route, a
 	elseif mode == 1 then
 		local argc = reader:adaptiveUInt()
 		if argc > Config.MaxTableEntries then error("NetStream BitFrame argument count too large", 0) end
+		if not allowMessage then
+			for _ = 1, argc do readValue(reader, 0) end
+			Stats.BitFrameRejectedDynamicArgsAvoided += 1
+			return 1
+		end
 		args = acquireArgsCount(argc)
 		for i = 1, argc do args[i] = readValue(reader, 0) end
 		args.n = argc
@@ -8189,6 +8196,7 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameDiscardedSchemaArgs = Stats.BitFrameDiscardedSchemaArgs,
 		BitFrameDiscardedFixedBits = Stats.BitFrameDiscardedFixedBits,
 		BitFrameBulkDiscardedRuns = Stats.BitFrameBulkDiscardedRuns,
+		BitFrameRejectedDynamicArgsAvoided = Stats.BitFrameRejectedDynamicArgsAvoided,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
 		MessagePoolSize = #messagePool,
@@ -8577,7 +8585,6 @@ function NetStream.Destroy()
 	table.clear(dispatchPlayers)
 	table.clear(dispatchArgs)
 	table.clear(dispatchScalarFlags)
-	table.clear(dispatchScalarValues)
 	dispatchCount = 0
 	dispatchHead = 1
 
