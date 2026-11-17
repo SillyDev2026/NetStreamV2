@@ -1,6 +1,15 @@
 # NetStreamV2 Changelog
 
-The current release is **v4.0.2**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v4.1.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.1.0 — Low-traffic batching and safe State deduplication
+
+- **Opt-in low-traffic preset:** `NetStream.ConfigureLowTraffic(overrides?)` selects a 30 Hz periodic flush, 50 ms Normal-priority batch window and 32-message target packet size. Critical and Realtime fast flush behavior is unchanged; explicit overrides win.
+- **Opt-in reliable State dedup:** `NetStream.State(..., {Coalesce=true, SuppressUnchanged=true})` suppresses unchanged, already-delivered primitive states for individual targets and client-to-server states; only after a real successful send, only while no other outbound messages are pending, and never for RPC/events, unreliable updates, broadcasts or `Now` calls.
+- **Correctness:** Broadcast state sends invalidate all per-player cache entries; any other sent state for the same route replaces or invalidates the cached value; resetting the client handshake clears its cache. No suppression of unconfirmed/queued sends. State value strings are cache-limited and target caches bounded.
+- **Diagnostics:** `LowTrafficStateDuplicatesSuppressed` and `LowTrafficStateCacheWrites` in `GetStats()` to count logical events (not bytes saved). Studio paired `LowTrafficRegression` script checks duplicate suppression, changed state delivery and forced resync.
+- **Wire:** No format change; still BitFrame v1 and Compression 2.4.2, codec 230. Existing APIs and defaults remain unchanged unless the profile or per-route suppression is explicitly enabled.
+- **Qualification:** Roblox engine physics, character traffic and transport headers are not controlled by NetStream. Live bandwidth and p95 latency improvements require matched Studio measurements.
 
 ## v4.0.2 — Isolated-send fallback reliability and low-allocation compression
 

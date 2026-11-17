@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v4.0.0. **Candidate:** v4.0.2. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.0.2. **Candidate:** v4.1.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -205,3 +205,10 @@ Compare v4.0.0/Compression 2.4.0 with v4.0.1/Compression 2.4.1 in matched Studio
 Run `TransportRecoveryRegression.server.lua` with `TransportRecoveryRegression.client.lua` in a dedicated Studio Play session to exercise an intentionally invalid *trusted* schema event, isolated batch retry, one-packet-per-second throttling, and FIFO delivery of the three valid events. Run `CompressionV242Regression.server.lua` separately to check 600 no-dictionary scalar round-trips, dictionary-rich tables and malformed composite map-key tags.
 
 Compare NetStream v4.0.1/Compression v2.4.1 with v4.0.2/v2.4.2 on identical Roblox Studio loads to measure CPU p95/p99, throughput and heap/GC changes. Do not treat static CI/source modeling as live benchmark results.
+
+
+## v4.1.0 low-traffic bandwidth benchmark
+
+Run `tests/LowTrafficRegression.server.lua` and `.client.lua` as a paired Studio Play session. It opts into `ConfigureLowTraffic` on both peers, sends a reliable coalesced U16 state once, attempts 64 identical values, changes the value, then repeats the new value and forces a resync using `SetClientNow`. Validate exactly three observed client deliveries and the corresponding suppression counter; running one file without the other cannot pass.
+
+For real savings, run a matched 60-second Roblox Studio autoclick workload using (A) original per-click networking, (B) server-authoritative autoclick and coalesced State updates, and (C) B plus `ConfigureLowTraffic` and `SuppressUnchanged`. Keep player count, scene, click rate, server activity and instrumentation equal. Compare the Roblox overlay's Sent/Recv KB/s **and** `GetBandwidthStats()`/`GetStats()` logical packet counts, messages, bytes, CPU, GC and application RTT percentiles. Record median and p95 over several trials, not just a screenshot. Note that the Roblox overlay includes engine replication and cannot prove all bytes were produced by NetStream. Critical traffic bypasses the Normal-priority batching window.

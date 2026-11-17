@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.0.2";
+const version = "4.1.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 72, "Regression suite unexpectedly missing");
+assert(tests.length >= 74, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -56,6 +56,52 @@ assert(source.includes("Stats.BitFramePackedScalarFastReads += count"), "Packed 
 assert(source.includes("BitFramePackedScalarFastReads = stats.BitFramePackedScalarFastReads"), "Packed receive stats projection missing");
 assert(tests.includes("CompressionV24Regression.server.lua"), "Compression v2.4.0 Studio regression missing");
 for (const invalidKey of [{}, [], new Date()]) assert(!["string","number","boolean"].includes(typeof invalidKey), "Map-key type model broke");
+
+
+assert(tests.includes("LowTrafficRegression.server.lua") && tests.includes("LowTrafficRegression.client.lua"), "Paired low-traffic Studio regression is missing");
+for (const fragment of [
+    "function NetStream.ConfigureLowTraffic(overrides)",
+    "TransportBatchWindowSeconds = 0.05,",
+    "TransportTargetMessagesPerPacket = 32,",
+    "function Internal.recordSentState(target, unreliable, message)",
+    "function Internal.shouldSuppressUnchangedState(target, route, value, unreliable, latest)",
+    "Stats.LowTrafficStateDuplicatesSuppressed += 1",
+    "if bucket and not bucketEmpty(bucket) then return false end",
+    "if target == ALL then",
+    "table.clear(stateDeliveryCache)",
+    "if Internal.shouldSuppressUnchangedState(target, self, value, unreliable, latest) then",
+    "LowTrafficStateCacheLimit = 128,",
+    "LowTrafficMaxStateStringBytes = 64,",
+    "stateDeliveryCache[CLIENT_STATE_CACHE_KEY] = nil",
+]) assert(source.includes(fragment), "Low-traffic safety/behavior fragment missing: " + fragment);
+const lowTrafficStart = source.indexOf("function Internal.shouldSuppressUnchangedState(");
+const lowTrafficEnd = source.indexOf("function Internal.recordQueueAge(", lowTrafficStart);
+assert(lowTrafficStart >= 0 && lowTrafficEnd > lowTrafficStart, "Low-traffic state guard boundary missing");
+const lowTrafficGuard = source.slice(lowTrafficStart, lowTrafficEnd);
+for (const clause of ["not route.SuppressUnchanged", "not latest", "unreliable", "target == ALL", "not stateCacheable(value)"]) assert(lowTrafficGuard.includes(clause), "Low-traffic cache must never suppress unsafe state classes: " + clause);
+const recordStart = source.indexOf("function Internal.recordSentState(");
+const recordEnd = source.indexOf("function Internal.shouldSuppressUnchangedState(", recordStart);
+const record = source.slice(recordStart, recordEnd);
+assert(record.includes('if message.kind ~= KIND_STATE then return end'), "Event/RPC messages must never be deduplicated");
+assert(record.includes('table.clear(stateDeliveryCache)'), "Broadcast must invalidate stale per-player cached values");
+assert(record.includes('Config.LowTrafficStateCacheLimit > 0'), "Disabled state cache should not allocate");
+assert(source.includes('Internal.recordSentState(target, unreliable, item)'), "Isolated send must track delivery");
+assert(source.includes('Internal.recordSentState(target, unreliable, items[i])'), "Batched send must track delivery");
+for (const state of [false, true, 0, 1, -1, 255, "same"]) {
+    for (const options of [
+        {latest:true, unreliable:false, broadcast:false, pending:false, enabled:true, cache:true},
+        {latest:false, unreliable:false, broadcast:false, pending:false, enabled:true, cache:true},
+        {latest:true, unreliable:true, broadcast:false, pending:false, enabled:true, cache:true},
+        {latest:true, unreliable:false, broadcast:true, pending:false, enabled:true, cache:true},
+        {latest:true, unreliable:false, broadcast:false, pending:true, enabled:true, cache:true},
+        {latest:true, unreliable:false, broadcast:false, pending:false, enabled:false, cache:true},
+        {latest:true, unreliable:false, broadcast:false, pending:false, enabled:true, cache:false}
+    ]) {
+        const suppressed = options.enabled && options.latest && !options.unreliable && !options.broadcast && !options.pending && options.cache && state === state;
+        const model = !(!options.enabled || !options.latest || options.unreliable || options.broadcast || options.pending || !options.cache || !Object.is(state,state));
+        assert.equal(suppressed,model,"Low-traffic explicit guard model mismatch");
+    }
+}
 
 let state = 0x31415926;
 function random() {

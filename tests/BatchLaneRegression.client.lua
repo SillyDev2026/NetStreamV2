@@ -2,7 +2,7 @@
 -- StarterPlayerScripts; use Play Test with the paired ServerScript and an UnreliableRemoteEvent-capable Studio.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.2", "Expected NetStream v4.0.2")
+assert(NetStream.GetVersion() == "4.1.0", "Expected NetStream v4.1.0")
 NetStream.Configure({BandwidthGovernorEnabled = true, BandwidthMaxPacketBytes = 1200, UnreliableMaxBytes = 900, TransportTargetMessagesPerPacket = 16})
 local reliable = NetStream.Event("__NSBatchReliable", {Id = 34001, Compression = false})
 local unreliable = NetStream.Unreliable("__NSBatchUnreliable", {Id = 34002, Compression = false})
@@ -18,7 +18,7 @@ ack:Connect(function(count, observedUnreliable)
 	local stats = NetStream.GetStats()
 	assert(stats.DecodeErrors == 0, "Client packet decoding failed")
 	assert(stats.FallbackReliable == 0, "Unreliable batch fell back to reliable lane")
-	print(string.format("NetStream 4.0.2: reliable %d, unreliable observed by ack %d, packets %d, splits %d, predicted caps %d, unintended fallbacks %d", count, observedUnreliable, stats.SentBatches, stats.BandwidthBatchSplits, stats.TransportPredictedBatchCaps, stats.FallbackReliable))
+	print(string.format("NetStream 4.1.0: reliable %d, unreliable observed by ack %d, packets %d, splits %d, predicted caps %d, unintended fallbacks %d", count, observedUnreliable, stats.SentBatches, stats.BandwidthBatchSplits, stats.TransportPredictedBatchCaps, stats.FallbackReliable))
 end)
 NetStream.ResetStats()
 for index = 1, 120 do

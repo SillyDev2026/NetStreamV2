@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.0.2-2563eb)
+![Release](https://img.shields.io/badge/release-v4.1.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v4.0.2.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.0.2 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v4.1.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **4.1.0** | Opt-in low-traffic batching preset and reliable coalesced state duplicate suppression (with cache invalidation) |
 | **4.0.2** | Repair isolated retry data-loss and sparse deferred queue indices; reduce Compression no-dictionary allocations and reject invalid composite map keys early |
 | **4.0.1** | Bound dispatch queue indices during sustained backlog; trim Compression map decoding allocations; skip scalar dictionary scan and reduce small writer buffers; regression tests |
 | **4.0.0** | Fast packed Bool/U8/U16 receive preflight; Compression 2.4.0 varint CPU/capacity optimizations, map-key validation, codec-230 compatibility checks and new regression coverage |
@@ -408,3 +409,33 @@ The wire format remains BitFrame v1 and Compression codec 230; the public networ
 **Compression 2.4.2:** The no-dictionary and scalar paths reuse one frozen empty dictionary instead of allocating throwaway tables, and decoding an empty dictionary no longer allocates a duplicate-key map. Map-key tags are checked before recursively decoding composite keys. **Compression codec 230 and NetStream BitFrame v1 are unchanged.**
 
 The new regression scripts are `tests/TransportRecoveryRegression.server.lua` / `.client.lua` and `tests/CompressionV242Regression.server.lua`. GitHub source/syntax CI does not run Roblox Studio tests or establish a speedup.
+
+
+## v4.1.0 — Low-traffic mode for simulators and UI state
+
+Call the profile **before** defining any routes, on **both client and server**. It changes scheduling parameters, not the wire format. Critical/Realtime traffic retains its existing fast-flush behavior; ordinary Normal-priority messages get a 50 ms batching window and a 30 Hz periodic flush. Custom overrides take priority.
+
+```luau
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
+local T = NetStream.Types
+
+NetStream.ConfigureLowTraffic({PerformanceTelemetryEnabled = true})
+
+local Currency = NetStream.State("Currency", {
+    Id = 1101,
+    Schema = {T.U32},
+    Coalesce = true,
+    SuppressUnchanged = true,
+    Compression = false,
+    Priority = "Normal",
+})
+-- Server: Currency:SetClient(player, coins)
+-- Client: Currency:Connect(function(coins) updateCurrencyUI(coins) end)
+```
+
+**Safe duplicate suppression:** Only if explicitly enabled on a `NetStream.State` route, with `Coalesce = true`, and only for identical **successfully transmitted reliable primitive values** (number, boolean or short string). It never suppresses Event/RPC messages, unreliable state, broadcast state or `SetClientNow`/`SetServerNow`. Pending outbound messages disable suppression conservatively. Cache entries are bounded by `LowTrafficStateCacheLimit` (128 per target by default), and strings longer than `LowTrafficMaxStateStringBytes` (64 bytes by default) are not cached. Broadcasts invalidate cached per-player values; resetting a client handshake invalidates its cache. `GetStats().LowTrafficStateDuplicatesSuppressed` and `LowTrafficStateCacheWrites` show savings in **logical sends**, not exact wire bytes.
+
+**Clicker Simulator 2D:** Use a single server-validated AutoClick Boolean toggle (an Event) when autoclicking starts/stops; let the server calculate automatic rewards on a timer. Send currency changes at a modest rate through the coalesced State route instead of sending one request and one full UI update for every auto-click. Never suppress purchase, click-intent, damage, RPC or other actions that must execute every time. Never assume this module can remove Roblox engine character/physics replication or lower the player's baseline network ping.
+
+**Trade-off:** The Normal-priority 50 ms batching window can add application-level latency. Turn the preset off, or override `TransportBatchWindowSeconds`, for timing-critical games. Use `Priority = "Critical"` sparingly for truly urgent actions. To test, compare matched v4.0.2/v4.1.0 Roblox Studio sessions for packet count, bytes/sec, p95 application RTT, CPU and memory, and run `LowTrafficRegression` scripts. Actual bytes/sec reductions are not yet measured.

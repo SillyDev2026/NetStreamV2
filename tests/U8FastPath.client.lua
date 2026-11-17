@@ -2,7 +2,7 @@
 -- Standalone StarterPlayerScripts LocalScript; pair with U8FastPath.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.2")
+assert(NetStream.GetVersion() == "4.1.0")
 local T = NetStream.Types
 local schema32 = table.create(32)
 local schema4 = table.create(4)
@@ -18,7 +18,7 @@ Ack:Connect(function(wide, short, reads)
     assert(stats.U8SchemaFastWrites >= 112, "U8 fast encoder did not run")
     assert(stats.DecodeErrors == 0, "ACK decode failed")
     done = true
-    print("NetStream v4.0.2 U8 schema fast path PASS", stats.U8SchemaFastWrites, reads)
+    print("NetStream v4.1.0 U8 schema fast path PASS", stats.U8SchemaFastWrites, reads)
 end)
 local values = table.create(32)
 for i = 2, 31 do values[i] = (i * 7) % 256 end

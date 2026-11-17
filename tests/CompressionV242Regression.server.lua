@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.2")
+assert(NetStream.GetVersion() == "4.1.0")
 local Compression = NetStream.Compression
 assert(Compression.Version() == "2.4.2")
 assert(Compression.CodecVersion == 230)

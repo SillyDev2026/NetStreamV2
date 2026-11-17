@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.0.2, BitFrame v1, Compression v2.4.2 (codec 230).**
+**Applies to NetStream v4.1.0, BitFrame v1, Compression v2.4.2 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -186,3 +186,10 @@ The BitFrame parser skips entire rejected fixed-width schema runs after a single
 - One-, two- and three-value argument lists are packed directly into pooled arg tables; arbitrary-length lists retain the general indexed varargs loop.
 - Packed single-field scalar events are committed from scalar values without per-item argument tables. A negative group encoding `-(count + 1)` identifies the first grouped scalar and `-1` marks a following scalar; route token accounting occurs once per group, while each accepted callback still dispatches in FIFO order.
 - Packed value arrays carry a weak-key high-water marker if ever grown beyond `MaxPooledPackedValues`. Both initial allocation and append/split paths mark them, so shortened prefixes cannot leave unexpectedly huge arrays in idle pools. Weak keys do not retain otherwise discarded arrays.
+
+
+## v4.1.0 low-traffic mode
+
+The optional `ConfigureLowTraffic` scheduling preset adjusts only existing flush/batch parameters. There is no extra handshake, control remote or wire header. Normal traffic is delayed up to the chosen batching window, while Critical and Realtime fast-flush behavior remains unchanged.
+
+Per-target reliable `State` suppression maintains bounded, weak-keyed last-**successfully-sent** scalar values, with no payload content hashing or table comparisons. Suppression requires explicit `Coalesce=true` and `SuppressUnchanged=true` and an empty outbound bucket; `Now` and unreliable sends bypass it. A broadcast invalidates the per-player cache because all existing clients may observe the new value, while resetting a client handshake invalidates its local cache. This optimization is **semantic deduplication**, not compression; it should never be used for events or commands that must execute on every invocation.

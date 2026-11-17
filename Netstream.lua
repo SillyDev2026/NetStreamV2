@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.0.2"
+local VERSION = "4.1.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -356,6 +356,8 @@ local DEFAULTS = {
 	TransportRealtimeBatchWindowSeconds = 0,
 	TransportEstimatedPacketOverheadBytes = 96,
 	TransportTargetMessagesPerPacket = 16,
+	LowTrafficStateCacheLimit = 128,
+	LowTrafficMaxStateStringBytes = 64,
 	FastSchemaEnabled = true,
 	FastSchemaMaxBytes = 512,
 	FastSchemaAllowHeaderExpansion = false,
@@ -399,6 +401,8 @@ local activeTargetTail = 0
 local incomingRates = {}
 local clientBucket = nil
 local broadcastBucket = nil
+local CLIENT_STATE_CACHE_KEY = {}
+local stateDeliveryCache = setmetatable({}, {__mode = "k"})
 local eventRoutes = {}
 local functionRoutes = {}
 local stateRoutes = {}
@@ -481,6 +485,8 @@ local Stats = {
 	SchemaMessages = 0,
 	DynamicMessages = 0,
 	CoalescedLatest = 0,
+	LowTrafficStateDuplicatesSuppressed = 0,
+	LowTrafficStateCacheWrites = 0,
 	MessagePoolHits = 0,
 	ArgsPoolHits = 0,
 	WriterPoolHits = 0,
@@ -5080,6 +5086,53 @@ function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	return ok, data
 end
 
+local function stateCacheable(value)
+	local kind = typeof(value)
+	return kind == "boolean" or (kind == "number" and isFiniteNumber(value)) or (kind == "string" and #value <= Config.LowTrafficMaxStateStringBytes)
+end
+
+function Internal.recordSentState(target, unreliable, message)
+	if message.kind ~= KIND_STATE then return end
+	if target == ALL then
+		-- Broadcast reaches player-specific recipients and invalidates every cached state.
+		table.clear(stateDeliveryCache)
+		return
+	end
+	local key = if IS_SERVER then target else CLIENT_STATE_CACHE_KEY
+	local cache = stateDeliveryCache[key]
+	if cache then
+		local old = cache.values[message.id]
+		if old ~= nil then
+			cache.values[message.id] = nil
+			cache.count -= 1
+		end
+	end
+	local route = stateRoutes[message.id]
+	local value = message.args and message.args[1]
+	if Config.LowTrafficStateCacheLimit > 0 and not unreliable and route and route.SuppressUnchanged and message.latestKey ~= nil and stateCacheable(value) then
+		if not cache then
+			cache = {values = {}, count = 0}
+			stateDeliveryCache[key] = cache
+		end
+		if cache.count < Config.LowTrafficStateCacheLimit then
+			cache.values[message.id] = value
+			cache.count += 1
+			Stats.LowTrafficStateCacheWrites += 1
+		end
+	end
+end
+
+function Internal.shouldSuppressUnchangedState(target, route, value, unreliable, latest)
+	if not route.SuppressUnchanged or not latest or unreliable or target == ALL or not stateCacheable(value) then return false end
+	local key = if IS_SERVER then target else CLIENT_STATE_CACHE_KEY
+	local cache = stateDeliveryCache[key]
+	if not cache or cache.values[route.Id] ~= value then return false end
+	local bucket = peekTargetBucket(target)
+	if bucket and not bucketEmpty(bucket) then return false end
+	Stats.LowTrafficStateDuplicatesSuppressed += 1
+	return true
+end
+
 function Internal.recordQueueAge(items)
 	if not Config.PerformanceTelemetryEnabled then return end
 	local now = os.clock()
@@ -5099,6 +5152,7 @@ function Internal.sendIsolatedMessages(target, unreliable, items)
 		if ok then
 			local sent, reason = sendBatch(target, unreliable, data)
 			if sent then
+				Internal.recordSentState(target, unreliable, item)
 				if Config.PerformanceTelemetryEnabled and item._queuedAt then Internal.recordPerformanceSample("QueueMs", math.max(0, (os.clock() - item._queuedAt) * 1000)) end
 				local logical = messageLogicalCount(item)
 				Stats.SentMessages += logical
@@ -5174,6 +5228,7 @@ local function flushChannel(target, queue, latest, unreliable, deadline)
 				Stats.SentMessages += logical
 				trafficWindowSentMessages += logical
 				for i = 1, #items do
+					Internal.recordSentState(target, unreliable, items[i])
 					releaseMessage(items[i])
 				end
 			elseif reason == "defer" then
@@ -6773,6 +6828,7 @@ function Internal.hsSend()
 end
 function Internal.hsStart()
 	if IS_SERVER or not started or destroyed or not Config.HandshakeEnabled then return end
+	stateDeliveryCache[CLIENT_STATE_CACHE_KEY] = nil
 	if not handshakeRemote then handshakeClient = {state = "unavailable", helloAttempts = 0, confirmAttempts = 0}; return end
 	handshakeClient = {state = "hello", clientNonce = Internal.HS_RANDOM:NextInteger(1, 2147483647), helloAttempts = 0, confirmAttempts = 0}
 	Internal.hsSend()
@@ -7491,6 +7547,10 @@ function StateRoute:_send(target, value, unreliable, latest)
 	else
 		validateValue(value, 0, nil)
 	end
+	if Internal.shouldSuppressUnchangedState(target, self, value, unreliable, latest) then
+		releaseArgs(args)
+		return true
+	end
 	local message = makeMessage(KIND_STATE, self.Id, 0, args, schema, self.Priority)
 	return enqueue(target, unreliable, message, if latest then self.Id * 4 + KIND_STATE else nil)
 end
@@ -7733,6 +7793,8 @@ function Internal.validateConfig(config)
 	assert(type(config.TransportRealtimeBatchWindowSeconds) == "number" and isFiniteNumber(config.TransportRealtimeBatchWindowSeconds) and config.TransportRealtimeBatchWindowSeconds >= 0 and config.TransportRealtimeBatchWindowSeconds <= 1, "TransportRealtimeBatchWindowSeconds must be from 0 to 1")
 	assert(type(config.TransportEstimatedPacketOverheadBytes) == "number" and isFiniteNumber(config.TransportEstimatedPacketOverheadBytes) and config.TransportEstimatedPacketOverheadBytes >= 0, "TransportEstimatedPacketOverheadBytes must be >= 0")
 	assert(type(config.TransportTargetMessagesPerPacket) == "number" and isInteger(config.TransportTargetMessagesPerPacket) and config.TransportTargetMessagesPerPacket >= 1, "TransportTargetMessagesPerPacket must be an integer >= 1")
+	assert(type(config.LowTrafficStateCacheLimit) == "number" and isInteger(config.LowTrafficStateCacheLimit) and config.LowTrafficStateCacheLimit >= 0 and config.LowTrafficStateCacheLimit <= 4096, "LowTrafficStateCacheLimit must be from 0 to 4096")
+	assert(type(config.LowTrafficMaxStateStringBytes) == "number" and isInteger(config.LowTrafficMaxStateStringBytes) and config.LowTrafficMaxStateStringBytes >= 0 and config.LowTrafficMaxStateStringBytes <= 4096, "LowTrafficMaxStateStringBytes must be from 0 to 4096")
 	assert(type(config.MaxWriterPoolSize) == "number" and isInteger(config.MaxWriterPoolSize) and config.MaxWriterPoolSize >= 0, "MaxWriterPoolSize must be a non-negative integer")
 	assert(type(config.MaxBitFrameReaderPoolSize) == "number" and isInteger(config.MaxBitFrameReaderPoolSize) and config.MaxBitFrameReaderPoolSize >= 0 and config.MaxBitFrameReaderPoolSize <= 256, "MaxBitFrameReaderPoolSize must be an integer from 0 to 256")
 	assert(type(config.PerformanceTelemetryEnabled) == "boolean", "PerformanceTelemetryEnabled must be boolean")
@@ -7779,6 +7841,20 @@ function NetStream.Configure(options, colonOptions)
 	Config = nextConfig
 	Internal._compressionOptionsCache = nil
 	return NetStream
+end
+
+function NetStream.ConfigureLowTraffic(overrides)
+	local options = {
+		FlushRate = 30,
+		TransportAdaptiveBatching = true,
+		TransportBatchWindowSeconds = 0.05,
+		TransportTargetMessagesPerPacket = 32,
+	}
+	if overrides ~= nil then
+		assert(type(overrides) == "table", "ConfigureLowTraffic expects an optional table")
+		for key, value in pairs(overrides) do options[key] = value end
+	end
+	return NetStream.Configure(options)
 end
 
 function NetStream.Start()
@@ -8003,6 +8079,10 @@ function NetStream.State(nameOrId, options, colonOptions)
 		if options and options.Immediate == true then
 			route.Immediate = true
 		end
+		if options and options.SuppressUnchanged ~= nil then
+			assert(type(options.SuppressUnchanged) == "boolean", "State SuppressUnchanged must be boolean")
+			route.SuppressUnchanged = options.SuppressUnchanged
+		end
 		Internal.applyRouteHandlingOptions(route, options, "State " .. name)
 		return route
 	end
@@ -8014,6 +8094,10 @@ function NetStream.State(nameOrId, options, colonOptions)
 	base._trusted = options and options.Trusted == true or false
 	base.Immediate = options and options.Immediate == true or false
 	base.Coalesce = false
+	base.SuppressUnchanged = options and options.SuppressUnchanged == true or false
+	if options and options.SuppressUnchanged ~= nil then
+		assert(type(options.SuppressUnchanged) == "boolean", "State SuppressUnchanged must be boolean")
+	end
 	base.Compression = options and options.Compression
 	base.Priority = options and options.Priority or "Normal"
 	route = setmetatable(base, StateRoute)
@@ -8728,6 +8812,7 @@ function NetStream.Destroy()
 	end
 	destroyed = true
 	started = false
+	table.clear(stateDeliveryCache)
 	if heartbeatConnection then
 		heartbeatConnection:Disconnect()
 		heartbeatConnection = nil

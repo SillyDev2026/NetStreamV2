@@ -3,7 +3,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.2", "Expected NetStream 4.0.2")
+assert(NetStream.GetVersion() == "4.1.0", "Expected NetStream 4.1.0")
 NetStream.Configure({
 	PerformanceTelemetryEnabled = true,
 	PerformanceTelemetryCapacity = 512,
@@ -28,4 +28,4 @@ ping:Connect(function(player, id)
 	end
 end)
 Players.PlayerRemoving:Connect(function(player) requests[player] = nil end)
-print("NetStream 4.0.2 server p95 benchmark ready")
+print("NetStream 4.1.0 server p95 benchmark ready")

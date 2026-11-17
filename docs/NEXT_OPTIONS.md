@@ -1,6 +1,15 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.0.2. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.1.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.1.0 — bandwidth-conscious scheduling and state suppression
+
+| Area | Implemented | Verify in Studio |
+|---|---|---|
+| Normal traffic | Opt-in 30 Hz flush and 50 ms grouping window | Fewer packets vs original behavior, inspect added p95 latency |
+| State replication | Opt-in dedup of confirmed coalesced reliable primitive states | Reconnect, broadcast, mixed route traffic, changed values, forced resync |
+| Memory/safety | Bounded state per-target cache, string-size cutoff, weak player keys | Player churn and high route count, heap overhead |
+| Simulator | Recommended server-driven autoclick toggle + throttled currency State | Actual Sent/Recv after auto-click, not synthetic claims |
 
 ## v4.0.2 — recovery bugfix and codec heap cleanup
 
