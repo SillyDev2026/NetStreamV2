@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.6.0"
+local VERSION = "3.7.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -582,6 +582,7 @@ local Stats = {
 	PackedValuePoolOversizeDrops = 0,
 	ScalarDispatches = 0,
 	BitFrameScalarSchemaReads = 0,
+	BitFramePackedScalarRunItems = 0,
 	BitPacketCallsSent = 0,
 	BitPacketCallsReceived = 0,
 	BitPacketHeaderBits = 0,
@@ -6094,14 +6095,14 @@ function Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, ar
 	stage.groups[index] = group
 end
 
-function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)
+function Internal.stageBitFrameScalar(stage, kind, route, routeId, value, group)
 	local index = stage.count + 1
 	stage.count = index
 	stage.kinds[index] = kind
 	stage.routes[index] = route
 	stage.requestIds[index] = 0
 	stage.args[index] = value
-	stage.groups[index] = -1
+	stage.groups[index] = -((group or 1) + 1)
 end
 
 function Internal.releaseBitFrameStage(stage)
@@ -6135,7 +6136,7 @@ function Internal.commitBitFrameStage(player, stage)
 		local scalar = group < 0
 		local scalarValue = if scalar then args else nil
 		if kind == KIND_EVENT then
-			if group ~= 0 then remainingEventAllowance = consumeRouteAllowance(route, player, if group < 0 then -group else group) end
+			if group ~= 0 and group ~= -1 then remainingEventAllowance = consumeRouteAllowance(route, player, if group < 0 then -group - 1 else group) end
 			if remainingEventAllowance > 0 then
 				remainingEventAllowance -= 1
 				if scalar then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
@@ -6262,10 +6263,13 @@ function Internal.parseBitFrame(player, reader, stage)
 				local allowed = canAcceptIncomingMessages(player, logicalCount + count)
 				if not allowed then Stats.RateLimitedBatches += 1 end
 				local schema = route._schema
-				local scalarKind = if count == 1 then schema.scalarKind else nil
-				if scalarKind then
-					local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
-					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
+				local scalarKind = schema.scalarKind
+				if scalarKind and allowed then
+					for index = 1, count do
+						local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
+						Internal.stageBitFrameScalar(stage, kind, route, routeId, value, if index == 1 then count else 0)
+					end
+					if count > 1 then Stats.BitFramePackedScalarRunItems += count end
 				elseif not allowed then
 					local fixedBits = schema.discardBits
 					if fixedBits ~= nil then
@@ -8296,6 +8300,7 @@ function NetStream.GetPerformanceStats()
 		PackedSchemaRunAppends = stats.PackedSchemaRunAppends,
 		PackedValuePoolHits = stats.PackedValuePoolHits,
 		ScalarDispatches = stats.ScalarDispatches,
+		BitFramePackedScalarRunItems = stats.BitFramePackedScalarRunItems,
 		BitFrameScalarSchemaReads = stats.BitFrameScalarSchemaReads,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,
