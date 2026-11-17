@@ -73,7 +73,7 @@ assert(source.includes("function Internal.stageBitFrameScalar(stage, kind, route
 assert(source.includes("Internal.BitFrameWriter.varUInt = Internal.BitFrameWriter.adaptiveUInt"), "BitFrame varUInt alias missing");
 assert(source.includes("byte < 128 then"), "One-byte varUInt fast path missing");
 assert(source.includes("MaxBitFrameStagePoolSize = 8,"), "Bounded stage-pool size default missing");
-assert(source.includes("if #pool < Config.MaxBitFrameStagePoolSize then"), "Stage pool incorrectly shares generic batch pool limit");
+assert(source.includes("if #pool >= Config.MaxBitFrameStagePoolSize then return end"), "Full stage pool must drop actions without clearing unpooled arrays");
 assert(source.includes("local routeId = if route then route.Id else 0"), "Commit must reuse route ID instead of storing a parallel array");
 assert(!source.includes("stage.routeIds"), "Redundant stage route ID table still retained");
 assert(!/stage\.(scalarFlags|scalarValues)/.test(source), "Scalar stages must not allocate separate flag/value tables");
