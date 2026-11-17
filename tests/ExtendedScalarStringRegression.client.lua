@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.5.0")
+assert(NetStream.GetVersion() == "3.8.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local U16 = NetStream.Event("__NSScalarU16", {Id = 36011, Schema = {T.U16}, Compression = false})
@@ -17,7 +17,7 @@ local done = false
 Ack:Connect(function(value)
     assert(value == 1, "Unexpected extended scalar ACK")
     done = true
-    print("NetStream 3.5.0 scalar/string PASS")
+    print("NetStream 3.8.0 scalar/string PASS")
 end)
 assert(U16:FireServer(65000), "U16 enqueue failed")
 assert(I16:FireServer(-12345), "I16 enqueue failed")
