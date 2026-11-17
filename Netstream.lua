@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.6.0"
+local VERSION = "2.7.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -279,6 +279,7 @@ local DEFAULTS = {
 	MaxBatchPoolSize = 64,
 	MaxPooledPackedValues = 64,
 	MaxPooledBitFrameActions = 64,
+	MaxBitFrameStagePoolSize = 8,
 	MaxWriterPoolSize = 32,
 	MaxBitFrameReaderPoolSize = 32,
 	PerformanceTelemetryEnabled = false,
@@ -6001,7 +6002,7 @@ function Internal.acquireBitFrameStage()
 		pool[#pool] = nil
 		Stats.BitFrameStagePoolHits += 1
 	else
-		stage = {kinds = {}, routes = {}, routeIds = {}, requestIds = {}, args = {}, groups = {}, scalarFlags = {}, scalarValues = {}, count = 0}
+		stage = {kinds = {}, routes = {}, requestIds = {}, args = {}, groups = {}, scalarFlags = {}, scalarValues = {}, count = 0}
 	end
 	stage.count = 0
 	return stage
@@ -6012,7 +6013,6 @@ function Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, ar
 	stage.count = index
 	stage.kinds[index] = kind
 	stage.routes[index] = route
-	stage.routeIds[index] = routeId
 	stage.requestIds[index] = requestId
 	stage.args[index] = args
 	stage.groups[index] = group
@@ -6025,7 +6025,6 @@ function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)
 	stage.count = index
 	stage.kinds[index] = kind
 	stage.routes[index] = route
-	stage.routeIds[index] = routeId
 	stage.requestIds[index] = 0
 	stage.args[index] = nil
 	stage.groups[index] = 1
@@ -6042,7 +6041,6 @@ function Internal.releaseBitFrameStage(stage)
 	if actionCount > Config.MaxPooledBitFrameActions then return end
 	table.clear(stage.kinds)
 	table.clear(stage.routes)
-	table.clear(stage.routeIds)
 	table.clear(stage.requestIds)
 	table.clear(stage.args)
 	table.clear(stage.groups)
@@ -6050,7 +6048,7 @@ function Internal.releaseBitFrameStage(stage)
 	table.clear(stage.scalarValues)
 	stage.count = 0
 	local pool = Internal.BitFrameStagePool
-	if #pool < Config.MaxBatchPoolSize then pool[#pool + 1] = stage end
+	if #pool < Config.MaxBitFrameStagePoolSize then pool[#pool + 1] = stage end
 end
 
 function Internal.commitBitFrameStage(player, stage)
@@ -6058,7 +6056,7 @@ function Internal.commitBitFrameStage(player, stage)
 	for i = 1, stage.count do
 		local kind = stage.kinds[i]
 		local route = stage.routes[i]
-		local routeId = stage.routeIds[i]
+		local routeId = if route then route.Id else 0
 		local requestId = stage.requestIds[i]
 		local args = stage.args[i]
 		stage.args[i] = nil
@@ -7445,6 +7443,7 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxBatchPoolSize) == "number" and config.MaxBatchPoolSize >= 0, "MaxBatchPoolSize must be >= 0")
 	assert(type(config.MaxPooledPackedValues) == "number" and isInteger(config.MaxPooledPackedValues) and config.MaxPooledPackedValues >= 0 and config.MaxPooledPackedValues <= 8192, "MaxPooledPackedValues must be between 0 and 8192")
 	assert(type(config.MaxPooledBitFrameActions) == "number" and isInteger(config.MaxPooledBitFrameActions) and config.MaxPooledBitFrameActions >= 0 and config.MaxPooledBitFrameActions <= 65535, "MaxPooledBitFrameActions must be an integer from 0 to 65535")
+	assert(type(config.MaxBitFrameStagePoolSize) == "number" and isInteger(config.MaxBitFrameStagePoolSize) and config.MaxBitFrameStagePoolSize >= 0 and config.MaxBitFrameStagePoolSize <= 64, "MaxBitFrameStagePoolSize must be an integer from 0 to 64")
 	assert(type(config.MaxTargetsPerFlush) == "number" and config.MaxTargetsPerFlush >= 1, "MaxTargetsPerFlush must be >= 1")
 	assert(type(config.MaxIncomingMessagesPerSecond) == "number" and config.MaxIncomingMessagesPerSecond >= 1, "MaxIncomingMessagesPerSecond must be >= 1")
 	assert(type(config.MaxIncomingBytesPerSecond) == "number" and config.MaxIncomingBytesPerSecond >= 1, "MaxIncomingBytesPerSecond must be >= 1")
@@ -8136,6 +8135,7 @@ function NetStream.GetMemoryDiagnostics()
 		AllWriterPoolsBytes = writerBytes + legacyBytes + scratchBytes,
 		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
 		BitFrameStagePoolSize = #Internal.BitFrameStagePool,
+		MaxBitFrameStagePoolSize = Config.MaxBitFrameStagePoolSize,
 		MaxPooledBitFrameActions = Config.MaxPooledBitFrameActions,
 		BitFrameStagePoolHits = Stats.BitFrameStagePoolHits,
 		BitFrameAtomicRejectedPackets = Stats.BitFrameAtomicRejectedPackets,
