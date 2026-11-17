@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.37")
+assert(NetStream.GetVersion() == "2.6.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, HybridSmallPacketMaxBits = 512})
 local T = NetStream.Types
 local FloatPair = NetStream.Event("__NSBinaryF64", {Id = 35721, Schema = {T.F64, T.F64}, Compression = false})
@@ -11,7 +11,7 @@ local done = false
 Ack:Connect(function(count)
     assert(count == 80, "Binary precision packets were lost")
     done = true
-    print("NetStream 2.3.37 binary precision PASS")
+    print("NetStream 2.6.0 binary precision PASS")
 end)
 for i = 1, 80 do
     assert(FloatPair:FireServer(i * 0.125 - 20, 1 / (i + 1)), "F64 enqueue failed")

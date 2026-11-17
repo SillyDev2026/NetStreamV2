@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.3.37")
+assert(NetStream.GetVersion() == "2.6.0")
 NetStream.Configure({BitFrameMaxBytes = 1024, BandwidthGovernorEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false, HandshakeEnabled = false})
 local oversized = NetStream.Event("__NSOversizedFrame", {Id = 35220, Compression = false})
 local valid = NetStream.Event("__NSFrameRecovery", {Id = 35221, Compression = false})
@@ -16,7 +16,7 @@ ack:Connect(function(tailRejected)
 	assert(stats.BitFrameEncodeFailures >= 1, "Oversized BitFrame did not fail")
 	assert(stats.BitFrameWriterPoolHits > 0, "Writer failed to return to pool after encode error")
 	done = true
-	print("NetStream 2.3.37 BitFrame padding and writer recovery PASS")
+	print("NetStream 2.6.0 BitFrame padding and writer recovery PASS")
 end)
 remote:FireServer(buffer.create(2)) -- Invalid: 15 zero bits follow the end-of-frame marker.
 assert(oversized:FireServer(string.rep("X", 1500)), "Could not enqueue oversized test payload")
