@@ -1,6 +1,25 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.6.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.9.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.9.0 — Rejected schema payloads without args-table allocations
+
+- Add `Internal.bitFrameDiscardSchemaArgs` to consume rate-limited BitFrame schema data while preserving schema field validation.
+- Skip U8 runs and packed booleans via bounds-checked bit-position advancement, avoiding per-field allocations and individual reads.
+- Use the discard fast path for rejected schema event runs and rejected schema RPC/state messages.
+- Add `BitFrameDiscardedSchemaArgs` diagnostics and paired `HeapDiscardRegression` Studio tests.
+
+## v2.8.0 — Five-table compact atomic staging
+
+- Replace scalar `flags` and `values` parallel staging arrays with a signed group tag and the existing argument slot.
+- Preserve nil scalar handling and FIFO semantics, while skipping argument-table release for scalar slots.
+- Reduce parallel staging tables from eight in v2.6.0 to five in v2.8.0.
+
+## v2.7.0 — Leaner route storage and bounded stage pooling
+
+- Remove redundant route ID table from atomic BitFrame stages, retrieving the registered route `Id` at commit.
+- Cap pooled staging objects independently with `MaxBitFrameStagePoolSize` (default 8), instead of sharing the 64-object generic batch cap.
+- Add stage pool configuration to memory diagnostics and paired `StagePoolMemoryRegression` Studio tests.
 
 ## v2.6.0 — Allocation-free scalar staging and unsigned integer encoding
 

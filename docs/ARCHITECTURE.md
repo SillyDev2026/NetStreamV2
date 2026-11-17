@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v2.6.0, BitFrame v1, Compression v2.3.5 (codec 230).**
+**Applies to NetStream v2.9.0, BitFrame v1, Compression v2.3.5 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -167,3 +167,7 @@ For a repeatable test procedure, see [BENCHMARKING.md](BENCHMARKING.md). For fut
 ## Atomic BitFrame receive path (v2.4+)
 
 Incoming BitFrame data passes through a protected one-pass decoder that stages routes, kinds, request identifiers, argument objects and scalar values in reusable parallel arrays. It checks the end marker and terminal padding before applying rate limits and committing events, RPC work or state updates. Invalid frames release pending staged arguments without partial dispatch. v2.5 bounds idle staging memory to avoid a large packet leaving a large pooled scratch allocation; v2.6 specializes scalar staging for small dynamic values and one-field U8/Bool schemas. Parsing errors cannot undo any effects that are intentionally committed by other, previously validated packets. The legacy decoder is unchanged.
+
+### v2.9.0 memory behavior
+
+Atomic BitFrame staging retains five parallel arrays rather than the original eight. Committed routes supply their own `Id`. Scalar values occupy the existing argument slot, marked by negative group count, with nil preserved as an absent array value and the group tag retaining scalar identity. At most eight idle stages are pooled by default; oversized batches still respect `MaxPooledBitFrameActions`. Rate-limited schema input is parsed without materializing an argument table, yet field readers continue validating mixed-schema values.

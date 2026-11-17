@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v2.6.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v2.9.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
-## New minor-version optimization sequence (source-level)
+## Latest minor-version heap/overhead cycle (source-level)
+
+| Release | Focus | Verification |
+|---|---|---|
+| 2.7.0 | Eliminate duplicate route ID arrays, cap atomic stage pooling at eight | Source-level; Studio pending |
+| 2.8.0 | Pack scalar values and flag into existing stage slots, five-table staging | Source-level; Studio pending |
+| 2.9.0 | Drop rate-limited schema tuples without argument allocations | Source-level; Studio pending |
+
+## Previous minor-version optimization sequence (source-level)
 
 | Release | Scope | Status |
 |---|---|---|

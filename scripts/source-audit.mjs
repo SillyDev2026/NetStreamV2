@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "2.6.0";
+const version = "2.9.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -30,7 +30,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 45, "Regression suite unexpectedly missing");
+assert(tests.length >= 49, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -70,8 +70,20 @@ assert(source.includes("if actionCount > Config.MaxPooledBitFrameActions then re
 assert(source.includes("function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)"), "Allocation-free scalar staging missing");
 assert(source.includes("Internal.BitFrameWriter.varUInt = Internal.BitFrameWriter.adaptiveUInt"), "BitFrame varUInt alias missing");
 assert(source.includes("byte < 128 then"), "One-byte varUInt fast path missing");
+assert(source.includes("MaxBitFrameStagePoolSize = 8,"), "Bounded stage-pool size default missing");
+assert(source.includes("if #pool < Config.MaxBitFrameStagePoolSize then"), "Stage pool incorrectly shares generic batch pool limit");
+assert(source.includes("local routeId = if route then route.Id else 0"), "Commit must reuse route ID instead of storing a parallel array");
+assert(!source.includes("stage.routeIds"), "Redundant stage route ID table still retained");
+assert(!/stage\.(scalarFlags|scalarValues)/.test(source), "Scalar stages must not allocate separate flag/value tables");
+assert(source.includes("stage.groups[index] = -1"), "Scalar tag must distinguish nil from args tables");
+assert(source.includes("if stage.groups[i] >= 0 and args then releaseArgs(args) end"), "Cleanup must not release a scalar as an args table");
+assert(source.includes("function Internal.bitFrameDiscardSchemaArgs(reader, schema)"), "Allocation-free rejected schema parser missing");
+assert(source.includes("reader.bitPosition += bits"), "Homogeneous U8 reject path should skip bits without constructing fields");
+assert(source.includes("Stats.BitFrameDiscardedSchemaArgs += 1"), "Rejected schema decode counter missing");
+assert(source.includes("for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end"), "Rejected schema runs must use allocation-free skip");
 
-for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression"]) {
+
+for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression"]) {
     assert(tests.includes(pair + ".client.lua") && tests.includes(pair + ".server.lua"), `Missing Studio regression pair: ${pair}`);
 }
 
@@ -145,6 +157,24 @@ for (const value of [NaN, Infinity, -Infinity, 0, -0, 1, -3.5, Number.MAX_VALUE]
     assert.equal(Number.isFinite(data.getFloat64(0, true)), Number.isFinite(value));
 }
 
-for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0"]) assert(read("docs/CHANGELOG.md").includes(label));
+// Model the signed-group scalar layout including nil and repeated schema runs.
+for (let run = 0; run < 5000; run++) {
+    const messageCount = 1 + random() % 48;
+    const originals = [];
+    const staged = [];
+    for (let index = 0; index < messageCount; index++) {
+        const scalar = (random() % 3) === 0;
+        const value = scalar ? [null, false, 0, 127, "tiny"][random() % 5] : [random() % 255, index];
+        const group = scalar ? -1 : (index === 0 ? messageCount : 0);
+        originals.push({scalar, value, group});
+        staged.push({args:value, group});
+    }
+    for (let index = 0; index < staged.length; index++) {
+        assert.equal(staged[index].group < 0, originals[index].scalar, "Scalar group tag changed");
+        assert.deepEqual(staged[index].args, originals[index].value, "Stage payload lost data (including nil)");
+    }
+}
+
+for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0"]) assert(read("docs/CHANGELOG.md").includes(label));
 assert(read("README.md").includes(`v${version}`));
-console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser checks, ${tests.length} Studio-script static scans`);
+console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + signed-scalar models, ${tests.length} Studio-script static scans`);

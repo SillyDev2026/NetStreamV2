@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v2.6.0-2563eb)
+![Release](https://img.shields.io/badge/release-v2.9.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v2.6.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.6.0 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v2.9.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.9.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **2.9.0** | Validate and skip rejected binary schema payloads without allocating temporary argument arrays |
+| **2.8.0** | Pack scalar stage flags/values into existing argument/group slots; preserve nil and FIFO |
+| **2.7.0** | Remove duplicate staged route ID arrays; independently cap pooled decoder staging at 8 objects |
 | **2.6.0** | Zero-argument-table scalar staging for tiny dynamic and single schema U8/Bool events/states; one-byte varUInt writer fast path |
 | **2.5.0** | Bound atomic stage pool retention; add malformed-packet statistics; optimize 1-byte varUInt decode |
 | **2.4.0** | Atomic BitFrame decode staging: validate full packet and tail before delivering events, RPC, or state changes |
@@ -320,3 +323,11 @@ New standalone Roblox Studio test pairs: `StateThrottleRegression` (rejected sta
 **2.6.0 — Scalar specialization.** Tiny one-value dynamic events/states and single U8/Bool schema events/states stage direct values without creating argument tables, then use scalar dispatch. BitFrame uint encoding specializes 0–127 in one byte.
 
 Dedicated paired Studio tests `AtomicPacketRegression` (malformed tail + successful recovery) and `AtomicScalarRegression` (nil, booleans, integers, string, schema U8/Bool and state) were added. **GitHub CI compiles Luau but cannot run Roblox networking or measure RTT, CPU p95, or heap.** Profile against v2.3.37 in the same Roblox Studio session and traffic conditions.
+
+## v2.7.0–v2.9.0: staged heap and CPU optimization
+
+- **2.7.0:** `Internal.BitFrameStagePool` no longer allocates a redundant `routeIds` array for every staging object: a registered route already exposes its `Id`. The new `MaxBitFrameStagePoolSize` defaults to **8**, independently from the 64-entry generic batch pool cap. `GetMemoryDiagnostics()` reports the pool cap.
+- **2.8.0:** Scalar events and states are staged using the existing `args` slot and a negative `groups` value. This preserves **nil**, false, numbers and strings without separate scalar flag/value arrays. The atomic staging object now has **five parallel arrays instead of eight**; this is a structural reduction, not a measured whole-VM heap reduction.
+- **2.9.0:** When an incoming schema payload fails message-rate validation, `bitFrameDiscardSchemaArgs` still validates framing without creating an argument array. Packed boolean payloads and fixed U8 runs skip bits directly after a bounds check. Mixed fields still use their normal field readers to preserve validation. `BitFrameDiscardedSchemaArgs` counts discarded schema tuples.
+
+New isolated Roblox Studio test pairs: `HeapDiscardRegression` and `StagePoolMemoryRegression`. The source audit now verifies 5,000 randomized signed-group staging models as well as existing layout/varuint tests. Test CPU p95, allocations, full Luau heap and packet p95/p99 in Studio before claiming a performance gain.

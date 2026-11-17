@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v2.3.37. **Candidate:** v2.6.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v2.6.0. **Candidate:** v2.9.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,8 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `HeapDiscardRegression` | Prove rejected U8/packed-boolean schema messages validate without args-table materialization |
+| `StagePoolMemoryRegression` | Validate stage pool cap zero and 16 scalar packets without retaining idle stages |
 | `AtomicPacketRegression` | Stage a valid state frame with corrupt padding; confirm no dispatch/state mutation; then recover |
 | `AtomicScalarRegression` | Test tiny scalars including nil, schema U8/Bool, scalar states and response |
 | `StateThrottleRegression` | Schema and dynamic state rate-limits reject state mutation |
@@ -132,3 +134,9 @@ Run each paired Studio regression in a **separate Play session**, then execute `
 | Studio RTT p95/p99 and Luau heap | Measure | Measure | Measure | Measure |
 
 Run paired Studio scripts **separately**, checking server and client Output for PASS and unexpected warnings. For performance claims use controlled identical workloads, garbage-collection stabilization, and a minimum of several trials per release; CI source checks alone do not quantify a speed-up.
+
+## 2.6.0 → 2.9.0 memory and CPU comparison
+
+Run `AtomicPacketRegression`, `AtomicScalarRegression`, `HeapDiscardRegression`, and `StagePoolMemoryRegression` as separate Play sessions; compare the two versions under identical packet payloads and settings. Verify `BitFrameDiscardedSchemaArgs` for rejected traffic. Record idle `BitFrameStagePoolSize`, `BitFrameWriterPooledBytes`, `gcinfo()` after garbage-collection stabilization, decoded messages, CPU encode/decode p95, queue p95, packet p95 bytes, and RTT p95/p99.
+
+Static checks confirm structural changes and binary layouts, not actual runtime memory reductions or ping improvements.
