@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.4.0"
+local VERSION = "3.5.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -273,10 +273,13 @@ local DEFAULTS = {
 	ImmediateFlushBudgetSeconds = 0.004,
 	TimeoutSweepInterval = 0.25,
 	MaxPoolSize = 2048,
+	MaxArgsPoolSize = 512,
+	MaxMessagePoolSize = 512,
 	MaxPooledArgs = 32,
 	MaxPooledWriterBytes = 128 * 1024,
 	MaxPooledStrings = 2048,
 	MaxBatchPoolSize = 64,
+	MaxPooledBatchItems = 512,
 	MaxPooledPackedValues = 64,
 	MaxPooledBitFrameActions = 64,
 	MaxBitFrameStagePoolSize = 8,
@@ -417,6 +420,7 @@ local readerPool = {}
 local messagePool = {}
 local argsPool = {}
 local batchPool = {}
+local unpooledBatches = setmetatable({}, {__mode = "k"})
 local packedValuePool = {}
 local globalIncomingRate = nil
 Internal.bandwidthStates = {}
@@ -603,6 +607,9 @@ local Stats = {
 	BitFrameDiscardedFixedBits = 0,
 	BitFrameBulkDiscardedRuns = 0,
 	BitFrameRejectedDynamicArgsAvoided = 0,
+	BatchPoolOversizeDrops = 0,
+	ArgsPoolLimitDrops = 0,
+	MessagePoolLimitDrops = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -3403,10 +3410,9 @@ local function releasePackedValues(values, usedCount)
 		Stats.PackedValuePoolOversizeDrops += 1
 		return
 	end
+	if #packedValuePool >= Config.MaxBatchPoolSize then return end
 	table.clear(values)
-	if #packedValuePool < Config.MaxBatchPoolSize then
-		packedValuePool[#packedValuePool + 1] = values
-	end
+	packedValuePool[#packedValuePool + 1] = values
 end
 local function releaseArgs(args)
 	if not args or args == EMPTY_ARGS or args == TRUE_ARGS or args == FALSE_ARGS then
@@ -3417,8 +3423,10 @@ local function releaseArgs(args)
 		args[i] = nil
 	end
 	args.n = 0
-	if n <= Config.MaxPooledArgs and #argsPool < Config.MaxPoolSize then
+	if n <= Config.MaxPooledArgs and #argsPool < math.min(Config.MaxPoolSize, Config.MaxArgsPoolSize) then
 		argsPool[#argsPool + 1] = args
+	else
+		Stats.ArgsPoolLimitDrops += 1
 	end
 end
 
@@ -3536,8 +3544,10 @@ releaseMessage = function(message)
 	message.runCount = nil
 	message.runLimit = nil
 	message.fieldCount = nil
-	if #messagePool < Config.MaxPoolSize then
+	if #messagePool < math.min(Config.MaxPoolSize, Config.MaxMessagePoolSize) then
 		messagePool[#messagePool + 1] = message
+	else
+		Stats.MessagePoolLimitDrops += 1
 	end
 end
 
@@ -4861,6 +4871,11 @@ local function sendBatch(target, unreliable, data)
 end
 
 local function acquireBatch(limit)
+	if limit > Config.MaxPooledBatchItems then
+		local items = table.create(limit)
+		unpooledBatches[items] = true
+		return items
+	end
 	local items = batchPool[#batchPool]
 	if items then
 		batchPool[#batchPool] = nil
@@ -4872,10 +4887,15 @@ local function acquireBatch(limit)
 end
 
 local function releaseBatch(items)
-	table.clear(items)
-	if #batchPool < Config.MaxBatchPoolSize then
-		batchPool[#batchPool + 1] = items
+	local oversized = unpooledBatches[items] == true
+	if oversized then unpooledBatches[items] = nil end
+	if oversized or #items > Config.MaxPooledBatchItems then
+		Stats.BatchPoolOversizeDrops += 1
+		return
 	end
+	if #batchPool >= Config.MaxBatchPoolSize then return end
+	table.clear(items)
+	batchPool[#batchPool + 1] = items
 end
 
 local function collectBatch(queue, latest, limit)
@@ -6078,14 +6098,15 @@ function Internal.releaseBitFrameStage(stage)
 		if stage.groups[i] >= 0 and args then releaseArgs(args) end
 	end
 	if actionCount > Config.MaxPooledBitFrameActions then return end
+	local pool = Internal.BitFrameStagePool
+	if #pool >= Config.MaxBitFrameStagePoolSize then return end
 	table.clear(stage.kinds)
 	table.clear(stage.routes)
 	table.clear(stage.requestIds)
 	table.clear(stage.args)
 	table.clear(stage.groups)
 	stage.count = 0
-	local pool = Internal.BitFrameStagePool
-	if #pool < Config.MaxBitFrameStagePoolSize then pool[#pool + 1] = stage end
+	pool[#pool + 1] = stage
 end
 
 function Internal.commitBitFrameStage(player, stage)
@@ -7490,10 +7511,13 @@ function Internal.validateConfig(config)
 	assert(type(config.ImmediateFlushBudgetSeconds) == "number" and isFiniteNumber(config.ImmediateFlushBudgetSeconds) and config.ImmediateFlushBudgetSeconds > 0, "ImmediateFlushBudgetSeconds must be a finite number > 0")
 	assert(type(config.TimeoutSweepInterval) == "number" and config.TimeoutSweepInterval > 0, "TimeoutSweepInterval must be > 0")
 	assert(type(config.MaxPoolSize) == "number" and config.MaxPoolSize >= 0, "MaxPoolSize must be >= 0")
+	assert(type(config.MaxArgsPoolSize) == "number" and isInteger(config.MaxArgsPoolSize) and config.MaxArgsPoolSize >= 0 and config.MaxArgsPoolSize <= 8192, "MaxArgsPoolSize must be an integer from 0 to 8192")
+	assert(type(config.MaxMessagePoolSize) == "number" and isInteger(config.MaxMessagePoolSize) and config.MaxMessagePoolSize >= 0 and config.MaxMessagePoolSize <= 8192, "MaxMessagePoolSize must be an integer from 0 to 8192")
 	assert(type(config.MaxPooledArgs) == "number" and config.MaxPooledArgs >= 0, "MaxPooledArgs must be >= 0")
 	assert(type(config.MaxPooledWriterBytes) == "number" and config.MaxPooledWriterBytes >= 512, "MaxPooledWriterBytes must be >= 512")
 	assert(type(config.MaxPooledStrings) == "number" and config.MaxPooledStrings >= 0, "MaxPooledStrings must be >= 0")
 	assert(type(config.MaxBatchPoolSize) == "number" and config.MaxBatchPoolSize >= 0, "MaxBatchPoolSize must be >= 0")
+	assert(type(config.MaxPooledBatchItems) == "number" and isInteger(config.MaxPooledBatchItems) and config.MaxPooledBatchItems >= 0 and config.MaxPooledBatchItems <= 65535, "MaxPooledBatchItems must be an integer from 0 to 65535")
 	assert(type(config.MaxPooledPackedValues) == "number" and isInteger(config.MaxPooledPackedValues) and config.MaxPooledPackedValues >= 0 and config.MaxPooledPackedValues <= 8192, "MaxPooledPackedValues must be between 0 and 8192")
 	assert(type(config.MaxPooledBitFrameActions) == "number" and isInteger(config.MaxPooledBitFrameActions) and config.MaxPooledBitFrameActions >= 0 and config.MaxPooledBitFrameActions <= 65535, "MaxPooledBitFrameActions must be an integer from 0 to 65535")
 	assert(type(config.MaxBitFrameStagePoolSize) == "number" and isInteger(config.MaxBitFrameStagePoolSize) and config.MaxBitFrameStagePoolSize >= 0 and config.MaxBitFrameStagePoolSize <= 64, "MaxBitFrameStagePoolSize must be an integer from 0 to 64")
@@ -8181,6 +8205,12 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameInitialWriterBytes = Config.BitFrameInitialWriterBytes,
 		BitFrameRetainWriterMaxBytes = Config.BitFrameRetainWriterMaxBytes,
 		PackedValuePoolSize = #packedValuePool,
+		MaxPooledBatchItems = Config.MaxPooledBatchItems,
+		BatchPoolOversizeDrops = Stats.BatchPoolOversizeDrops,
+		MaxArgsPoolSize = Config.MaxArgsPoolSize,
+		MaxMessagePoolSize = Config.MaxMessagePoolSize,
+		ArgsPoolLimitDrops = Stats.ArgsPoolLimitDrops,
+		MessagePoolLimitDrops = Stats.MessagePoolLimitDrops,
 		MaxPooledPackedValues = Config.MaxPooledPackedValues,
 		PackedValuePoolOversizeDrops = Stats.PackedValuePoolOversizeDrops,
 		LegacyWriterPooledBytes = legacyBytes,
@@ -8199,8 +8229,11 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameRejectedDynamicArgsAvoided = Stats.BitFrameRejectedDynamicArgsAvoided,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
+		MaxArgsPoolSize = Config.MaxArgsPoolSize,
+		MaxMessagePoolSize = Config.MaxMessagePoolSize,
 		MessagePoolSize = #messagePool,
 		BatchPoolSize = #batchPool,
+		MaxPooledBatchItems = Config.MaxPooledBatchItems,
 		PooledWriterBytes = writerBytes + legacyBytes,
 		-- gcinfo() reports the current Luau heap broadly, not NetStream-owned memory.
 		LuaHeapKB = gcinfo(),
