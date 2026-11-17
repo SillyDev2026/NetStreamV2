@@ -1,0 +1,27 @@
+--!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
+assert(NetStream.GetVersion() == "2.9.0")
+NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false, MaxIncomingMessagesPerSecond = 1})
+local T = NetStream.Types
+local Bytes = NetStream.Event("__NSHeapDiscardBytes", {Id = 35901, Schema = {T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8}, Compression = false})
+local Bools = NetStream.Event("__NSHeapDiscardBools", {Id = 35902, Schema = {T.Bool, T.Bool, T.Bool}, Compression = false})
+local Ack = NetStream.Event("__NSHeapDiscardAck", {Id = 35903, Schema = {T.U8}, Compression = false})
+local seen = 0
+Bytes:Connect(function(player, a, b, c, d, e, f, g, h)
+    seen += 1
+    assert(seen == 1, "Rate-limited schema payload was dispatched")
+    assert(a == 1 and b == 2 and c == 3 and d == 4 and e == 5 and f == 6 and g == 7 and h == 8, "Accepted U8 schema data corrupted")
+    task.delay(2, function()
+        assert(seen == 1, "Rejected schema traffic changed event delivery")
+        local stats = NetStream.GetStats()
+        assert(stats.BitFrameDiscardedSchemaArgs >= 2, "Expected binary schema-drop allocation optimization")
+        assert(stats.DecodeErrors == 0, "Discarded schema packet should still decode valid framing")
+        assert(Ack:FireClientNow(player, 1), "Heap discard acknowledgement failed")
+        print("NetStream 2.9.0 heap schema discard PASS", stats.BitFrameDiscardedSchemaArgs)
+    end)
+end)
+Bools:Connect(function()
+    error("Rejected packed boolean schema packet was delivered")
+end)
+print("NetStream 2.9.0 discarded-schema server ready")
