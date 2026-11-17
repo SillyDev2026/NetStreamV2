@@ -1,6 +1,14 @@
 # NetStreamV2 Changelog
 
-The current release is **v4.0.1**, using **BitFrame v1** and bundled **Compression v2.4.1** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v4.0.2**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.0.2 — Isolated-send fallback reliability and low-allocation compression
+
+- **NetStream correctness:** During isolated send recovery after batch encoding failure, released slots use `false` instead of `nil`, preserving the original batch length for deferred-tail reconstruction. Addresses potential message loss when a partial retry hits bandwidth throttling.
+- **NetStream FIFO/heap:** Deferred-queue restore reserves nonnegative array indices and shifts remaining pending entries only when the prepend prefix has insufficient room.
+- **Compression 2.4.2:** Shared frozen empty dictionary for no-dictionary/scalar encode and decode; omit scalar seen-table allocation and empty duplicate-dictionary tracking.
+- **Input hardening:** Reject map-key container tags before recursively materializing malformed composite keys. Preserve codec 230, packet headers, canonical varints and primitive map key behavior.
+- **Testing:** Added paired `TransportRecoveryRegression` and standalone `CompressionV242Regression` scripts, deterministic JS queue recovery models, and synchronized version guards. Source checks are not live Studio performance measurements.
 
 ## v4.0.1 — Sustained dispatch-queue bound and lower codec allocation
 

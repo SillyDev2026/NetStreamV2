@@ -138,6 +138,7 @@ type WriterObject = {
 local writerPool: {WriterObject} = {}
 local WRITER_POOL_MAX = 12
 local WRITER_POOL_BYTES = 262144
+local EMPTY_DICTIONARY = table.freeze({})
 
 function Writer.new(initialCapacity: number?): WriterObject
 	local capacity = math.max(64, initialCapacity or 4096)
@@ -513,7 +514,7 @@ end
 
 local function buildDictionary(value: any, options: Options): ({string}, {[string]: number}, number, number)
 	if options.StringDictionary == false or typeof(value) ~= "table" then
-		return {}, {}, 0, 0
+		return EMPTY_DICTIONARY, EMPTY_DICTIONARY, 0, 0
 	end
 
 	local counts: {[string]: number} = {}
@@ -743,6 +744,10 @@ local function readValue(
 		end
 		local output = {}
 		for _ = 1, count do
+			reader:Need(1)
+			local keyTag = buffer.readu8(reader.Buffer, reader.Position)
+			if keyTag == TAG_ARRAY or keyTag == TAG_MAP then error("UNSUPPORTED_MAP_KEY:table") end
+			if keyTag ~= TAG_NIL and keyTag ~= TAG_FALSE and keyTag ~= TAG_TRUE and keyTag ~= TAG_INTEGER and keyTag ~= TAG_NUMBER and keyTag ~= TAG_STRING and keyTag ~= TAG_STRING_REF then error("UNSUPPORTED_MAP_KEY_TAG:" .. tostring(keyTag)) end
 			local key = readValue(reader, dictionary, state, options, depth + 1)
 			if key == nil then error("NIL_MAP_KEY") end
 			local keyType = typeof(key)
@@ -759,7 +764,7 @@ end
 
 -- Returns the codec version exposed to dependent modules.
 function Compression.Version(): string
-	return "2.4.1"
+	return "2.4.2"
 end
 
 -- Returns the stable table codec mode identifier.
@@ -767,7 +772,7 @@ function Compression.TableMode(_value: any, _options: Options?): string
 	return "buffer-v230"
 end
 
--- Encodes using the v2.3 packet format with the v2.3.3 hardened engine.
+-- Encodes the stable codec-230 packet format (Compression 2.4.2 implementation).
 function Compression.CompressTablePacket(value: any, options: Options?): (buffer, Report)
 	local normalized = normalizeOptions(options)
 	local dictionary, lookup, dictionaryBytes, scannedNodes = buildDictionary(value, normalized)
@@ -782,7 +787,8 @@ function Compression.CompressTablePacket(value: any, options: Options?): (buffer
 	end
 
 	local writeState = {Nodes = 0, RawBytes = 0}
-	writeValue(packetWriter, value, lookup, {}, writeState, normalized, 0)
+	local seen = if typeof(value) == "table" then {} else EMPTY_DICTIONARY
+	writeValue(packetWriter, value, lookup, seen, writeState, normalized, 0)
 	local payloadBytes = packetWriter.Position - HEADER_BYTES
 	local checksum = adler32(packetWriter.Buffer, HEADER_BYTES, payloadBytes)
 
@@ -824,7 +830,7 @@ function Compression.CompressTablePacket(value: any, options: Options?): (buffer
 	return output, report
 end
 
--- Decodes and validates a v2.3 packet with allocation and corruption guards.
+-- Decodes and validates a codec-230 packet with allocation and corruption guards.
 function Compression.DecompressTable(source: buffer, options: Options?): any
 	assert(typeof(source) == "buffer", "DecompressTable expects a buffer")
 	if buffer.len(source) < HEADER_BYTES then
@@ -865,15 +871,15 @@ function Compression.DecompressTable(source: buffer, options: Options?): any
 		error("UNEXPECTED_STRING_DICTIONARY")
 	end
 	if flags == 1 and dictionaryCount == 0 then error("EMPTY_STRING_DICTIONARY") end
-	local dictionary = table.create(dictionaryCount)
-	local dictionaryLookup = {}
-	for index = 1, dictionaryCount do
-		local text = reader:String()
-		if dictionaryLookup[text] then
-			error("DUPLICATE_DICTIONARY_ENTRY")
+	local dictionary = if dictionaryCount > 0 then table.create(dictionaryCount) else EMPTY_DICTIONARY
+	if dictionaryCount > 0 then
+		local dictionaryLookup = {}
+		for index = 1, dictionaryCount do
+			local text = reader:String()
+			if dictionaryLookup[text] then error("DUPLICATE_DICTIONARY_ENTRY") end
+			dictionaryLookup[text] = true
+			dictionary[index] = text
 		end
-		dictionaryLookup[text] = true
-		dictionary[index] = text
 	end
 	local value = readValue(reader, dictionary, {Nodes = 0}, normalized, 0)
 	if reader:Remaining() ~= 0 then

@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.1")
+assert(NetStream.GetVersion() == "4.0.2")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, MaxArgsPoolSize = 0, MaxMessagePoolSize = 0, MaxPooledBatchItems = 0})
 local T = NetStream.Types
 local Pulse = NetStream.Event("__NSBoundedPoolPulse", {Id = 36121, Schema = {T.U8}, Compression = false})
@@ -13,7 +13,7 @@ Ack:Connect(function(value)
     assert(stats.BatchPoolSize == 0 and stats.MessagePoolSize == 0 and stats.ArgsPoolSize == 0, "Idle pools retained objects with a zero cap")
     assert(stats.BatchPoolOversizeDrops >= 1, "Oversized batch discard path was not exercised")
     done = true
-    print("NetStream 4.0.1 bounded pool PASS", stats.BatchPoolOversizeDrops)
+    print("NetStream 4.0.2 bounded pool PASS", stats.BatchPoolOversizeDrops)
 end)
 for i = 1, 16 do assert(Pulse:FireServer(i), "Bounded pool enqueue failed") end
 NetStream.Flush()

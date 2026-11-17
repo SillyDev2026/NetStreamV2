@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.0.1, BitFrame v1, Compression v2.4.1 (codec 230).**
+**Applies to NetStream v4.0.2, BitFrame v1, Compression v2.4.2 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 

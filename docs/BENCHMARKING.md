@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v4.0.0. **Candidate:** v4.0.1. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.0.0. **Candidate:** v4.0.2. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -198,3 +198,10 @@ The reference codec ID **230** deliberately does not change. No observed Roblox 
 Start with `CompressionV241Regression.server.lua` for codec parity, mixed map keys, false-valued duplicate-key rejection, malformed nil map value, dictionary-heavy nested-map roundtrips, and small scalar packets. Run `DispatchCompactionRegression.server.lua` with its paired `.client.lua` in a fresh Play session to build a sustained dispatch backlog. Confirm that received callbacks remain increasing, `GetStats().DispatchQueueCompactions > 0`, and there are no unexpected decode failures. This deliberate saturation may drop some dispatch events; it is not a reliable-delivery throughput benchmark.
 
 Compare v4.0.0/Compression 2.4.0 with v4.0.1/Compression 2.4.1 in matched Studio sessions using the existing `BurstSaturationBenchmark`, `PackedScalarRunRegression` and Compression round-trips. Report CPU p50/p95/p99, Luau heap after stable GC, event backlog, queue compaction count, encoded byte parity, and payload integrity. Repeat at least five times. Neither the docs nor GitHub Actions supplies live measurements.
+
+
+## v4.0.2 recovery and codec validation
+
+Run `TransportRecoveryRegression.server.lua` with `TransportRecoveryRegression.client.lua` in a dedicated Studio Play session to exercise an intentionally invalid *trusted* schema event, isolated batch retry, one-packet-per-second throttling, and FIFO delivery of the three valid events. Run `CompressionV242Regression.server.lua` separately to check 600 no-dictionary scalar round-trips, dictionary-rich tables and malformed composite map-key tags.
+
+Compare NetStream v4.0.1/Compression v2.4.1 with v4.0.2/v2.4.2 on identical Roblox Studio loads to measure CPU p95/p99, throughput and heap/GC changes. Do not treat static CI/source modeling as live benchmark results.

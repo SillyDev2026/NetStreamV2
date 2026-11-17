@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.1")
+assert(NetStream.GetVersion() == "4.0.2")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, HybridSmallPacketMaxBits = 512})
 local T = NetStream.Types
 local FloatPair = NetStream.Event("__NSBinaryF64", {Id = 35721, Schema = {T.F64, T.F64}, Compression = false})
@@ -25,4 +25,4 @@ Text:Connect(function(player, value)
     assert(value == expected[textCount], "Hybrid small string changed")
     maybeFinish(player)
 end)
-print("NetStream 4.0.1 binary precision server ready")
+print("NetStream 4.0.2 binary precision server ready")

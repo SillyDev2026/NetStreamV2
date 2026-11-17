@@ -1,9 +1,9 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.1", "Wrong NetStream version")
+assert(NetStream.GetVersion() == "4.0.2", "Wrong NetStream version")
 local Compression = NetStream.Compression
-assert(Compression.Version() == "2.4.1", "Wrong bundled Compression version")
+assert(Compression.Version() == "2.4.2", "Wrong bundled Compression version")
 assert(Compression.CodecVersion == 230 and Compression.Magic == 0x4E433233, "Compression 230 wire format changed")
 
 local samples = {0, 1, 63, 64, 127, 128, 16383, 16384, 65535, 4294967295, 4503599627370495, -1, -64, -127, -4503599627370495}
@@ -52,4 +52,4 @@ assert(not okTrunc and string.find(tostring(errTrunc), "COMPRESSION_TRUNCATED", 
 local okHuge, errHuge = pcall(Compression.DecompressTable, malformedPacket({128, 128, 128, 128, 128, 128, 128, 128, 0}))
 assert(not okHuge and string.find(tostring(errHuge), "VARUINT_TOO_LARGE", 1, true) ~= nil, "Oversized varuint accepted")
 
-print("NetStream 4.0.1 / Compression 2.4.1 regression PASS", "integer_cases", #samples, "pooled_packets", #packets)
+print("NetStream 4.0.2 / Compression 2.4.2 regression PASS", "integer_cases", #samples, "pooled_packets", #packets)

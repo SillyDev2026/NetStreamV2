@@ -1,9 +1,9 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.1")
+assert(NetStream.GetVersion() == "4.0.2")
 local Compression = NetStream.Compression
-assert(Compression.Version() == "2.4.1" and Compression.CodecVersion == 230)
+assert(Compression.Version() == "2.4.2" and Compression.CodecVersion == 230)
 
 local scalars = {false, true, 0, 1, -1, 127, 128, 16384, 32767, 4503599627370495, "small", string.rep("A", 4096)}
 for _, value in ipairs(scalars) do
@@ -41,4 +41,4 @@ local okDuplicate, errDuplicate = pcall(Compression.DecompressTable, wire({0, 8,
 assert(not okDuplicate and string.find(tostring(errDuplicate), "DUPLICATE_MAP_KEY", 1, true) ~= nil, "Duplicate map key with false prior value was accepted")
 local okNil, errNil = pcall(Compression.DecompressTable, wire({0, 8, 1, 5, 1, 65, 0}))
 assert(not okNil and string.find(tostring(errNil), "NIL_MAP_VALUE", 1, true) ~= nil, "Nil map value accepted")
-print("NetStream v4.0.1 Compression v2.4.1 regression PASS", "scalar_cases", #scalars, "map_trials", 1000)
+print("NetStream v4.0.2 Compression v2.4.2 regression PASS", "scalar_cases", #scalars, "map_trials", 1000)

@@ -1,6 +1,14 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.0.1. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.0.2. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.0.2 — recovery bugfix and codec heap cleanup
+
+| Component | Delivered | Studio validation |
+|---|---|---|
+| NetStream retry | Stable false-sentinel batch length on partial send/defer | Isolated-send malformed trusted event + 1 packet/s governor |
+| NetStream queue | Positive FIFO prepend indices, shift pending only if required | Queued and already-pending FIFO restoration |
+| Compression | Shared empty dictionary and early invalid map-key rejection | Scalar round-trips, malformed key packets, heap profiling |
 
 ## v4.0.1 — targeted bugfix/hot-path cleanup
 

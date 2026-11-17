@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.1")
+assert(NetStream.GetVersion() == "4.0.2")
 NetStream.Configure({BitFrameEnabled = false, HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Probe = NetStream.Event("__NSLegacyFiniteProbe", {Id = 35451, Schema = {T.UDim, T.U8}, Compression = false})
@@ -10,7 +10,7 @@ local done = false
 Ack:Connect(function(marker)
     assert(marker == 7, "Legacy float guard ACK corrupted")
     done = true
-    print("NetStream v4.0.1 legacy fixed-schema finite guard PASS")
+    print("NetStream v4.0.2 legacy fixed-schema finite guard PASS")
 end)
 local remote = ReplicatedStorage:WaitForChild("__NetStream_NetStream"):WaitForChild("R")
 local function malformed(highBits)

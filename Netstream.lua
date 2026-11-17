@@ -14,10 +14,9 @@ assert(compressionFamily == "2.3." or compressionFamily == "2.4.", "NetStream v4
 assert(Internal.CompressionCore.CodecVersion == 230 and Internal.CompressionCore.Magic == 0x4E433233, "NetStream requires Compression wire codec 230")
 assert(type(Internal.CompressionCore.CompressTablePacket) == "function" and type(Internal.CompressionCore.DecompressTable) == "function", "NetStream requires the Compression 230 packet API")
 
--- NetStream v2.3 keeps transport bit-packing local and uses Compression v2.3
--- only for optional payload compression. This avoids coupling the wire hot path
--- to a second bitstream implementation and lets Luau's native buffer.readbits /
--- buffer.writebits builtins handle bit I/O directly.
+-- Keep transport BitFrame encoding local; the bundled Compression codec 230
+-- handles optional payload compression without changing the networking wire format.
+-- Native buffer.readbits / buffer.writebits handle the hot-path bit I/O.
 function Internal.compressionOptionsCompat(options)
 	local source = options or {}
 	return {
@@ -213,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.0.1"
+local VERSION = "4.0.2"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -4834,8 +4833,28 @@ function Internal.restoreDeferredItems(queue, latest, items, unreliable, allowPr
 			end
 		end
 	end
-	-- Reverse the surviving FIFO items directly into the queue; no scratch array.
+	-- Reserve nonnegative prefix slots before restoring FIFO items.
 	if not dropOnPressure then
+		local restoreCount = 0
+		for i = 1, #items do
+			local item = items[i]
+			if item and item.latestKey == nil then restoreCount += 1 end
+		end
+		if restoreCount > 0 and queue.head <= restoreCount then
+			local pending = queue.tail - queue.head + 1
+			if pending > 0 then
+				local shift = restoreCount - queue.head + 1
+				for i = queue.tail, queue.head, -1 do
+					queue.items[i + shift] = queue.items[i]
+					queue.items[i] = nil
+				end
+				queue.tail += shift
+				queue.head += shift
+			else
+				queue.head = restoreCount + 1
+				queue.tail = restoreCount
+			end
+		end
 		for i = #items, 1, -1 do
 			local item = items[i]
 			if item and item.latestKey == nil then
@@ -5085,18 +5104,18 @@ function Internal.sendIsolatedMessages(target, unreliable, items)
 				Stats.SentMessages += logical
 				trafficWindowSentMessages += logical
 				releaseMessage(item)
-				items[i] = nil
+				items[i] = false
 			elseif reason == "defer" then
 				return i
 			else
 				releaseMessage(item)
-				items[i] = nil
+				items[i] = false
 			end
 		else
 			Stats.RejectedMessages += 1
 			Internal.debugWarn("Dropped malformed message during batch recovery:", data)
 			releaseMessage(item)
-			items[i] = nil
+			items[i] = false
 		end
 	end
 	return nil

@@ -2,9 +2,9 @@
 -- ServerScriptService: verify the codec writer pool never aliases finished payload buffers.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.1", "Wrong NetStream version")
+assert(NetStream.GetVersion() == "4.0.2", "Wrong NetStream version")
 local Compression = NetStream.Compression
-assert(Compression.Version() == "2.4.1", "Wrong Compression version")
+assert(Compression.Version() == "2.4.2", "Wrong Compression version")
 assert(Compression.CodecVersion == 230, "Codec wire version changed")
 local outputs = table.create(120)
 for i = 1, 120 do
@@ -20,4 +20,4 @@ for i = 1, 120 do
 	assert(decoded.Tags[1] == "A" and decoded.Tags[4] == "B", "Dictionary roundtrip failed")
 	assert(decoded.Enabled == (i % 2 == 0), "Boolean roundtrip failed")
 end
-print("NetStream Compression v2.4.1 pooled-writer 120-packet retention PASS")
+print("NetStream Compression v2.4.2 pooled-writer 120-packet retention PASS")

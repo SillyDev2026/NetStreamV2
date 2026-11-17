@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.0.1-2563eb)
+![Release](https://img.shields.io/badge/release-v4.0.2-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
-![Codec](https://img.shields.io/badge/bundled_compression-2.4.1-0f766e)
+![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v4.0.1.** Bundled child Compression: **v2.4.1**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.0.1 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v4.0.2.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.0.2 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **4.0.2** | Repair isolated retry data-loss and sparse deferred queue indices; reduce Compression no-dictionary allocations and reject invalid composite map keys early |
 | **4.0.1** | Bound dispatch queue indices during sustained backlog; trim Compression map decoding allocations; skip scalar dictionary scan and reduce small writer buffers; regression tests |
 | **4.0.0** | Fast packed Bool/U8/U16 receive preflight; Compression 2.4.0 varint CPU/capacity optimizations, map-key validation, codec-230 compatibility checks and new regression coverage |
 | **3.9.0** | Contiguous outbound batch draining; modulo-free dispatch budget checks; direct packed Bool/U8/U16 run writer and 1–3 field vararg packing; 30,000-message paired Studio benchmark |
@@ -398,3 +399,12 @@ The wire format remains **BitFrame v1**, Compression **v2.3.5** and all existing
 **Validation:** `CompressionV241Regression.server.lua` covers scalar parity, dictionary-heavy nested maps, mixed key types, duplicate false-valued map keys and malformed nil values; `DispatchCompactionRegression.server.lua` plus `.client.lua` exercises sustained backlog with strict FIFO checks. The source audit also models 10,000 dispatch compactions. All test scripts use the patch release version guards. Live Studio results and measured CPU/GC gains are **not** asserted by source CI.
 
 The wire format remains BitFrame v1 and Compression codec 230; the public networking APIs remain unchanged.
+
+
+## v4.0.2 reliability and allocation maintenance
+
+**NetStream:** Isolated batch retry now leaves `false` sentinels instead of nil when it releases completed entries, keeping the batch length stable so later bandwidth deferrals restore the entire remaining suffix. FIFO restoration reserves positive queue indices before prepending and shifts existing entries only when needed. `TransportRecoveryRegression` intentionally uses a malformed trusted event in an isolated Studio test; never send malformed trusted values in production.
+
+**Compression 2.4.2:** The no-dictionary and scalar paths reuse one frozen empty dictionary instead of allocating throwaway tables, and decoding an empty dictionary no longer allocates a duplicate-key map. Map-key tags are checked before recursively decoding composite keys. **Compression codec 230 and NetStream BitFrame v1 are unchanged.**
+
+The new regression scripts are `tests/TransportRecoveryRegression.server.lua` / `.client.lua` and `tests/CompressionV242Regression.server.lua`. GitHub source/syntax CI does not run Roblox Studio tests or establish a speedup.

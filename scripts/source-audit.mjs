@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.0.1";
+const version = "4.0.2";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 69, "Regression suite unexpectedly missing");
+assert(tests.length >= 72, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -42,7 +42,7 @@ for (const name of tests) {
 
 
 const compression = read("Compression.lua");
-assert(compression.includes('return "2.4.1"'), "Bundled compression API version was not advanced");
+assert(compression.includes('return "2.4.2"'), "Bundled compression API version was not advanced");
 assert(compression.includes("Compression.CodecVersion = 230") && compression.includes("Compression.EngineCode = 230") && compression.includes("Compression.Magic = 0x4E433233"), "Compression wire codec 230 must remain unchanged");
 assert(source.includes('compressionFamily == "2.3." or compressionFamily == "2.4."'), "NetStream must support legacy compatible compression module");
 assert(source.includes("Internal.CompressionCore.CodecVersion == 230"), "NetStream must check codec, not only package version");
@@ -213,7 +213,7 @@ for (const name of ["dispatchRoutes", "dispatchPlayers", "dispatchArgs", "dispat
     assert(dispatch.includes(name + "[i] = " + name + "[from]"), "Dispatch compaction must preserve " + name);
     assert(dispatch.includes(name + "[from] = nil"), "Dispatch compaction must clear stale " + name);
 }
-assert(compression.includes('return "2.4.1"'), "Compression release version mismatch");
+assert(compression.includes('return "2.4.2"'), "Compression release version mismatch");
 assert(compression.includes('options.StringDictionary == false or typeof(value) ~= "table"'), "Scalar dictionary work should be skipped");
 assert(!compression.includes("local seenKeys = {}"), "Map decode should not allocate a second map-key table");
 assert(compression.includes("if output[key] ~= nil then error(\"DUPLICATE_MAP_KEY\") end"), "Decode must still reject duplicate primitive keys");
@@ -236,6 +236,64 @@ for (let trial = 0; trial < 10000; trial++) {
     }
     assert.deepEqual(Array.from({length:pending},(_,i)=>store.get(i+1)), initial, "Dispatch compaction changed FIFO or scalar values");
     assert.equal(store.size,pending,"Dispatch compaction retained old sparse indices");
+}
+
+
+const isolatedStart = source.indexOf("function Internal.sendIsolatedMessages(target, unreliable, items)");
+const isolatedEnd = source.indexOf("local function flushChannel(", isolatedStart);
+assert(isolatedStart > 0 && isolatedEnd > isolatedStart, "Isolated-send recovery function missing");
+const isolated = source.slice(isolatedStart, isolatedEnd);
+assert.equal((isolated.match(/items\[i\] = false/g) || []).length, 3, "Every isolated recovery release must retain array length with false sentinels");
+assert(!isolated.includes("items[i] = nil"), "Isolated recovery must not create holes that truncate deferred tail");
+const restoreStart = source.indexOf("function Internal.restoreDeferredItems(");
+const restoreEnd = source.indexOf("local function fireRemote(", restoreStart);
+assert(restoreStart > 0 && restoreEnd > restoreStart, "Deferred FIFO restore function missing");
+const restore = source.slice(restoreStart, restoreEnd);
+for (const snippet of ["local restoreCount = 0", "if restoreCount > 0 and queue.head <= restoreCount then", "for i = queue.tail, queue.head, -1 do", "queue.head = restoreCount + 1"]) assert(restore.includes(snippet), "Safe nonnegative prepend path missing: " + snippet);
+assert(compression.includes("local EMPTY_DICTIONARY = table.freeze({})"), "Shared empty Compression dictionary missing");
+assert(compression.includes("return EMPTY_DICTIONARY, EMPTY_DICTIONARY, 0, 0"), "No-dictionary codec still allocates throwaway maps");
+assert(compression.includes("local seen = if typeof(value) == \"table\" then {} else EMPTY_DICTIONARY"), "Scalar encode still allocates a traversal map");
+assert(compression.includes("local dictionary = if dictionaryCount > 0 then table.create(dictionaryCount) else EMPTY_DICTIONARY"), "No-dictionary decode still allocates an unnecessary array");
+assert(compression.includes('if keyTag == TAG_ARRAY or keyTag == TAG_MAP then error("UNSUPPORTED_MAP_KEY:table") end'), "Composite map-key decoding must reject before any table allocation");
+assert(tests.includes("TransportRecoveryRegression.client.lua") && tests.includes("TransportRecoveryRegression.server.lua") && tests.includes("CompressionV242Regression.server.lua"), "v4.0.2 Studio regressions missing");
+
+// Model isolated send recovery: the completed prefix must never alter tail length/order.
+for (let trial = 0; trial < 10000; trial++) {
+    const len = 2 + random() % 96;
+    const sent = 1 + random() % (len - 1);
+    const items = Array.from({length:len}, (_, i) => ({id:i+1}));
+    for (let i = 0; i < sent; i++) items[i] = false;
+    assert.equal(items.length, len, "Recovery completion shortened the batch");
+    const pending = items.slice(sent).filter(Boolean);
+    assert.deepEqual(pending.map(v=>v.id), Array.from({length:len-sent},(_,i)=>sent+i+1), "Recovery lost or reordered deferred suffix");
+}
+
+// Model FIFO prefix-space reservation in empty and partially occupied queues.
+for (let trial = 0; trial < 10000; trial++) {
+    const restoreCount = 1 + random() % 64;
+    const liveCount = random() % 128;
+    const initialHead = 1 + random() % 48;
+    const pending = Array.from({length:liveCount}, (_, i)=>10000+i);
+    const deferred = Array.from({length:restoreCount}, (_, i)=>i);
+    const slots = new Map();
+    let head = initialHead;
+    let tail = initialHead + liveCount - 1;
+    for (let i = 0; i < liveCount; i++) slots.set(initialHead+i,pending[i]);
+    if (restoreCount > 0 && head <= restoreCount) {
+        if (liveCount > 0) {
+            const shift = restoreCount - head + 1;
+            for (let i = tail; i >= head; i--) { slots.set(i+shift,slots.get(i)); slots.delete(i); }
+            tail += shift;
+            head += shift;
+        } else {
+            head = restoreCount+1;
+            tail = restoreCount;
+        }
+    }
+    for (let i = deferred.length - 1; i >= 0; i--) slots.set(--head,deferred[i]);
+    const ids = Array.from({length:tail-head+1},(_,i)=>slots.get(head+i));
+    assert(head>=1,"Deferred restore created nonpositive sparse queue indices");
+    assert.deepEqual(ids,deferred.concat(pending),"Deferred restore reordered FIFO or lost pending entries");
 }
 
 function put(bytes, position, value) {
