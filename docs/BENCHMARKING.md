@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v2.9.0. **Candidate:** v3.2.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v3.2.0. **Candidate:** v3.5.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,9 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `ScalarThrottleHeapRegression` | Scalar route-level rejection, no argument-table cleanup error, accepted value preserved |
+| `DynamicDiscardHeapRegression` | Globally rejected dynamic args are validated without acquiring an args table |
+| `BoundedPoolRegression` | Idle pool caps set to zero, correct FIFO, no retained batch/args/message tables |
 | `FixedDiscardRegression` | Mixed fixed-width rate-limited schema skipping, float fallback, no unwanted event dispatch |
 | `ExtendedScalarStringRegression` | Numeric U16/I16/U32/I32/F32/F64 scalar events, F64 state, short binary strings |
 | `HeapDiscardRegression` | Prove rejected U8/packed-boolean schema messages validate without args-table materialization |
@@ -146,3 +149,7 @@ Static checks confirm structural changes and binary layouts, not actual runtime 
 ## v3.2.0 comparison protocol
 
 Use separate identical server/client sessions for each paired Studio script. Measure v2.9.0 and v3.2.0 with matching players, event rates, schemas, packets, compression configuration and telemetry sampling. Report server and client Luau heap KB (with stabilized garbage collection), encoded packet bytes p95, encode and decode CPU p95, dispatch/queue p95, RTT p50/p95/p99 and jitter. Source-level CI checks prove syntax and invariants only; they **do not** prove lower network ping, fewer GC cycles, or speed improvements.
+
+## v3.5.0 CPU/heap/GC comparison
+
+Run identical v3.2.0 and v3.5.0 Studio sessions with the same player count, numeric/event schemas, event rate, payload distribution, traffic throttles and compression settings. Include a sustained 10,000-message small-scalar workload, a batched 32–256 message workload, a rejected schema-run workload, and an idle-after-burst period. Collect `GetStats()`, `GetMemoryDiagnostics()`, `GetLatencyStats()`, Lua heap KB (`gcinfo()`), MicroProfiler network decode/dispatch CPU and observed GC pauses. Report p50/p95/p99 and allocation/GC measures as *observations*, not a 1–10 speed rating. Smaller pool caps may raise churn under constant saturation; compare stable throughput before selecting a lower cap.

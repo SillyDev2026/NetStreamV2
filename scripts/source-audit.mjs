@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "3.2.0";
+const version = "3.5.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 53, "Regression suite unexpectedly missing");
+assert(tests.length >= 59, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -89,10 +89,24 @@ assert(source.includes("function Internal.bitFrameReadScalarSchema(reader, kind)
 for (const name of ["SCHEMA_U16", "SCHEMA_I16", "SCHEMA_U32", "SCHEMA_I32", "SCHEMA_F32", "SCHEMA_F64"]) assert(source.includes("if kind == " + name + " then return reader:"), `Scalar fast path missing ${name}`);
 assert(source.includes("BitFrameScalarSchemaReads = stats.BitFrameScalarSchemaReads"), "Scalar hot-path diagnostics missing");
 assert(source.includes("Stats.BitFrameDiscardedSchemaArgs += 1"), "Rejected schema decode counter missing");
-assert(source.includes("for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end"), "Rejected schema runs must use allocation-free skip");
+assert(source.includes("for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end"), "Variable-width rejected schema runs must retain validated fallback");
+assert(source.includes("local totalBits = fixedBits * count"), "Bulk schema rejection must compute exact run bit length");
+assert(source.includes("reader:needBits(totalBits)"), "Bulk schema rejection must bounds-check whole run before advancing");
+assert(source.includes("Stats.BitFrameBulkDiscardedRuns += 1"), "Bulk-rejection CPU counter missing");
+assert(source.includes("elseif not scalar then\n\t\t\t\treleaseArgs(args)"), "Rate-limited scalar values must never pass through argument-table release");
+assert(source.indexOf("Internal.commitBitFrameStage(player, stage)") < source.indexOf("reader._bitFrameStage = nil", source.indexOf("function Internal.decodeBitFrame")), "Decode stage must remain reachable during commit failures");
+assert(!source.includes("dispatchScalarValues"), "Dispatch scalar payloads must share the args/value slot, not a second table");
+assert(source.includes("dispatchArgs[dispatchCount] = value"), "Scalar dispatch payload slot missing");
+assert(source.includes("dispatchScalarFlags[dispatchCount] = true"), "Nil scalar tag must be retained");
+assert(source.includes("Stats.BitFrameRejectedDynamicArgsAvoided += 1"), "Rejected dynamic args fast path missing");
+assert(source.includes("MaxArgsPoolSize = 512") && source.includes("MaxMessagePoolSize = 512") && source.includes("MaxPooledBatchItems = 512"), "Default bounded idle-pool limits missing");
+assert(source.includes("unpooledBatches = setmetatable({}, {__mode = \"k\"})"), "Oversized transient batch tracking must not retain discarded keys");
+assert(source.includes("if #batchPool >= Config.MaxBatchPoolSize then return end"), "Full batch pools must not clear dropped objects");
+assert(source.includes("if #pool >= Config.MaxBitFrameStagePoolSize then return end"), "Full atomic stage pools must not clear dropped objects");
+assert(source.includes("Stats.BatchPoolOversizeDrops += 1"), "Oversized batch drop metric missing");
 
 
-for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression", "FixedDiscardRegression", "ExtendedScalarStringRegression"]) {
+for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression", "FixedDiscardRegression", "ExtendedScalarStringRegression", "ScalarThrottleHeapRegression", "DynamicDiscardHeapRegression", "BoundedPoolRegression"]) {
     assert(tests.includes(pair + ".client.lua") && tests.includes(pair + ".server.lua"), `Missing Studio regression pair: ${pair}`);
 }
 
@@ -184,6 +198,41 @@ for (let run = 0; run < 5000; run++) {
     }
 }
 
-for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "3.0.0", "3.1.0", "3.2.0"]) assert(read("docs/CHANGELOG.md").includes(label));
+
+for (let run = 0; run < 6000; run++) {
+    const width = [0, 1, 8, 16, 24, 32, 48, 64, 129][random() % 9];
+    const count = 2 + random() % 255;
+    const position = random() % 8;
+    const length = position + width * count + (random() % 2 === 0 ? 0 : -1);
+    const bulkValid = position + width * count <= length;
+    let perItemPosition = position;
+    let perItemValid = true;
+    for (let i = 0; i < count; i++) {
+        if (perItemPosition + width > length) { perItemValid = false; break; }
+        perItemPosition += width;
+    }
+    assert.equal(bulkValid, perItemValid, "Bulk fixed-schema skip accepted an invalid truncated run");
+    if (bulkValid) assert.equal(perItemPosition, position + width * count, "Bulk discard consumed different bits");
+}
+const scalarSamples = [undefined, null, true, false, 0, 255, -1337, "abc", "", 1 / 4];
+for (let run = 0; run < 3000; run++) {
+    const flags = [], payloads = [], expected = [];
+    const size = 1 + random() % 48;
+    for (let i = 1; i <= size; i++) {
+        const scalar = random() % 2 === 0;
+        const value = scalarSamples[random() % scalarSamples.length];
+        flags[i] = scalar || undefined;
+        payloads[i] = value;
+        expected.push({scalar, value});
+    }
+    for (let i = 1; i <= size; i++) {
+        assert.equal(flags[i] === true, expected[i - 1].scalar, "Scalar and args queue tags diverged");
+        assert.equal(payloads[i], expected[i - 1].value, "Unified dispatch queue corrupted payload or nil");
+        payloads[i] = undefined;
+        flags[i] = undefined;
+    }
+}
+
+for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "3.0.0", "3.1.0", "3.2.0", "3.3.0", "3.4.0", "3.5.0"]) assert(read("docs/CHANGELOG.md").includes(label));
 assert(read("README.md").includes(`v${version}`));
-console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + signed-scalar models, fixed-discard and numeric scalar guards, ${tests.length} Studio-script static scans`);
+console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + signed-scalar models, fixed-discard, numeric scalar, CPU, heap and GC pool guards, ${tests.length} Studio-script static scans`);

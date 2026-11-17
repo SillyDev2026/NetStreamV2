@@ -1,6 +1,28 @@
 # NetStreamV2 Changelog
 
-The current release is **v3.2.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v3.5.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v3.5.0 — Bounded retained pools and reduced cleanup work
+
+- Add independent, validated defaults `MaxArgsPoolSize=512` and `MaxMessagePoolSize=512` (both still respect `MaxPoolSize`) to cap idle argument/message allocations retained after bursts.
+- Add `MaxPooledBatchItems=512`; track oversized transient batches through a weak-key set so they are never retained even if split down to a small live count.
+- Skip `table.clear` when batch, packed-value or BitFrame stage pools are already full. Keep old cleanup when objects actually reenter a pool.
+- Add `ArgsPoolLimitDrops`, `MessagePoolLimitDrops`, `BatchPoolOversizeDrops` and memory diagnostics; add `BoundedPoolRegression` Studio pair.
+- These caps trade some allocation churn under sustained peaks for reduced idle retained heap. Measure GC and CPU before lowering them further.
+
+## v3.4.0 — Consolidated scalar dispatch and allocation-free rejected dynamic args
+
+- Remove the `dispatchScalarValues` queue array; store scalar payloads in `dispatchArgs` and use the existing scalar flag to distinguish `nil` from regular argument arrays.
+- For globally rejected dynamic multi-value frames and RPC returns, consume and validate fields without acquiring an arguments table.
+- Track `BitFrameRejectedDynamicArgsAvoided`; add `DynamicDiscardHeapRegression` tests.
+
+## v3.3.0 — Bulk fixed schema drop and scalar rate-limit hardening
+
+- Compute the exact bit length of an entire rejected fixed-width schema run, preflight once, advance once, and preserve schema discard counters.
+- Keep variable-width/domain-validated values on individual validating decoders.
+- Fix route-level scalar rejection so numbers/bools are not passed to `releaseArgs` as Lua tables.
+- Keep the BitFrame stage referenced through commit for cleanup if a commit action fails.
+- Add `BitFrameBulkDiscardedRuns` and `ScalarThrottleHeapRegression` Studio pair.
 
 ## v3.2.0 — Single numeric schemas without allocated argument tables
 

@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v3.2.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v3.5.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
-## Latest minor-version heap/overhead cycle (source-level)
+## Latest CPU / heap / GC optimization cycle (source-level)
+
+| Release | Focus | Verification |
+|---|---|---|
+| 3.3.0 | Bulk discarded-schema runs and safe route-level scalar throttling | Source-level; Studio pending |
+| 3.4.0 | Single scalar dispatch payload table and fewer rejected dynamic args acquisitions | Source-level; Studio pending |
+| 3.5.0 | Cap retained idle pools; avoid clearing discarded oversized batches | Source-level; Studio pending |
+
+## Previous minor-version heap/overhead cycle (source-level)
 
 | Release | Focus | Verification |
 |---|---|---|
@@ -105,3 +113,6 @@ flowchart LR
 - Require a clean source build and Studio multi-client regression run before a production deployment recommendation.
 
 [Current README](../README.md) · [Architecture](ARCHITECTURE.md) · [Benchmark guide](BENCHMARKING.md).
+## After v3.5.0
+
+Prioritize measured per-schema CPU costs, Studio heap-after-burst profiles, and GC pause p95/p99 before adding specialized optimizations. Confirm that lower idle-pool caps do not increase GC spikes during sustained message bursts. Do not claim a competitor speed win without the same-workload test.

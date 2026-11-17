@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v3.2.0, BitFrame v1, Compression v2.3.5 (codec 230).**
+**Applies to NetStream v3.5.0, BitFrame v1, Compression v2.3.5 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -175,3 +175,7 @@ Atomic BitFrame staging retains five parallel arrays rather than the original ei
 ## v3.0.0–v3.2.0 hot-path refinements
 
 `compileSchema` precomputes `discardBits` only when **every** encoded field is a fixed-width, fully representable primitive; rejected packets advance the reader after a single bounds preflight. Floating-point, compressed, domain-restricted and variable-size fields keep normal decoding and validation. Unaligned short strings no longer require a Lua character table. Single-field numeric schema events and states use `scalarKind` and direct scalar staging instead of allocated argument arrays, with non-finite float rejection preserved. These changes do not change the on-wire layout.
+
+## v3.3.0–v3.5.0 CPU, allocation, and GC refinements
+
+The BitFrame parser skips entire rejected fixed-width schema runs after a single preflight; variable-width schemas preserve per-field validation. During commit, route-limited scalar payloads never enter arguments-table cleanup; the active stage remains attached to the reader until commit completes so unexpected errors can release uncommitted argument arrays. The dispatcher stores scalar values in the existing `dispatchArgs` queue, using the scalar flag to distinguish a payload including `nil`. Rejected dynamic multi-argument and return packets validate fields without acquiring args tables. Idle arguments/messages and outgoing batch-array retention are independently bounded. Oversized batches are tracked in a weak-key set and never returned to the batch pool; pools skip clearing objects they will discard. All changes preserve BitFrame v1.
