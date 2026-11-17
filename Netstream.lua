@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.35"
+local VERSION = "2.3.36"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -572,6 +572,7 @@ local Stats = {
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
 	PackedSchemaRunAppends = 0,
+	PackedRunBatchSplits = 0,
 	PackedValuePoolHits = 0,
 	PackedValuePoolOversizeDrops = 0,
 	ScalarDispatches = 0,
@@ -3391,6 +3392,38 @@ local function makePackedRunMessage(route, valueCount, runLimit, ...)
 	return message
 end
 
+function Internal.splitPackedRunMessage(message, keepCount)
+	local fieldCount = message.fieldCount
+	local total = message.runCount
+	assert(message.packedRun and fieldCount > 0 and keepCount >= 1 and keepCount < total, "NetStream packed-run split requires a valid prefix")
+	local suffixCount = total - keepCount
+	local suffixValues = acquirePackedValues(suffixCount * fieldCount)
+	local values = message.packedValues
+	local offset = keepCount * fieldCount
+	for i = 1, suffixCount * fieldCount do
+		suffixValues[i] = values[offset + i]
+		values[offset + i] = nil
+	end
+	local suffix = acquireMessage()
+	suffix.kind = message.kind
+	suffix.id = message.id
+	suffix.request = message.request
+	suffix.args = nil
+	suffix.n = message.n
+	suffix.schema = message.schema
+	suffix.priority = message.priority
+	suffix.latestKey = nil
+	suffix._queuedAt = message._queuedAt
+	suffix.packedRun = true
+	suffix.packedValues = suffixValues
+	suffix.runCount = suffixCount
+	suffix.runLimit = message.runLimit
+	suffix.fieldCount = fieldCount
+	message.runCount = keepCount
+	Stats.PackedRunBatchSplits += 1
+	return suffix
+end
+
 releaseMessage = function(message)
 	if not message then
 		return
@@ -3521,8 +3554,10 @@ end
 
 local function packedRunMaxMessages(schema)
 	local maxRun = Config.MaxBatchMessages
-	if Config.BandwidthGovernorEnabled and schema and schema.fixedBytes and schema.fixedBytes > 0 then
-		local payloadBudget = math.max(schema.fixedBytes, Config.BandwidthMaxPacketBytes - 24)
+	if schema and schema.fixedBytes and schema.fixedBytes > 0 then
+		local packetBudget = math.min(Config.MaxOutgoingBatchBytes, Config.BitFrameMaxBytes)
+		if Config.BandwidthGovernorEnabled then packetBudget = math.min(packetBudget, Config.BandwidthMaxPacketBytes) end
+		local payloadBudget = math.max(schema.fixedBytes, packetBudget - 24)
 		maxRun = math.min(maxRun, math.max(1, math.floor(payloadBudget / schema.fixedBytes)))
 	end
 	return maxRun
@@ -4799,17 +4834,30 @@ end
 function Internal.encodeBandwidthSizedBatch(queue, latest, items, unreliable)
 	local byteBudget = Internal.packetByteBudget(unreliable)
 	local ok, data = Internal.measuredEncodeBatch(items)
-	while ok and #items > 1 and buffer.len(data) > byteBudget do
+	while ok and buffer.len(data) > byteBudget do
 		local originalCount = #items
-		local idealCount = math.floor(originalCount * byteBudget / buffer.len(data))
-		local keepCount = math.max(1, math.min(originalCount - 1, idealCount))
-		local deferred = acquireBatch(originalCount - keepCount)
-		for i = keepCount + 1, originalCount do
-			deferred[#deferred + 1] = items[i]
-			items[i] = nil
+		local originalBytes = buffer.len(data)
+		if originalCount > 1 then
+			local idealCount = math.floor(originalCount * byteBudget / originalBytes)
+			local keepCount = math.max(1, math.min(originalCount - 1, idealCount))
+			local deferred = acquireBatch(originalCount - keepCount)
+			for i = keepCount + 1, originalCount do
+				deferred[#deferred + 1] = items[i]
+				items[i] = nil
+			end
+			Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
+			releaseBatch(deferred)
+		elseif originalCount == 1 and items[1].packedRun and items[1].runCount > 1 then
+			local item = items[1]
+			local idealCount = math.floor(item.runCount * byteBudget / originalBytes)
+			local keepCount = math.max(1, math.min(item.runCount - 1, idealCount))
+			local deferred = acquireBatch(1)
+			deferred[1] = Internal.splitPackedRunMessage(item, keepCount)
+			Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
+			releaseBatch(deferred)
+		else
+			break
 		end
-		Internal.restoreDeferredItems(queue, latest, deferred, unreliable, false)
-		releaseBatch(deferred)
 		Stats.BandwidthBatchSplits += 1
 		ok, data = Internal.measuredEncodeBatch(items)
 	end
