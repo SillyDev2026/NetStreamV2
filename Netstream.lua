@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.9.0"
+local VERSION = "3.0.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -600,6 +600,7 @@ local Stats = {
 	BitFrameAtomicRejectedPackets = 0,
 	BitFrameAtomicDiscardedActions = 0,
 	BitFrameDiscardedSchemaArgs = 0,
+	BitFrameDiscardedFixedBits = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -1934,6 +1935,8 @@ function Internal.compileSchema(spec, label)
 	end
 	local fixedBytes = 0
 	local isFixed = true
+	local discardBits = 0
+	local discardFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	local byteRunU8 = #fields > 1 and #fields <= 32
 	for i = 1, #fields do
@@ -1941,6 +1944,13 @@ function Internal.compileSchema(spec, label)
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
+		local kind = field.Kind
+		if kind == SCHEMA_BOOL then discardBits += 1
+		elseif kind == SCHEMA_U8 then discardBits += 8
+		elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then discardBits += 16
+		elseif kind == SCHEMA_U32 or kind == SCHEMA_I32 then discardBits += 32
+		elseif kind == SCHEMA_COLOR3 then discardBits += 24
+		else discardFixed = false end
 		local fieldBytes = Internal.schemaFixedBytes(field)
 		if fieldBytes then
 			fixedBytes += fieldBytes
@@ -1961,6 +1971,7 @@ function Internal.compileSchema(spec, label)
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
 		byteRunU8 = byteRunU8,
+		discardBits = if discardFixed then discardBits else nil,
 	}
 end
 
@@ -2598,12 +2609,11 @@ end
 function Internal.bitFrameDiscardSchemaArgs(reader, schema)
 	local count = schema.count
 	if count == 0 then return end
-	if schema.bitPackedBooleans or (count == 1 and schema.fields[1].Kind == SCHEMA_BOOL) then
-		reader:bits(count)
-	elseif schema.byteRunU8 then
-		local bits = count * 8
-		reader:needBits(bits)
-		reader.bitPosition += bits
+	local skipBits = schema.discardBits
+	if skipBits ~= nil then
+		reader:needBits(skipBits)
+		reader.bitPosition += skipBits
+		Stats.BitFrameDiscardedFixedBits += skipBits
 	else
 		for i = 1, count do
 			local field = schema.fields[i]
@@ -8152,6 +8162,7 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameAtomicRejectedPackets = Stats.BitFrameAtomicRejectedPackets,
 		BitFrameAtomicDiscardedActions = Stats.BitFrameAtomicDiscardedActions,
 		BitFrameDiscardedSchemaArgs = Stats.BitFrameDiscardedSchemaArgs,
+		BitFrameDiscardedFixedBits = Stats.BitFrameDiscardedFixedBits,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
 		MessagePoolSize = #messagePool,
