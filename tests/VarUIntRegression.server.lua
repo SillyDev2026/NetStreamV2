@@ -41,4 +41,4 @@ local packet = NetStream.Codec.Encode(0, 127, 128, 16384)
 local first, second, third, fourth = NetStream.Codec.Decode(packet)
 assert(first == 0 and second == 127 and third == 128 and fourth == 16384,
     "Codec integer roundtrip changed")
-print("NetStream v3.5.0 varuint input regression PASS")
+print("NetStream v3.8.0 varuint input regression PASS")
