@@ -1,6 +1,14 @@
 # NetStreamV2 Changelog
 
-The current release is **v3.8.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v3.9.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v3.9.0 — Burst throughput, packed hot path and regression benchmarking
+
+- **Send bursts:** Drain adjacent FIFO entries directly from the outbound queue; do the queue logical-count decrement once per batch instead of calling `queuePop` for every entry. Preserve first oversized-run behavior, message order and latest/coalescing semantics.
+- **Receive dispatch:** Switch the dispatch CPU budget check from a modulo operation on every processed event to a 32-event checkpoint. Maintain the same callback order, maximum dispatch count and time budget.
+- **Packed hot path:** Write one-field Bool, U8 and U16 runs directly through a single bit-capacity preflight and bulk buffer bit writes. Preserve exact BitFrame field layout, send-side schema validation and size caps. Optimize one-, two- and three-field value packing without argument tables.
+- **Profiling:** Expose `BitFramePackedScalarRunWrites` via `GetStats()` and add the paired `BurstSaturationBenchmark` with 30,000 reliable logical messages and FIFO/payload assertions. Add JS reference-model source audit for burst-drain invariants.
+- Existing Studio test version guards are synchronized to 3.9.0; the wire format remains BitFrame v1, Compression 2.3.5. **Roblox Studio measured throughput, CPU p95/p99 and GC savings remain unverified.**
 
 ## v3.8.0 — Packed-run high-water memory retention fix
 

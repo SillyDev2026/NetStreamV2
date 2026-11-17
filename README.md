@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v3.8.0-2563eb)
+![Release](https://img.shields.io/badge/release-v3.9.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v3.8.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v3.8.0 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v3.9.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v3.9.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **3.9.0** | Contiguous outbound batch draining; modulo-free dispatch budget checks; direct packed Bool/U8/U16 run writer and 1–3 field vararg packing; 30,000-message paired Studio benchmark |
 | **3.8.0** | Drop oversized packed value tables even after runs are split into smaller prefixes; preserve high-water flags through weak keys |
 | **3.7.0** | Decode packed one-field Bool/U8/U16/I16/U32/I32/F32/F64 runs without per-value args tables; preserve rate-limit grouping |
 | **3.6.0** | Inline BitFrame writer capacity fast path and specialize 1–3 outgoing argument packing |
@@ -366,3 +367,12 @@ Paired Studio scripts: `FixedDiscardRegression` and `ExtendedScalarStringRegress
 - **v3.8.0 — Lower retained heap and GC pressure:** A weak-key high-water set tracks packed value arrays once they exceed `MaxPooledPackedValues`, including while appending or splitting runs. Such arrays cannot be returned to the small-value pool even when the final prefix contains very few values. `PackedValueHighWaterDrops` records these discards. Idle pool configuration and `TrimPools()` remain unchanged.
 
 Paired Studio regression scripts: `PackedScalarRunRegression` and `PackedHighWaterRegression`. These patches retain **BitFrame v1**, existing public routes and **Compression v2.3.5**. GitHub Actions syntax/source checks do not establish faster CPU p95, lower `gcinfo()`, smaller GC pauses, or lower network RTT; measure identical before-and-after Studio loads.
+
+
+## v3.9.0 burst send / receive evaluation
+
+Outbound collection now drains contiguous FIFO entries with one logical-count adjustment per batch, while keeping packed-run indivisibility and latest-value precedence unchanged. Dispatch CPU budget checks use a 32-event checkpoint rather than a modulo operation on every callback. Packed one-field Bool/U8/U16 runs are preflighted and written straight to the buffer, without calling the general schema writer for each item. Tiny fixed-arity packed arguments (1–3 fields) avoid repeated indexed `select` calls.
+
+The wire format remains **BitFrame v1**, Compression **v2.3.5** and all existing public route APIs are retained. `NetStream.GetStats().BitFramePackedScalarRunWrites` counts eligible logical messages encoded through the direct packed-run writer, not all messages, and not a measured speedup.
+
+**Run in Studio:** The paired `tests/BurstSaturationBenchmark.server.lua` / `.client.lua` scripts exercise 10,000 U16, 10,000 Bool and 10,000 U8×8 messages. Run one client at a time initially; check server and client for PASS and compare matched runs against v3.8.0. Use [benchmark instructions](docs/BENCHMARKING.md) to compare p50/p95/p99 CPU, throughput and Luau heap. Source audit and syntax compilation alone cannot prove a throughput or garbage-collection improvement.

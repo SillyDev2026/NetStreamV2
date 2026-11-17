@@ -1,6 +1,14 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v3.8.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v3.9.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v3.9.0 — burst-focused iteration
+
+| Workstream | Delivered | Next check |
+|---|---|---|
+| Batch/dispatch | Direct outbound batch drain; 32-event dispatch time check | Measure FIFO, CPU p95/p99 and pressure under real workloads |
+| Packed sender | Single-preflight Bool/U8/U16 packed writer; 1–3 field inline argument assignment | Compare bytes, CPU, burst rate and allocations vs v3.8.0 |
+| Benchmark/validation | 30k-event paired Studio stress bench; 8k deterministic queue model cases | Execute Studio tests and multi-client benchmarks, do not infer speedups from source CI |
 
 ## Latest CPU / heap / GC optimization cycle (source-level)
 

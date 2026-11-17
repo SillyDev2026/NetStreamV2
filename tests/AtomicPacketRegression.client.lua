@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.8.0")
+assert(NetStream.GetVersion() == "3.9.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local State = NetStream.State("__NSAtomicState", {Id = 35801, Schema = {T.U8}, Compression = false})
@@ -10,7 +10,7 @@ local done = false
 Ack:Connect(function(code)
     assert(code == 1, "Atomic packet test returned an unexpected ACK")
     done = true
-    print("NetStream v3.8.0 atomic packet PASS")
+    print("NetStream v3.9.0 atomic packet PASS")
 end)
 local remote = ReplicatedStorage:WaitForChild("__NetStream_NetStream"):WaitForChild("R")
 assert(remote:IsA("RemoteEvent"), "Reliable NetStream remote missing")

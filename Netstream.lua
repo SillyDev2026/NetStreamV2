@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.8.0"
+local VERSION = "3.9.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -585,6 +585,7 @@ local Stats = {
 	ScalarDispatches = 0,
 	BitFrameScalarSchemaReads = 0,
 	BitFramePackedScalarRunItems = 0,
+	BitFramePackedScalarRunWrites = 0,
 	BitPacketCallsSent = 0,
 	BitPacketCallsReceived = 0,
 	BitPacketHeaderBits = 0,
@@ -3490,12 +3491,27 @@ local function makeMessage(kind, id, request, args, schema, priority)
 	return message
 end
 
+local function fillPackedValues(values, base, count, ...)
+	if count == 1 then
+		values[base + 1] = ...
+	elseif count == 2 then
+		local a, b = ...
+		values[base + 1] = a
+		values[base + 2] = b
+	elseif count == 3 then
+		local a, b, c = ...
+		values[base + 1] = a
+		values[base + 2] = b
+		values[base + 3] = c
+	else
+		for i = 1, count do values[base + i] = select(i, ...) end
+	end
+end
+
 local function makePackedRunMessage(route, valueCount, runLimit, ...)
 	local message = acquireMessage()
 	local values = acquirePackedValues(math.max(8, valueCount))
-	for i = 1, valueCount do
-		values[i] = select(i, ...)
-	end
+	fillPackedValues(values, 0, valueCount, ...)
 	message.kind = KIND_EVENT
 	message.id = route.Id
 	message.request = 0
@@ -3724,9 +3740,7 @@ function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
 		local base = tail.runCount * valueCount
 		local values = tail.packedValues
 		if base + valueCount > Config.MaxPooledPackedValues then unpooledPackedValues[values] = true end
-		for i = 1, valueCount do
-			values[base + i] = select(i, ...)
-		end
+		fillPackedValues(values, base, valueCount, ...)
 		tail.runCount += 1
 		queue.logicalCount += 1
 		Stats.PackedSchemaRunMessages += 1
@@ -4576,8 +4590,30 @@ function Internal.bitFrameWriteOne(writer, item)
 			writer:bits(isRun and 1 or 0, 1)
 			if isRun then
 				writer:adaptiveUInt(item.runCount)
-				for index = 0, item.runCount - 1 do
-					Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.packedValues, index * item.fieldCount)
+				local scalarKind = item.schema.scalarKind
+				if scalarKind == SCHEMA_BOOL or scalarKind == SCHEMA_U8 or scalarKind == SCHEMA_U16 then
+					local width = if scalarKind == SCHEMA_BOOL then 1 elseif scalarKind == SCHEMA_U8 then 8 else 16
+					writer:ensureBits(item.runCount * width)
+					local data = writer.buffer
+					local position = writer.bitPosition
+					local values = item.packedValues
+					if scalarKind == SCHEMA_BOOL then
+						for index = 1, item.runCount do
+							buffer.writebits(data, position, 1, if values[index] then 1 else 0)
+							position += 1
+						end
+					else
+						for index = 1, item.runCount do
+							buffer.writebits(data, position, width, values[index])
+							position += width
+						end
+					end
+					writer.bitPosition = position
+					Stats.BitFramePackedScalarRunWrites += item.runCount
+				else
+					for index = 0, item.runCount - 1 do
+						Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.packedValues, index * item.fieldCount)
+					end
 				end
 				Stats.SchemaMessages += item.runCount
 			else
@@ -4928,27 +4964,39 @@ end
 local function collectBatch(queue, latest, limit)
 	local items = acquireBatch(limit)
 	local logical = 0
-	while logical < limit and queueCount(queue) > 0 do
-		local nextItem = queue.items[queue.head]
-		local nextCount = messageLogicalCount(nextItem)
-		if logical > 0 and logical + nextCount > limit then
-			break
-		end
-		local item = queuePop(queue)
-		if not item then
-			break
-		end
-		items[#items + 1] = item
-		logical += nextCount
+	local consumed = 0
+	local head = queue.head
+	local tail = queue.tail
+	local slots = queue.items
+	local size = 0
+	-- Drain contiguous queue entries without queuePop's per-message accounting.
+	-- An oversized first packed run remains atomic, as before.
+	while logical < limit and head <= tail do
+		local item = slots[head]
+		local count = messageLogicalCount(item)
+		if logical > 0 and logical + count > limit then break end
+		size += 1
+		items[size] = item
+		slots[head] = nil
+		head += 1
+		logical += count
+		consumed += count
+	end
+	if head > tail then
+		queue.head = 1
+		queue.tail = 0
+		queue.logicalCount = 0
+	else
+		queue.head = head
+		queue.logicalCount = math.max(0, queue.logicalCount - consumed)
 	end
 	if logical < limit and next(latest) ~= nil then
 		for key, item in pairs(latest) do
-			items[#items + 1] = item
+			size += 1
+			items[size] = item
 			latest[key] = nil
 			logical += 1
-			if logical >= limit then
-				break
-			end
+			if logical >= limit then break end
 		end
 	end
 	return items
@@ -5447,6 +5495,7 @@ end
 local function runDispatch()
 	local processed = 0
 	local startedAt = os.clock()
+	local budgetCheck = 32
 	while dispatchHead <= dispatchCount and processed < Config.MaxDispatchPerCycle do
 		local index = dispatchHead
 		local route = dispatchRoutes[index]
@@ -5465,8 +5514,9 @@ local function runDispatch()
 			dispatchRoute(route, player, args)
 			releaseArgs(args)
 		end
-		if processed % 32 == 0 and os.clock() - startedAt >= Config.DispatchBudgetSeconds then
-			break
+		if processed == budgetCheck then
+			if os.clock() - startedAt >= Config.DispatchBudgetSeconds then break end
+			budgetCheck += 32
 		end
 	end
 	if dispatchHead > dispatchCount then
@@ -8315,6 +8365,7 @@ function NetStream.GetPerformanceStats()
 		PackedValuePoolHits = stats.PackedValuePoolHits,
 		ScalarDispatches = stats.ScalarDispatches,
 		BitFramePackedScalarRunItems = stats.BitFramePackedScalarRunItems,
+		BitFramePackedScalarRunWrites = stats.BitFramePackedScalarRunWrites,
 		BitFrameScalarSchemaReads = stats.BitFrameScalarSchemaReads,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,

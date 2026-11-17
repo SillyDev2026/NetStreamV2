@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.8.0")
+assert(NetStream.GetVersion() == "3.9.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false, BandwidthGovernorEnabled = true, BandwidthMaxPacketBytes = 48, BandwidthLimitBytesPerSecond = 32768, BandwidthMaxPacketsPerSecond = 240})
 local T = NetStream.Types
 local Packed = NetStream.Event("__NSPackedBudget", {Id = 35711, Schema = {T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8}, Compression = false})
@@ -17,4 +17,4 @@ Packed:Connect(function(player, a, b, c, d, e, f, g, h)
     end
 end)
 game:GetService("Players").PlayerRemoving:Connect(function(player) counts[player] = nil end)
-print("NetStream 3.8.0 packed-budget server ready")
+print("NetStream 3.9.0 packed-budget server ready")

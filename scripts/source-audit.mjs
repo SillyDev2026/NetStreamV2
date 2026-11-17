@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "3.8.0";
+const version = "3.9.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 63, "Regression suite unexpectedly missing");
+assert(tests.length >= 65, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -142,6 +142,46 @@ for (let run = 0; run < 5000; run++) {
     assert.equal(prefix.length / fields + suffix.length / fields, count, "Packed split count changed");
 }
 
+
+
+const batchDrainStart = source.indexOf("local function collectBatch(queue, latest, limit)");
+const batchDrainEnd = source.indexOf("function Internal.packetByteBudget(", batchDrainStart);
+assert(batchDrainStart > 0 && batchDrainEnd > batchDrainStart, "Missing burst batch-drain function");
+const batchDrain = source.slice(batchDrainStart, batchDrainEnd);
+assert(batchDrain.includes("local slots = queue.items") && batchDrain.includes("queue.logicalCount = math.max(0, queue.logicalCount - consumed)"), "Amortized burst queue accounting missing");
+assert(!batchDrain.includes("local item = queuePop(queue)"), "Batch collection regressed to per-message queuePop");
+assert(source.includes("local budgetCheck = 32") && source.includes("if processed == budgetCheck then"), "Dispatch should avoid modulo in burst loop");
+assert(source.includes("local function fillPackedValues(values, base, count, ...)"), "Small fixed-schema vararg packer missing");
+assert(source.includes("Stats.BitFramePackedScalarRunWrites += item.runCount"), "Packed scalar bulk writer counter missing");
+assert(source.includes("writer:ensureBits(item.runCount * width)"), "Packed scalar writer must preflight whole run");
+for (const type of ["SCHEMA_BOOL", "SCHEMA_U8", "SCHEMA_U16"]) assert(source.includes("scalarKind == " + type), "Packed scalar writer missing " + type);
+assert(tests.includes("BurstSaturationBenchmark.server.lua") && tests.includes("BurstSaturationBenchmark.client.lua"), "Paired burst benchmark missing");
+// Reference-model the logical queue contract: a packed run can exceed the limit only as first item.
+for (let trial = 0; trial < 8000; trial++) {
+    const messageCounts = Array.from({length: 1 + random() % 90}, () => 1 + random() % 32);
+    const limit = 1 + random() % 256;
+    let oldIndex = 0;
+    let oldLogical = 0;
+    while (oldLogical < limit && oldIndex < messageCounts.length) {
+        const nextCount = messageCounts[oldIndex];
+        if (oldLogical > 0 && oldLogical + nextCount > limit) break;
+        oldLogical += nextCount;
+        oldIndex++;
+    }
+    let newHead = 0;
+    let newLogical = 0;
+    let consumed = 0;
+    while (newLogical < limit && newHead < messageCounts.length) {
+        const count = messageCounts[newHead];
+        if (newLogical > 0 && newLogical + count > limit) break;
+        newHead++;
+        newLogical += count;
+        consumed += count;
+    }
+    assert.equal(newHead, oldIndex, "Batch drain changed FIFO split");
+    assert.equal(consumed, oldLogical, "Batch drain changed logical counts");
+    assert.equal(messageCounts.slice(newHead).reduce((a, b) => a + b, 0), messageCounts.reduce((a, b) => a + b, 0) - consumed, "Batch drain corrupted pending count");
+}
 
 function put(bytes, position, value) {
     for (let bit = 0; bit < 8; bit++) {

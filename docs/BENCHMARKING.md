@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v3.5.0. **Candidate:** v3.8.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v3.8.0. **Candidate:** v3.9.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -159,3 +159,26 @@ Run identical v3.2.0 and v3.5.0 Studio sessions with the same player count, nume
 ## v3.8.0 CPU / heap / GC comparison
 
 Compare v3.5.0 and v3.8.0 under identical Play Solo and multi-client Studio sessions. Run (a) 10,000 single-, two- and three-value messages; (b) sustained one-field U16 and Bool packed runs; and (c) bursty 96-event U8×8 traffic under a small outbound byte cap. Record per-path CPU p50/p95/p99 with the MicroProfiler, `GetStats().BitFramePackedScalarRunItems`, `GetMemoryDiagnostics().PackedValueHighWaterDrops`, `gcinfo()` before/during/after stable loads, packet bytes and observed garbage collector pauses. Validate callback order, no decoding errors, and rejected packet accounting. No observed results have been prefilled.
+
+
+## v3.9.0 burst throughput validation — run before performance claims
+
+Place `BurstSaturationBenchmark.server.lua` in ServerScriptService and `BurstSaturationBenchmark.client.lua` in StarterPlayerScripts for a clean Play session. Do not simultaneously run other test pairs. Both disable the handshake, compression, fast flushing and bandwidth governor **only for the isolated benchmark**, and enable telemetry. They send 10,000 single U16 messages, 10,000 alternating Bool messages and 10,000 eight-field U8 messages, paced 128 per Heartbeat. On the server, all values and per-route FIFO indices must match exactly; on completion the server acknowledges 30,000 logical messages. Any assertion or timeout is a failed run, not a successful measurement.
+
+1. Run the paired test at v3.8.0 (edit only benchmark version assertions to that baseline if copying these new scripts there); record sender enqueue seconds, encode p50/p95/p99, send bytes, receive decode p50/p95/p99, dispatch p50/p95/p99, queue latency, server/client Luau heap KB and garbage collector pauses from MicroProfiler.
+2. Replace only Netstream.lua with v3.9.0; rerun same settings, hardware, sample rate, Roblox Studio build, network/region and player count. Repeat at least five times, including a cold-start and warmed-pool run, report median and spread.
+3. Repeat with 10 and 25 simulated clients and with governor enabled using real production limits (these paired benchmark defaults intentionally do not validate throughput with the governor on). Keep a separate reliable-versus-unreliable loss test.
+4. Run `PackedScalarRunRegression`, `PackedHighWaterRegression`, `PackedBudgetRegression`, `AtomicPacketRegression` and `BoundedPoolRegression` individually. Confirm atomic decode, rate limits, FIFO, packet splitting and retained memory.
+
+**Interpreting metrics:** `BitFramePackedScalarRunWrites` and `BitFramePackedScalarRunItems` are path counters, not percentages. Client enqueue duration includes deliberately paced Heartbeats and is not true wire throughput. Server receive duration, packet rates, CPU times and MicroProfiler GC pauses must be observed separately. Values are deliberately **not filled in until Studio executes**.
+
+| Metric | v3.8.0 baseline | v3.9.0 candidate |
+|---|---:|---:|
+| Sent + delivered logical messages | — | — |
+| Encode p95/p99 (ms) | — | — |
+| Decode p95/p99 (ms) | — | — |
+| Dispatch p95/p99 (ms) | — | — |
+| Effective receiver messages/sec | — | — |
+| Client + server heap after GC (KiB) | — | — |
+| GC pause p95/p99 (MicroProfiler) | — | — |
+| Malformed packets / drops | — | — |
