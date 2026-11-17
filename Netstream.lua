@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.7.0"
+local VERSION = "2.8.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -6002,7 +6002,7 @@ function Internal.acquireBitFrameStage()
 		pool[#pool] = nil
 		Stats.BitFrameStagePoolHits += 1
 	else
-		stage = {kinds = {}, routes = {}, requestIds = {}, args = {}, groups = {}, scalarFlags = {}, scalarValues = {}, count = 0}
+		stage = {kinds = {}, routes = {}, requestIds = {}, args = {}, groups = {}, count = 0}
 	end
 	stage.count = 0
 	return stage
@@ -6016,8 +6016,6 @@ function Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, ar
 	stage.requestIds[index] = requestId
 	stage.args[index] = args
 	stage.groups[index] = group
-	stage.scalarFlags[index] = false
-	stage.scalarValues[index] = nil
 end
 
 function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)
@@ -6026,17 +6024,15 @@ function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)
 	stage.kinds[index] = kind
 	stage.routes[index] = route
 	stage.requestIds[index] = 0
-	stage.args[index] = nil
-	stage.groups[index] = 1
-	stage.scalarFlags[index] = true
-	stage.scalarValues[index] = value
+	stage.args[index] = value
+	stage.groups[index] = -1
 end
 
 function Internal.releaseBitFrameStage(stage)
 	local actionCount = stage.count
 	for i = 1, actionCount do
 		local args = stage.args[i]
-		if args then releaseArgs(args) end
+		if stage.groups[i] >= 0 and args then releaseArgs(args) end
 	end
 	if actionCount > Config.MaxPooledBitFrameActions then return end
 	table.clear(stage.kinds)
@@ -6044,8 +6040,6 @@ function Internal.releaseBitFrameStage(stage)
 	table.clear(stage.requestIds)
 	table.clear(stage.args)
 	table.clear(stage.groups)
-	table.clear(stage.scalarFlags)
-	table.clear(stage.scalarValues)
 	stage.count = 0
 	local pool = Internal.BitFrameStagePool
 	if #pool < Config.MaxBitFrameStagePoolSize then pool[#pool + 1] = stage end
@@ -6060,11 +6054,11 @@ function Internal.commitBitFrameStage(player, stage)
 		local requestId = stage.requestIds[i]
 		local args = stage.args[i]
 		stage.args[i] = nil
-		local scalar = stage.scalarFlags[i] == true
-		local scalarValue = stage.scalarValues[i]
+		local group = stage.groups[i]
+		local scalar = group < 0
+		local scalarValue = if scalar then args else nil
 		if kind == KIND_EVENT then
-			local group = stage.groups[i]
-			if group > 0 then remainingEventAllowance = consumeRouteAllowance(route, player, group) end
+			if group ~= 0 then remainingEventAllowance = consumeRouteAllowance(route, player, if group < 0 then -group else group) end
 			if remainingEventAllowance > 0 then
 				remainingEventAllowance -= 1
 				if scalar then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
