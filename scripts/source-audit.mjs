@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.0.0";
+const version = "4.0.1";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 66, "Regression suite unexpectedly missing");
+assert(tests.length >= 69, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -42,7 +42,7 @@ for (const name of tests) {
 
 
 const compression = read("Compression.lua");
-assert(compression.includes('return "2.4.0"'), "Bundled compression API version was not advanced");
+assert(compression.includes('return "2.4.1"'), "Bundled compression API version was not advanced");
 assert(compression.includes("Compression.CodecVersion = 230") && compression.includes("Compression.EngineCode = 230") && compression.includes("Compression.Magic = 0x4E433233"), "Compression wire codec 230 must remain unchanged");
 assert(source.includes('compressionFamily == "2.3." or compressionFamily == "2.4."'), "NetStream must support legacy compatible compression module");
 assert(source.includes("Internal.CompressionCore.CodecVersion == 230"), "NetStream must check codec, not only package version");
@@ -198,6 +198,44 @@ for (let trial = 0; trial < 8000; trial++) {
     assert.equal(newHead, oldIndex, "Batch drain changed FIFO split");
     assert.equal(consumed, oldLogical, "Batch drain changed logical counts");
     assert.equal(messageCounts.slice(newHead).reduce((a, b) => a + b, 0), messageCounts.reduce((a, b) => a + b, 0) - consumed, "Batch drain corrupted pending count");
+}
+
+
+assert(source.includes("DispatchQueueCompactions = 0"), "Dispatch compaction counter missing");
+assert(source.includes("Stats.DispatchQueueCompactions += 1"), "Dispatch compaction telemetry missing");
+const dispatchStart = source.indexOf("local function runDispatch()");
+const dispatchEnd = source.indexOf("local function enqueueDispatch(", dispatchStart);
+assert(dispatchStart > 0 && dispatchEnd > dispatchStart, "Dispatch loop boundaries missing");
+const dispatch = source.slice(dispatchStart, dispatchEnd);
+assert(dispatch.includes("elseif dispatchHead > Config.MaxDispatchBacklog then"), "Sustained dispatch queue compaction guard missing");
+assert(dispatch.includes("local pending = dispatchCount - dispatchHead + 1"), "Dispatch compaction must only move pending actions");
+for (const name of ["dispatchRoutes", "dispatchPlayers", "dispatchArgs", "dispatchScalarFlags"]) {
+    assert(dispatch.includes(name + "[i] = " + name + "[from]"), "Dispatch compaction must preserve " + name);
+    assert(dispatch.includes(name + "[from] = nil"), "Dispatch compaction must clear stale " + name);
+}
+assert(compression.includes('return "2.4.1"'), "Compression release version mismatch");
+assert(compression.includes('options.StringDictionary == false or typeof(value) ~= "table"'), "Scalar dictionary work should be skipped");
+assert(!compression.includes("local seenKeys = {}"), "Map decode should not allocate a second map-key table");
+assert(compression.includes("if output[key] ~= nil then error(\"DUPLICATE_MAP_KEY\") end"), "Decode must still reject duplicate primitive keys");
+assert(compression.includes("math.max(64, HEADER_BYTES + dictionaryBytes + scannedNodes * 6)"), "Default compression writer size must be bounded");
+for (const name of ["DispatchCompactionRegression", "CompressionV241Regression"]) {
+    if (name === "DispatchCompactionRegression") assert(tests.includes(name + ".client.lua") && tests.includes(name + ".server.lua"), "Missing paired dispatch compaction regression");
+    else assert(tests.includes(name + ".server.lua"), "Missing Compression 2.4.1 regression");
+}
+// Exercise FIFO compaction invariants, including false/nil scalar payload metadata.
+for (let trial = 0; trial < 10000; trial++) {
+    const limit = 8 + random() % 128;
+    const head = limit + 1 + random() % 500;
+    const pending = 1 + random() % limit;
+    const initial = Array.from({length:pending}, (_, i) => ({seq:i, arg:i%3===0?null:i%3===1?false:i, scalar:i%2===0}));
+    const store = new Map(initial.map((v,i)=>[head+i,v]));
+    for (let i=1;i<=pending;i++) {
+        const from=head+i-1;
+        store.set(i,store.get(from));
+        store.delete(from);
+    }
+    assert.deepEqual(Array.from({length:pending},(_,i)=>store.get(i+1)), initial, "Dispatch compaction changed FIFO or scalar values");
+    assert.equal(store.size,pending,"Dispatch compaction retained old sparse indices");
 }
 
 function put(bytes, position, value) {

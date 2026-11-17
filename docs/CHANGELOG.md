@@ -1,6 +1,14 @@
 # NetStreamV2 Changelog
 
-The current release is **v4.0.0**, using **BitFrame v1** and bundled **Compression v2.4.0** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v4.0.1**, using **BitFrame v1** and bundled **Compression v2.4.1** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.0.1 — Sustained dispatch-queue bound and lower codec allocation
+
+- **NetStream correctness/memory:** Compact live dispatch rows when `dispatchHead` grows beyond the configured `MaxDispatchBacklog` under sustained nonempty traffic. Preserve route/player/args/scalar-flag rows in order, clear previous indices and expose `DispatchQueueCompactions` in `GetStats()`.
+- **Compression v2.4.1:** Drop the temporary `seenKeys` map during decoded map reconstruction. Check duplicate keys using non-nil outputs (including valid false values), preserving duplicate/rejected-key validation.
+- **Compression CPU:** Omit dictionary candidate traversal for scalars, because no references can be reused. Reduce minimum estimated buffer capacity for very small packets from 256 to 64 bytes; larger packets grow normally.
+- **Verification:** Added `DispatchCompactionRegression` paired Studio scripts, `CompressionV241Regression.server.lua`, and deterministic dispatch compaction model assertions in source audit. Updated all Studio version guards.
+- Preserves all message formats and all existing APIs: BitFrame v1, Compression codec 230. Studio runtime benchmarks remain pending; source-level CI cannot guarantee every gameplay workflow.
 
 ## v4.0.0 — Packed receive optimization and Compression v2.4.0 hardening
 

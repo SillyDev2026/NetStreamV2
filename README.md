@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.0.0-2563eb)
+![Release](https://img.shields.io/badge/release-v4.0.1-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
-![Codec](https://img.shields.io/badge/bundled_compression-2.4.0-0f766e)
+![Codec](https://img.shields.io/badge/bundled_compression-2.4.1-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v4.0.0.** Bundled child Compression: **v2.4.0**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.0.0 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v4.0.1.** Bundled child Compression: **v2.4.1**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.0.1 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -181,13 +181,13 @@ flowchart TD
     B -- No --> F["Native BitFrame encoder"]
     B -- Yes --> C{"Compressible and worth attempting?"}
     C -- No --> F
-    C -- Yes --> D["Bundled Compression v2.4.0"]
+    C -- Yes --> D["Bundled Compression v2.4.1"]
     D --> E{"Compressed output saves bytes?"}
     E -- Yes --> G["Compressed BitFrame payload"]
     E -- No --> F
 ```
 
-**Bundled codec capabilities:** Binary scalar, array and map serialization, variable-length integers, string dictionaries, checksum and structural validation. Although NetStream still exposes legacy settings named for Huffman, entropy, delta arrays, run-length arrays and map-key mapping, **those advanced algorithms are not implemented by the bundled Compression v2.4.0 module**. Do not rely on those toggles to enable unavailable compression formats.
+**Bundled codec capabilities:** Binary scalar, array and map serialization, variable-length integers, string dictionaries, checksum and structural validation. Although NetStream still exposes legacy settings named for Huffman, entropy, delta arrays, run-length arrays and map-key mapping, **those advanced algorithms are not implemented by the bundled Compression v2.4.1 module**. Do not rely on those toggles to enable unavailable compression formats.
 
 v2.3.25 reduces temporary allocation for short, compression-ineligible argument lists. Large lists still use a dictionary to avoid quadratic string comparisons.
 
@@ -281,6 +281,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **4.0.1** | Bound dispatch queue indices during sustained backlog; trim Compression map decoding allocations; skip scalar dictionary scan and reduce small writer buffers; regression tests |
 | **4.0.0** | Fast packed Bool/U8/U16 receive preflight; Compression 2.4.0 varint CPU/capacity optimizations, map-key validation, codec-230 compatibility checks and new regression coverage |
 | **3.9.0** | Contiguous outbound batch draining; modulo-free dispatch budget checks; direct packed Bool/U8/U16 run writer and 1–3 field vararg packing; 30,000-message paired Studio benchmark |
 | **3.8.0** | Drop oversized packed value tables even after runs are split into smaller prefixes; preserve high-water flags through weak keys |
@@ -386,3 +387,14 @@ The wire format remains **BitFrame v1**, Compression **v2.3.5** and all existing
 - **Compression correctness:** Reject unsupported reference-identity map keys such as tables during both encoding and decoding, rather than silently producing semantically different maps. Retain rejection of noncanonical/truncated/oversized varuints.
 - **Wire compatibility:** Compression reports v2.4.0 but retains packet codec **230**, magic `0x4E433233`, header size and tags. NetStream v4.0.0 can load both 2.3.x and 2.4.x compression cores when codec 230 matches. This is an API/implementation release, **not a new wire version**; both peers still need matching route IDs, schema and BitFrame settings.
 - **Verification:** `tests/CompressionV24Regression.server.lua` covers numeric round-trips, pooled packet retention, malformed varints and invalid map keys. Run paired `PackedScalarRunRegression` and `BurstSaturationBenchmark` in Studio and compare matched v3.9.0/v4.0.0 conditions. Static source audits and Luau compilation are not proof of faster networking, lower RTT or lower GC pauses.
+
+
+## v4.0.1 / Compression 2.4.1 maintenance and correctness pass
+
+**NetStream:** Dispatch queue indices now compact once the processed head exceeds `MaxDispatchBacklog` while actions remain pending. The previous loop cleared processed slots but retained indefinitely growing indices during nonstop partial drains; the new bounded compaction preserves FIFO, player references, nil/false scalar values and once-listener semantics. `GetStats().DispatchQueueCompactions` reports count of compaction operations. Compaction runs only after sustained backlog, so normal empty-queue processing is unchanged.
+
+**Compression:** The decoder now checks duplicate primitive map keys against its result table, avoiding a redundant `seenKeys` hash allocation per decoded map while still rejecting false-valued duplicates and nil values. Standalone scalar values skip the dictionary candidate scan (which cannot save bytes for one scalar), and small packets start at a 64-byte writer capacity instead of 256 bytes. Larger payloads may resize normally; speed/memory effects require profiling.
+
+**Validation:** `CompressionV241Regression.server.lua` covers scalar parity, dictionary-heavy nested maps, mixed key types, duplicate false-valued map keys and malformed nil values; `DispatchCompactionRegression.server.lua` plus `.client.lua` exercises sustained backlog with strict FIFO checks. The source audit also models 10,000 dispatch compactions. All test scripts use the patch release version guards. Live Studio results and measured CPU/GC gains are **not** asserted by source CI.
+
+The wire format remains BitFrame v1 and Compression codec 230; the public networking APIs remain unchanged.

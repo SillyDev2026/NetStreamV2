@@ -512,7 +512,7 @@ local function collectStrings(
 end
 
 local function buildDictionary(value: any, options: Options): ({string}, {[string]: number}, number, number)
-	if options.StringDictionary == false then
+	if options.StringDictionary == false or typeof(value) ~= "table" then
 		return {}, {}, 0, 0
 	end
 
@@ -742,20 +742,14 @@ local function readValue(
 			error("INVALID_MAP_COUNT")
 		end
 		local output = {}
-		local seenKeys = {}
 		for _ = 1, count do
 			local key = readValue(reader, dictionary, state, options, depth + 1)
 			if key == nil then error("NIL_MAP_KEY") end
 			local keyType = typeof(key)
 			if keyType ~= "string" and keyType ~= "number" and keyType ~= "boolean" then error("UNSUPPORTED_MAP_KEY:" .. keyType) end
-			if seenKeys[key] then
-				error("DUPLICATE_MAP_KEY")
-			end
-			seenKeys[key] = true
+			if output[key] ~= nil then error("DUPLICATE_MAP_KEY") end
 			local child = readValue(reader, dictionary, state, options, depth + 1)
-			if child == nil then
-				error("NIL_MAP_VALUE")
-			end
+			if child == nil then error("NIL_MAP_VALUE") end
 			output[key] = child
 		end
 		return output
@@ -765,7 +759,7 @@ end
 
 -- Returns the codec version exposed to dependent modules.
 function Compression.Version(): string
-	return "2.4.0"
+	return "2.4.1"
 end
 
 -- Returns the stable table codec mode identifier.
@@ -778,7 +772,7 @@ function Compression.CompressTablePacket(value: any, options: Options?): (buffer
 	local normalized = normalizeOptions(options)
 	local dictionary, lookup, dictionaryBytes, scannedNodes = buildDictionary(value, normalized)
 
-	local estimatedCapacity = math.max(256, HEADER_BYTES + dictionaryBytes + scannedNodes * 6)
+	local estimatedCapacity = math.max(64, HEADER_BYTES + dictionaryBytes + scannedNodes * 6)
 	estimatedCapacity = math.min(estimatedCapacity, normalized.PreallocateLimit :: number)
 	local packetWriter = Writer.new(estimatedCapacity)
 	packetWriter.Position = HEADER_BYTES

@@ -1,6 +1,13 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.0.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.0.1. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.0.1 — targeted bugfix/hot-path cleanup
+
+| Module | Fixed | What to verify in Studio |
+|---|---|---|
+| NetStream | Long-running dispatch queue index growth under continuously nonempty backlog | FIFO, scalar nil/false, listener order, callback drops under capped dispatch |
+| Compression | Redundant decoded-map key tracking; needless scalar dictionary scans; oversize initial writer minimum | Encoded byte parity, malformed-key guards, peak heap and CPU under mixed workloads |
 
 ## v4.0.0 — two-module quality/optimization update
 

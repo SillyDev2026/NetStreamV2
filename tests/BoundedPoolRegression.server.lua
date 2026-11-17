@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.0.0")
+assert(NetStream.GetVersion() == "4.0.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, MaxArgsPoolSize = 0, MaxMessagePoolSize = 0, MaxPooledBatchItems = 0})
 local T = NetStream.Types
 local Pulse = NetStream.Event("__NSBoundedPoolPulse", {Id = 36121, Schema = {T.U8}, Compression = false})
@@ -17,7 +17,7 @@ Pulse:Connect(function(player, value)
         assert(stats.ArgsPoolSize == 0 and stats.MessagePoolSize == 0 and stats.BatchPoolSize == 0, "Zero-size idle pool limits were ignored")
         assert(memory.MaxPooledBatchItems == 0 and memory.MaxArgsPoolSize == 0 and memory.MaxMessagePoolSize == 0, "Pool configuration diagnostics inaccurate")
         assert(Ack:FireClientNow(player, 1), "Bounded pool ACK failed")
-        print("NetStream 4.0.0 zero-retention pool PASS", memory.MaxPooledBatchItems)
+        print("NetStream 4.0.1 zero-retention pool PASS", memory.MaxPooledBatchItems)
     end
 end)
-print("NetStream 4.0.0 zero-retention pool server ready")
+print("NetStream 4.0.1 zero-retention pool server ready")

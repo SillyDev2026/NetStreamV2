@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v3.9.0. **Candidate:** v4.0.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.0.0. **Candidate:** v4.0.1. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -191,3 +191,10 @@ Run `CompressionV24Regression.server.lua` standalone first, then `PackedScalarRu
 For a measured comparison, run the same 30,000-message benchmark on NetStream v3.9.0 + Compression v2.3.5 and v4.0.0 + Compression v2.4.0 under otherwise matched conditions. Compare send encode p50/p95/p99, receive decode p50/p95/p99, dispatch p50/p95/p99, effective delivered messages/second, heap/GC pauses and packet bytes. Run at least five trials per configuration. A Compression-specific microbenchmark should run many small numeric and dictionary-heavy payload round-trips and record wall-clock times, peak buffers and output byte parity; do not infer compression ratio improvements from the varuint CPU changes.
 
 The reference codec ID **230** deliberately does not change. No observed Roblox Studio metrics have been committed; source audits and static Luau compilation alone cannot establish performance gains.
+
+
+## v4.0.1 / Compression v2.4.1 verification checklist
+
+Start with `CompressionV241Regression.server.lua` for codec parity, mixed map keys, false-valued duplicate-key rejection, malformed nil map value, dictionary-heavy nested-map roundtrips, and small scalar packets. Run `DispatchCompactionRegression.server.lua` with its paired `.client.lua` in a fresh Play session to build a sustained dispatch backlog. Confirm that received callbacks remain increasing, `GetStats().DispatchQueueCompactions > 0`, and there are no unexpected decode failures. This deliberate saturation may drop some dispatch events; it is not a reliable-delivery throughput benchmark.
+
+Compare v4.0.0/Compression 2.4.0 with v4.0.1/Compression 2.4.1 in matched Studio sessions using the existing `BurstSaturationBenchmark`, `PackedScalarRunRegression` and Compression round-trips. Report CPU p50/p95/p99, Luau heap after stable GC, event backlog, queue compaction count, encoded byte parity, and payload integrity. Repeat at least five times. Neither the docs nor GitHub Actions supplies live measurements.

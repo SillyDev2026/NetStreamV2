@@ -213,7 +213,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.0.0"
+local VERSION = "4.0.1"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -494,6 +494,7 @@ local Stats = {
 	RejectedMalformedPackets = 0,
 	RejectedOversizedPackets = 0,
 	DroppedDispatch = 0,
+	DispatchQueueCompactions = 0,
 	BatchPoolHits = 0,
 	ManualFlushes = 0,
 	ImmediateFlushes = 0,
@@ -5525,6 +5526,24 @@ local function runDispatch()
 	if dispatchHead > dispatchCount then
 		dispatchCount = 0
 		dispatchHead = 1
+	elseif dispatchHead > Config.MaxDispatchBacklog then
+		-- Sustain traffic without growing sparse indices forever.
+		-- The pending prefix always fits below dispatchHead because backlog is bounded.
+		local pending = dispatchCount - dispatchHead + 1
+		for i = 1, pending do
+			local from = dispatchHead + i - 1
+			dispatchRoutes[i] = dispatchRoutes[from]
+			dispatchPlayers[i] = dispatchPlayers[from]
+			dispatchArgs[i] = dispatchArgs[from]
+			dispatchScalarFlags[i] = dispatchScalarFlags[from]
+			dispatchRoutes[from] = nil
+			dispatchPlayers[from] = nil
+			dispatchArgs[from] = nil
+			dispatchScalarFlags[from] = nil
+		end
+		dispatchCount = pending
+		dispatchHead = 1
+		Stats.DispatchQueueCompactions += 1
 	end
 	if processed > 0 then Internal.recordPerformanceSample("DispatchMs", (os.clock() - startedAt) * 1000) end
 end
