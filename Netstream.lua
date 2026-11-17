@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.34"
+local VERSION = "2.3.35"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -5956,9 +5956,13 @@ function Internal.bitFrameReadDynamic(reader, player, kind, routeId, requestId, 
 	elseif kind == KIND_CALL then
 		if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) else releaseArgs(args) end
 	elseif kind == KIND_STATE then
-		local state = Internal.getPeerState(player)
-		state[routeId] = args[1]
-		if consumeRouteAllowance(route, player, 1) > 0 then enqueueDispatch(route, player, args) else releaseArgs(args) end
+		if consumeRouteAllowance(route, player, 1) > 0 then
+			local state = Internal.getPeerState(player)
+			state[routeId] = args[1]
+			enqueueDispatch(route, player, args)
+		else
+			releaseArgs(args)
+		end
 	else
 		releaseArgs(args)
 		error("NetStream BitFrame invalid message kind", 0)
@@ -6019,8 +6023,13 @@ function Internal.decodeBitFrame(player, data, reader)
 				elseif kind == KIND_CALL then
 					if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
 				elseif kind == KIND_STATE then
-					local state = Internal.getPeerState(player); state[routeId] = args[1]
-					if consumeRouteAllowance(route, player, 1) > 0 then enqueueDispatch(route, player, args) elseif args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+					if consumeRouteAllowance(route, player, 1) > 0 then
+						local state = Internal.getPeerState(player)
+						state[routeId] = args[1]
+						enqueueDispatch(route, player, args)
+						else
+						if args ~= EMPTY_ARGS and args ~= TRUE_ARGS and args ~= FALSE_ARGS then releaseArgs(args) end
+						end
 				end
 				logicalCount += 1
 			end
@@ -7220,7 +7229,7 @@ function Internal.validateConfig(config)
 	assert(type(config.HandshakeMaxAttempts) == "number" and isInteger(config.HandshakeMaxAttempts) and config.HandshakeMaxAttempts >= 1 and config.HandshakeMaxAttempts <= 20, "HandshakeMaxAttempts must be an integer from 1 to 20")
 	assert(type(config.FlushRate) == "number" and isFiniteNumber(config.FlushRate) and config.FlushRate > 0, "FlushRate must be a finite number greater than 0")
 	assert(type(config.VectorPrecision) == "number" and isFiniteNumber(config.VectorPrecision) and config.VectorPrecision > 0, "VectorPrecision must be a finite number greater than 0")
-	assert(type(config.MaxBatchMessages) == "number" and config.MaxBatchMessages >= 1, "MaxBatchMessages must be >= 1")
+	assert(type(config.MaxBatchMessages) == "number" and isInteger(config.MaxBatchMessages) and config.MaxBatchMessages >= 1 and config.MaxBatchMessages <= config.MaxIncomingMessages, "MaxBatchMessages must be an integer from 1 to MaxIncomingMessages")
 	assert(type(config.MaxOutgoingBatchBytes) == "number" and isInteger(config.MaxOutgoingBatchBytes) and config.MaxOutgoingBatchBytes >= 1024, "MaxOutgoingBatchBytes must be >= 1024")
 	assert(type(config.MaxIncomingPacketBytes) == "number" and isInteger(config.MaxIncomingPacketBytes) and config.MaxIncomingPacketBytes >= 1024, "MaxIncomingPacketBytes must be >= 1024")
 	assert(type(config.MaxBatchesPerFlush) == "number" and config.MaxBatchesPerFlush >= 1, "MaxBatchesPerFlush must be >= 1")
