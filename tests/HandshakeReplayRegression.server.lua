@@ -3,7 +3,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.9.0", "Expected NetStream 2.9.0")
+assert(NetStream.GetVersion() == "3.2.0", "Expected NetStream 3.2.0")
 NetStream.Configure({HandshakeEnabled = true, HandshakeRequireReady = false})
 NetStream.Start()
 local tested = {}
