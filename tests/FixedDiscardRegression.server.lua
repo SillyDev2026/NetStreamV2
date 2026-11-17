@@ -1,0 +1,27 @@
+--!strict
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
+assert(NetStream.GetVersion() == "3.2.0")
+NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false, MaxIncomingMessagesPerSecond = 1})
+local T = NetStream.Types
+local First = NetStream.Event("__NSFixedDiscardFirst", {Id = 36001, Schema = {T.U8}, Compression = false})
+local Mixed = NetStream.Event("__NSFixedDiscardMixed", {Id = 36002, Schema = {T.Bool, T.U8, T.U16, T.I16, T.U32, T.I32, T.Color3}, Compression = false})
+local Float = NetStream.Event("__NSFixedDiscardFloat", {Id = 36003, Schema = {T.F32, T.U8}, Compression = false})
+local Ack = NetStream.Event("__NSFixedDiscardAck", {Id = 36004, Schema = {T.U8}, Compression = false})
+local firstCount = 0
+First:Connect(function(player, value)
+    firstCount += 1
+    assert(firstCount == 1 and value == 9, "First fixed schema message corrupted")
+    task.delay(2, function()
+        local stats = NetStream.GetStats()
+        assert(firstCount == 1, "Accepted fixed schema delivered twice")
+        assert(stats.BitFrameDiscardedFixedBits >= 129, "Expected fixed-width discarded bits to be skipped")
+        assert(stats.BitFrameDiscardedSchemaArgs >= 2, "Expected rejected mixed fixed and float schemas")
+        assert(stats.DecodeErrors == 0, "Valid discarded fixed schema caused a decode failure")
+        assert(Ack:FireClientNow(player, 1), "Fixed discard ACK failed")
+        print("NetStream 3.2.0 fixed discard PASS", stats.BitFrameDiscardedFixedBits)
+    end)
+end)
+Mixed:Connect(function() error("Rejected mixed fixed schema was delivered") end)
+Float:Connect(function() error("Rejected float schema was delivered") end)
+print("NetStream 3.2.0 fixed discard server ready")
