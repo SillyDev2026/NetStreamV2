@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.4.0"
+local VERSION = "2.5.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -278,6 +278,7 @@ local DEFAULTS = {
 	MaxPooledStrings = 2048,
 	MaxBatchPoolSize = 64,
 	MaxPooledPackedValues = 64,
+	MaxPooledBitFrameActions = 64,
 	MaxWriterPoolSize = 32,
 	MaxBitFrameReaderPoolSize = 32,
 	PerformanceTelemetryEnabled = false,
@@ -594,6 +595,9 @@ local Stats = {
 	BitFrameTailPaddingRejected = 0,
 	BitFrameWriterPoolHits = 0,
 	BitFrameReaderPoolHits = 0,
+	BitFrameStagePoolHits = 0,
+	BitFrameAtomicRejectedPackets = 0,
+	BitFrameAtomicDiscardedActions = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -1680,10 +1684,32 @@ function Internal.BitFrameReader:bits(count)
 	return value
 end
 function Internal.BitFrameReader:adaptiveUInt()
-	local value, nextPosition = Internal.readAdaptiveUIntBits(self.buffer, self.bitPosition)
-	if nextPosition > self.bitLength then error("NetStream BitFrame decode overflow", 0) end
-	self.bitPosition = nextPosition
-	return value
+	local data = self.buffer
+	local position = self.bitPosition
+	local length = self.bitLength
+	if position + 8 > length then error("NetStream adaptive uint truncated", 0) end
+	local byte = buffer.readbits(data, position, 8)
+	position += 8
+	if byte < 128 then
+		self.bitPosition = position
+		return byte
+	end
+	local value = byte - 128
+	local multiplier = 128
+	for byteIndex = 2, 8 do
+		if position + 8 > length then error("NetStream adaptive uint truncated", 0) end
+		byte = buffer.readbits(data, position, 8)
+		position += 8
+		value += (byte % 128) * multiplier
+		if value > MAX_SAFE_INTEGER then error("NetStream adaptive uint exceeds safe integer range", 0) end
+		if byte < 128 then
+			if byte == 0 then error("NetStream adaptive uint noncanonical encoding", 0) end
+			self.bitPosition = position
+			return value
+		end
+		multiplier *= 128
+	end
+	error("NetStream adaptive uint overflow", 0)
 end
 function Internal.BitFrameReader:u8() return self:bits(8) end
 function Internal.BitFrameReader:u16() return self:bits(16) end
@@ -5969,6 +5995,7 @@ function Internal.acquireBitFrameStage()
 	local stage = pool[#pool]
 	if stage then
 		pool[#pool] = nil
+		Stats.BitFrameStagePoolHits += 1
 	else
 		stage = {kinds = {}, routes = {}, routeIds = {}, requestIds = {}, args = {}, groups = {}, count = 0}
 	end
@@ -5988,10 +6015,12 @@ function Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, ar
 end
 
 function Internal.releaseBitFrameStage(stage)
-	for i = 1, stage.count do
+	local actionCount = stage.count
+	for i = 1, actionCount do
 		local args = stage.args[i]
 		if args then releaseArgs(args) end
 	end
+	if actionCount > Config.MaxPooledBitFrameActions then return end
 	table.clear(stage.kinds)
 	table.clear(stage.routes)
 	table.clear(stage.routeIds)
@@ -6166,6 +6195,8 @@ function Internal.decodeBitFrame(player, data, reader)
 	local stage = Internal.acquireBitFrameStage()
 	local ok, logicalCount = pcall(Internal.parseBitFrame, player, reader, stage)
 	if not ok then
+		Stats.BitFrameAtomicRejectedPackets += 1
+		Stats.BitFrameAtomicDiscardedActions += stage.count
 		Internal.releaseBitFrameStage(stage)
 		error(logicalCount, 0)
 	end
@@ -7369,6 +7400,7 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxPooledStrings) == "number" and config.MaxPooledStrings >= 0, "MaxPooledStrings must be >= 0")
 	assert(type(config.MaxBatchPoolSize) == "number" and config.MaxBatchPoolSize >= 0, "MaxBatchPoolSize must be >= 0")
 	assert(type(config.MaxPooledPackedValues) == "number" and isInteger(config.MaxPooledPackedValues) and config.MaxPooledPackedValues >= 0 and config.MaxPooledPackedValues <= 8192, "MaxPooledPackedValues must be between 0 and 8192")
+	assert(type(config.MaxPooledBitFrameActions) == "number" and isInteger(config.MaxPooledBitFrameActions) and config.MaxPooledBitFrameActions >= 0 and config.MaxPooledBitFrameActions <= config.MaxIncomingMessages, "MaxPooledBitFrameActions must be an integer from 0 to MaxIncomingMessages")
 	assert(type(config.MaxTargetsPerFlush) == "number" and config.MaxTargetsPerFlush >= 1, "MaxTargetsPerFlush must be >= 1")
 	assert(type(config.MaxIncomingMessagesPerSecond) == "number" and config.MaxIncomingMessagesPerSecond >= 1, "MaxIncomingMessagesPerSecond must be >= 1")
 	assert(type(config.MaxIncomingBytesPerSecond) == "number" and config.MaxIncomingBytesPerSecond >= 1, "MaxIncomingBytesPerSecond must be >= 1")
@@ -8060,6 +8092,10 @@ function NetStream.GetMemoryDiagnostics()
 		AllWriterPoolsBytes = writerBytes + legacyBytes + scratchBytes,
 		BitFrameReaderPoolSize = #Internal.BitFrameReaderPool,
 		BitFrameStagePoolSize = #Internal.BitFrameStagePool,
+		MaxPooledBitFrameActions = Config.MaxPooledBitFrameActions,
+		BitFrameStagePoolHits = Stats.BitFrameStagePoolHits,
+		BitFrameAtomicRejectedPackets = Stats.BitFrameAtomicRejectedPackets,
+		BitFrameAtomicDiscardedActions = Stats.BitFrameAtomicDiscardedActions,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
 		MessagePoolSize = #messagePool,
