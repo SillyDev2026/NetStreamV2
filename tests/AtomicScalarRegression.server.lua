@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.5.0")
+assert(NetStream.GetVersion() == "3.8.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Tiny = NetStream.Event("__NSAtomicTiny", {Id = 35811, Compression = false})
@@ -41,4 +41,4 @@ ScalarState:Connect(function(player, value)
     assert(value == 173, "Single U8 state value changed")
     complete(player)
 end)
-print("NetStream v3.5.0 scalar staging server ready")
+print("NetStream v3.8.0 scalar staging server ready")
