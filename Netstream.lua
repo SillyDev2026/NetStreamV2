@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.1.0"
+local VERSION = "3.2.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -578,6 +578,7 @@ local Stats = {
 	PackedValuePoolHits = 0,
 	PackedValuePoolOversizeDrops = 0,
 	ScalarDispatches = 0,
+	BitFrameScalarSchemaReads = 0,
 	BitPacketCallsSent = 0,
 	BitPacketCallsReceived = 0,
 	BitPacketHeaderBits = 0,
@@ -1955,6 +1956,8 @@ function Internal.compileSchema(spec, label)
 			isFixed = false
 		end
 	end
+	local scalarKind = if #fields == 1 then fields[1].Kind else nil
+	if scalarKind ~= SCHEMA_BOOL and scalarKind ~= SCHEMA_U8 and scalarKind ~= SCHEMA_U16 and scalarKind ~= SCHEMA_I16 and scalarKind ~= SCHEMA_U32 and scalarKind ~= SCHEMA_I32 and scalarKind ~= SCHEMA_F32 and scalarKind ~= SCHEMA_F64 then scalarKind = nil end
 	local signatureParts = table.create(#fields)
 	for i = 1, #fields do
 		local field = fields[i]
@@ -1969,6 +1972,7 @@ function Internal.compileSchema(spec, label)
 		bitPackedBooleans = bitPackedBooleans,
 		byteRunU8 = byteRunU8,
 		discardBits = if discardFixed then discardBits else nil,
+		scalarKind = scalarKind,
 	}
 end
 
@@ -2603,6 +2607,19 @@ end
 
 -- Validate and consume dropped schema fields without materializing an args array.
 -- Reader field decoders still run for variable-width values and malformed input.
+function Internal.bitFrameReadScalarSchema(reader, kind)
+	Stats.BitFrameScalarSchemaReads += 1
+	if kind == SCHEMA_BOOL then return reader:bits(1) ~= 0 end
+	if kind == SCHEMA_U8 then return reader:bits(8) end
+	if kind == SCHEMA_U16 then return reader:u16() end
+	if kind == SCHEMA_I16 then return reader:i16() end
+	if kind == SCHEMA_U32 then return reader:u32() end
+	if kind == SCHEMA_I32 then return reader:i32() end
+	if kind == SCHEMA_F32 then return reader:f32() end
+	if kind == SCHEMA_F64 then return reader:f64() end
+	error("NetStream invalid scalar schema kind", 0)
+end
+
 function Internal.bitFrameDiscardSchemaArgs(reader, schema)
 	local count = schema.count
 	if count == 0 then return end
@@ -6203,9 +6220,9 @@ function Internal.parseBitFrame(player, reader, stage)
 				local allowed = canAcceptIncomingMessages(player, logicalCount + count)
 				if not allowed then Stats.RateLimitedBatches += 1 end
 				local schema = route._schema
-				local scalarField = if count == 1 and schema.count == 1 then schema.fields[1] else nil
-				if scalarField and (scalarField.Kind == SCHEMA_U8 or scalarField.Kind == SCHEMA_BOOL) then
-					local value = if scalarField.Kind == SCHEMA_BOOL then reader:bits(1) ~= 0 else reader:bits(8)
+				local scalarKind = if count == 1 then schema.scalarKind else nil
+				if scalarKind then
+					local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
 					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
 				elseif not allowed then
 					for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
@@ -6220,9 +6237,9 @@ function Internal.parseBitFrame(player, reader, stage)
 				local allowed = canAcceptIncomingMessages(player, logicalCount + 1)
 				if not allowed then Stats.RateLimitedBatches += 1 end
 				local schema = route._schema
-				local scalarField = if schema.count == 1 and (kind == KIND_STATE or kind == KIND_EVENT) then schema.fields[1] else nil
-				if scalarField and (scalarField.Kind == SCHEMA_U8 or scalarField.Kind == SCHEMA_BOOL) then
-					local value = if scalarField.Kind == SCHEMA_BOOL then reader:bits(1) ~= 0 else reader:bits(8)
+				local scalarKind = if kind == KIND_STATE or kind == KIND_EVENT then schema.scalarKind else nil
+				if scalarKind then
+					local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
 					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
 				elseif allowed then
 					local args = Internal.bitFrameReadSchemaArgs(reader, schema)
@@ -8213,6 +8230,7 @@ function NetStream.GetPerformanceStats()
 		PackedSchemaRunAppends = stats.PackedSchemaRunAppends,
 		PackedValuePoolHits = stats.PackedValuePoolHits,
 		ScalarDispatches = stats.ScalarDispatches,
+		BitFrameScalarSchemaReads = stats.BitFrameScalarSchemaReads,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,
 		DeferredRestoreCalls = stats.TransportDeferredRestoreCalls,
