@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.2.0"
+local VERSION = "3.3.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -602,6 +602,7 @@ local Stats = {
 	BitFrameAtomicDiscardedActions = 0,
 	BitFrameDiscardedSchemaArgs = 0,
 	BitFrameDiscardedFixedBits = 0,
+	BitFrameBulkDiscardedRuns = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -6107,7 +6108,7 @@ function Internal.commitBitFrameStage(player, stage)
 			if remainingEventAllowance > 0 then
 				remainingEventAllowance -= 1
 				if scalar then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
-			else
+			elseif not scalar then
 				releaseArgs(args)
 			end
 		elseif kind == KIND_CALL then
@@ -6123,7 +6124,7 @@ function Internal.commitBitFrameStage(player, stage)
 				local state = Internal.getPeerState(player)
 				state[routeId] = if scalar then scalarValue else args[1]
 				if scalar then enqueueDispatchScalar(route, player, scalarValue) else enqueueDispatch(route, player, args) end
-			else
+			elseif not scalar then
 				releaseArgs(args)
 			end
 		end
@@ -6225,7 +6226,17 @@ function Internal.parseBitFrame(player, reader, stage)
 					local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
 					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
 				elseif not allowed then
-					for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
+					local fixedBits = schema.discardBits
+					if fixedBits ~= nil then
+						local totalBits = fixedBits * count
+						reader:needBits(totalBits)
+						reader.bitPosition += totalBits
+						Stats.BitFrameDiscardedFixedBits += totalBits
+						Stats.BitFrameDiscardedSchemaArgs += count
+						Stats.BitFrameBulkDiscardedRuns += 1
+					else
+						for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
+					end
 				else
 					for index = 1, count do
 						local args = Internal.bitFrameReadSchemaArgs(reader, schema)
@@ -6269,9 +6280,9 @@ function Internal.decodeBitFrame(player, data, reader)
 	local stage = Internal.acquireBitFrameStage()
 	reader._bitFrameStage = stage
 	local logicalCount = Internal.parseBitFrame(player, reader, stage)
-	reader._bitFrameStage = nil
 	Internal.commitBitFrameStage(player, stage)
 	Internal.releaseBitFrameStage(stage)
+	reader._bitFrameStage = nil
 	Internal.bitFrameCommitReceive(player, data, logicalCount)
 end
 
@@ -8177,6 +8188,7 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameAtomicDiscardedActions = Stats.BitFrameAtomicDiscardedActions,
 		BitFrameDiscardedSchemaArgs = Stats.BitFrameDiscardedSchemaArgs,
 		BitFrameDiscardedFixedBits = Stats.BitFrameDiscardedFixedBits,
+		BitFrameBulkDiscardedRuns = Stats.BitFrameBulkDiscardedRuns,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
 		MessagePoolSize = #messagePool,
