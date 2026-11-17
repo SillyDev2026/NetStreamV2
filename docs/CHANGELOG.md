@@ -17,7 +17,7 @@ The current release is **v2.3.37**, using **BitFrame v1** and the bundled **Comp
 ## v2.3.35 — State rate-limit correctness and configuration validation
 
 - In both schema and dynamic BitFrame state decoders, check route rate allowance before mutating the stored state.
-- Require `MaxBatchMessages` to be an integer no larger than `MaxIncomingMessages`.
+- Require `MaxBatchMessages` to be a bounded integer (1–65535) while keeping incoming and outgoing batch limits independently configurable.
 - Add paired `StateThrottleRegression` Studio tests for blocked state updates.
 
 ## v2.3.34 — Unaligned binary string decoding and pool trim
