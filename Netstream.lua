@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.7.0"
+local VERSION = "3.8.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -422,6 +422,7 @@ local argsPool = {}
 local batchPool = {}
 local unpooledBatches = setmetatable({}, {__mode = "k"})
 local packedValuePool = {}
+local unpooledPackedValues = setmetatable({}, {__mode = "k"})
 local globalIncomingRate = nil
 Internal.bandwidthStates = {}
 Internal.trafficWindowEstimatedTransportBytes = 0
@@ -580,6 +581,7 @@ local Stats = {
 	PackedRunBatchSplits = 0,
 	PackedValuePoolHits = 0,
 	PackedValuePoolOversizeDrops = 0,
+	PackedValueHighWaterDrops = 0,
 	ScalarDispatches = 0,
 	BitFrameScalarSchemaReads = 0,
 	BitFramePackedScalarRunItems = 0,
@@ -3408,6 +3410,12 @@ end
 
 
 local function acquirePackedValues(capacity)
+	local requested = capacity or 8
+	if requested > Config.MaxPooledPackedValues then
+		local values = table.create(requested)
+		unpooledPackedValues[values] = true
+		return values
+	end
 	local values = packedValuePool[#packedValuePool]
 	if values then
 		packedValuePool[#packedValuePool] = nil
@@ -3415,13 +3423,16 @@ local function acquirePackedValues(capacity)
 		Stats.PackedValuePoolHits += 1
 		return values
 	end
-	return table.create(capacity or 8)
+	return table.create(requested)
 end
 
 local function releasePackedValues(values, usedCount)
 	if not values then return end
-	if usedCount > Config.MaxPooledPackedValues then
+	local highWater = unpooledPackedValues[values] == true
+	if highWater then unpooledPackedValues[values] = nil end
+	if highWater or usedCount > Config.MaxPooledPackedValues then
 		Stats.PackedValuePoolOversizeDrops += 1
+		if highWater then Stats.PackedValueHighWaterDrops += 1 end
 		return
 	end
 	if #packedValuePool >= Config.MaxBatchPoolSize then return end
@@ -3511,6 +3522,7 @@ function Internal.splitPackedRunMessage(message, keepCount)
 	local suffixCount = total - keepCount
 	local suffixValues = acquirePackedValues(suffixCount * fieldCount)
 	local values = message.packedValues
+	if total * fieldCount > Config.MaxPooledPackedValues then unpooledPackedValues[values] = true end
 	local offset = keepCount * fieldCount
 	for i = 1, suffixCount * fieldCount do
 		suffixValues[i] = values[offset + i]
@@ -3711,6 +3723,7 @@ function Internal.enqueuePackedEvent(target, unreliable, route, valueCount, ...)
 		and tail.priority == priority and tail.runCount < tail.runLimit then
 		local base = tail.runCount * valueCount
 		local values = tail.packedValues
+		if base + valueCount > Config.MaxPooledPackedValues then unpooledPackedValues[values] = true end
 		for i = 1, valueCount do
 			values[base + i] = select(i, ...)
 		end
@@ -8230,6 +8243,7 @@ function NetStream.GetMemoryDiagnostics()
 		MessagePoolLimitDrops = Stats.MessagePoolLimitDrops,
 		MaxPooledPackedValues = Config.MaxPooledPackedValues,
 		PackedValuePoolOversizeDrops = Stats.PackedValuePoolOversizeDrops,
+		PackedValueHighWaterDrops = Stats.PackedValueHighWaterDrops,
 		LegacyWriterPooledBytes = legacyBytes,
 		ScratchWriterPooledBytes = scratchBytes,
 		AllWriterPoolsBytes = writerBytes + legacyBytes + scratchBytes,
