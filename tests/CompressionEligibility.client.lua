@@ -2,7 +2,7 @@
 -- Standalone LocalScript in StarterPlayerScripts; pair with CompressionEligibility.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.9.0")
+assert(NetStream.GetVersion() == "3.2.0")
 NetStream.Configure({CompressionEnabled = true, CompressionCpuBudgetEnabled = false, CompressionMinStringBytes = 6})
 local Payload = NetStream.Event("__NSEligibility", {Id = 35311})
 local Ack = NetStream.Event("__NSEligibilityAck", {Id = 35312, Compression = false})
@@ -15,7 +15,7 @@ Ack:Connect(function(n)
     local counters = NetStream.GetStats()
     assert(counters.DecodeErrors == 0, "Compressed/dynamic packet decode failed")
     done = true
-    print("NetStream v2.9.0 compression short-path PASS", stats.EligibilityShortScans, stats.EligibilityShortSkips)
+    print("NetStream v3.2.0 compression short-path PASS", stats.EligibilityShortScans, stats.EligibilityShortSkips)
 end)
 for i = 1, 64 do assert(Payload:FireServer(i, "unique" .. i, i), "Unique payload enqueue failed") end
 local repeated = string.rep("match", 8)
