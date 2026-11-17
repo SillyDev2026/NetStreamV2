@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v2.3.34-2563eb)
+![Release](https://img.shields.io/badge/release-v2.3.37-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v2.3.34.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.3.34 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v2.3.37.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v2.3.37 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **2.3.37** | Preflight 64-bit binary reads/writes once; decode small hybrid strings with a bounded buffer |
+| **2.3.36** | Split oversized packed schema runs and bound run sizes to transport byte budgets |
+| **2.3.35** | Prevent rate-limited state packets from mutating stored state; validate batch-count configuration |
 | **2.3.34** | Replace unaligned string decoding tables with binary buffers and add `TrimPools()` |
 | **2.3.33** | Right-size default BitFrame writers to 128 bytes and cap retained writer buffers |
 | **2.3.32** | Avoid preallocating maximum packed-run tables and discard oversized pooled arrays |
@@ -299,3 +302,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 ### Rebinding the handshake control remote
 
 On a client, call `NetStream.RetryHandshake()` after a control `H` RemoteEvent is replaced. It rebinds a single tracked listener, restarts HELLO/WELCOME/CONFIRM/READY, and reports replacements in `NetStream.GetStats().HandshakeRemoteRebinds`. This is **manual** recovery; the server still needs an active handler on its new `H` remote.
+
+## v2.3.37 verification
+
+New standalone Roblox Studio test pairs: `StateThrottleRegression` (rejected state updates cannot overwrite accepted state), `PackedBudgetRegression` (reliable FIFO and packet-size splitting under a 48-byte budget), and `BinaryPrecisionRegression` (F64 fields and hybrid string round-trips). The source audit also models 5,000 randomized packed splits and preserves existing U8/varuint checks. Live Studio results and CPU/heap/RTT improvements remain unverified until tested under identical loads.

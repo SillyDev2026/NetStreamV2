@@ -1,8 +1,16 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v2.3.34. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v2.3.37. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
-## Latest memory/binary optimization cycle (source-level)
+## Latest correctness and binary suboptimization cycle (source-level)
+
+| Release | Change | Status |
+|---|---|---|
+| 2.3.35 | Check state rate limits before applying BitFrame updates | Committed; Studio regression pending |
+| 2.3.36 | Bound packed schema run sizes and split oversized packets | Committed; Studio regression pending |
+| 2.3.37 | Optimize 64-bit binary access and hybrid string allocations | Committed; Studio benchmarks pending |
+
+## Previous memory/binary optimization cycle (source-level)
 
 | Release | Change | Status |
 |---|---|---|

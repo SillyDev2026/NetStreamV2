@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "2.3.34";
+const version = "2.3.37";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -20,6 +20,38 @@ assert(source.includes("BitFrameRetainWriterMaxBytes = 4096,"), "Binary writer r
 assert(source.includes("function NetStream.TrimPools()"), "Idle memory trim API missing");
 assert(source.includes("if length >= 16 then"), "Unaligned binary string buffer decoder missing");
 assert(source.includes("PackedValuePoolOversizeDrops"), "Oversized packed pool diagnostics missing");
+assert(source.includes("function Internal.splitPackedRunMessage(message, keepCount)"), "Packed-run splitting is missing");
+assert(source.includes("Stats.PackedRunBatchSplits += 1"), "Packed split counter is missing");
+assert(source.includes("while ok and buffer.len(data) > byteBudget do"), "Packet budget splitter must include single packed runs");
+assert(source.includes("local packetBudget = Math") === false, "Luau packet budget accidentally uses JS");
+assert(source.includes("local packetBudget = math.min(Config.MaxOutgoingBatchBytes, Config.BitFrameMaxBytes)"), "Packed runs must respect output byte caps");
+assert(source.includes("if bitPosition + len * 8 > buffer.len(data) * 8 then error"), "Hybrid string bounds validation missing");
+assert(source.includes("self:ensureBits(64)"), "F64 write fast path missing");
+assert(source.includes("self:needBits(64)"), "F64 read fast path missing");
+
+const stateStart = source.indexOf("function Internal.bitFrameReadDynamic(reader");
+const stateEnd = source.indexOf("function Internal.decodeBitFrame(", stateStart);
+assert(stateStart >= 0 && stateEnd > stateStart, "BitFrame dynamic parser missing");
+const dynamicParser = source.slice(stateStart, stateEnd);
+assert(/elseif kind == KIND_STATE then\s*if consumeRouteAllowance\(route, player, 1\) > 0 then/.test(dynamicParser), "Dynamic State must be rate limited before mutation");
+const schemaParser = source.slice(stateEnd, source.indexOf("local function decodeBatch(", stateEnd));
+assert(/elseif kind == KIND_STATE then\s*if consumeRouteAllowance\(route, player, 1\) > 0 then/.test(schemaParser), "Schema State must be rate limited before mutation");
+
+for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression"]) {
+    assert(tests.includes(pair + ".client.lua") && tests.includes(pair + ".server.lua"), `Missing Studio regression pair: ${pair}`);
+}
+
+for (let run = 0; run < 5000; run++) {
+    const fields = 1 + random() % 8;
+    const count = 2 + random() % 256;
+    const keep = 1 + random() % (count - 1);
+    const values = Array.from({length: fields * count}, (_, i) => (i * 31 + run) % 256);
+    const prefix = values.slice(0, keep * fields);
+    const suffix = values.slice(keep * fields);
+    assert.deepEqual(prefix.concat(suffix), values, "Packed split lost data or changed FIFO order");
+    assert.equal(prefix.length / fields + suffix.length / fields, count, "Packed split count changed");
+}
+
 
 const fixedStart = source.indexOf("local function readFixedSchemaArgs(reader, schema)");
 const fixedEnd = source.indexOf("local function readSchemaArgs(reader, schema)", fixedStart);
@@ -29,7 +61,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 35, "Regression suite unexpectedly missing");
+assert(tests.length >= 41, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -100,6 +132,6 @@ for (const value of [NaN, Infinity, -Infinity, 0, -0, 1, -3.5, Number.MAX_VALUE]
     assert.equal(Number.isFinite(data.getFloat64(0, true)), Number.isFinite(value));
 }
 
-for (const label of ["2.3.29", "2.3.30", "2.3.31"]) assert(read("docs/CHANGELOG.md").includes(label));
-assert(read("README.md").includes("v2.3.31"));
-console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, ${tests.length} Studio-script static scans`);
+for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37"]) assert(read("docs/CHANGELOG.md").includes(label));
+assert(read("README.md").includes(`v${version}`));
+console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, ${tests.length} Studio-script static scans`);

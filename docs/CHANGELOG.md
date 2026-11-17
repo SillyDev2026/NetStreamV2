@@ -1,6 +1,24 @@
 # NetStreamV2 Changelog
 
-The current release is **v2.3.34**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v2.3.37**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v2.3.37 — Binary F64 and small-string decoding optimization
+
+- Preflight 64-bit BitFrame float encoding and decoding with a single capacity or bounds check.
+- Decode short hybrid strings into one bounded binary buffer rather than constructing a table and a string per byte.
+- Add paired `BinaryPrecisionRegression` Studio tests for 80 F64 tuples and five small strings.
+
+## v2.3.36 — Oversized packed-run recovery
+
+- Split a single oversized packed-schema message into a prefix and deferred suffix, retaining reliable event FIFO order.
+- Bound packed-run lengths by BitFrame and outgoing transport byte capacities even when the bandwidth governor is off.
+- Add `PackedRunBatchSplits` statistics and paired `PackedBudgetRegression` Studio tests.
+
+## v2.3.35 — State rate-limit correctness and configuration validation
+
+- In both schema and dynamic BitFrame state decoders, check route rate allowance before mutating the stored state.
+- Require `MaxBatchMessages` to be an integer no larger than `MaxIncomingMessages`.
+- Add paired `StateThrottleRegression` Studio tests for blocked state updates.
 
 ## v2.3.34 — Unaligned binary string decoding and pool trim
 

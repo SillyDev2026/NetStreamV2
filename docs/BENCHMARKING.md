@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v2.3.28. **Candidate:** v2.3.34. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v2.3.34. **Candidate:** v2.3.37. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,9 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `StateThrottleRegression` | Schema and dynamic state rate-limits reject state mutation |
+| `PackedBudgetRegression` | FIFO and batch packet splits under a 48-byte byte-budget |
+| `BinaryPrecisionRegression` | F64 values and hybrid short-string binary round-trips |
 | `MemoryBinaryRegression` | Packed U8 96-message runs, 16/32/63-byte string binary round-trips and idle pool trim |
 | `LegacyFixedFiniteGuard` | Reject three malformed legacy fixed-schema composite F64 payloads and accept subsequent valid traffic |
 | `HandshakeRecovery` | Validates HELLO/WELCOME/CONFIRM/READY retry after server is READY |
@@ -111,3 +114,7 @@ Back to [README](../README.md) · [Architecture](ARCHITECTURE.md) · [Future opt
 ## Memory comparison protocol
 
 Measure v2.3.31 and v2.3.34 with the **same** settings, payloads and player counts. Run an initial warm-up; capture `GetMemoryDiagnostics()` and `gcinfo()` before and after at least 10,000 packets and an idle stabilization period. Note that `gcinfo()` is whole-VM heap usage and garbage collection timing affects snapshots. Compare `BitFrameWriterPooledBytes`, `PackedValuePoolOversizeDrops`, writer pool sizes, packet p95, encode/decode p95, RTT p95/p99 and jitter. Use `TrimPools()` only in an explicitly separate post-load measurement, never mid-benchmark. Static CI cannot prove Roblox runtime heap reduction.
+
+## v2.3.35–v2.3.37 performance comparison
+
+Run each paired Studio regression in a **separate Play session**, then execute `PerformanceP95` and `CpuMemoryRegression` at identical settings on v2.3.34 and v2.3.37. Report 128, 1,024 and 10,000 probe runs where practical. Compare binary writer retained bytes, Luau VM heap after GC stabilization, encode/decode p95, dispatch p95, queue p95, packet bytes p95 and RTT p50/p95/p99. Do not infer total VM heap savings or lower transport ping solely from source-level checks. CI parsing does not execute Roblox multiplayer scripts.
