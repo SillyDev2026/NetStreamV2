@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.3.36"
+local VERSION = "2.3.37"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -914,9 +914,14 @@ function Internal.hybridReadScalar(data, bitPosition)
 	if tag == Internal.HYBRID_STRING then
 		local len; len, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
 		if len > Config.HybridSmallStringMaxBytes or len > Config.MaxStringBytes then error("NetStream hybrid string too large", 0) end
-		local chars = table.create(len)
-		for i = 1, len do local b; b, bitPosition = Internal.packetReadBits(data, bitPosition, 8); chars[i] = string.char(b) end
-		return table.concat(chars), bitPosition
+		if bitPosition + len * 8 > buffer.len(data) * 8 then error("NetStream hybrid string truncated", 0) end
+		if len == 0 then return "", bitPosition end
+		local output = buffer.create(len)
+		for offset = 0, len - 1 do
+			buffer.writeu8(output, offset, buffer.readbits(data, bitPosition, 8))
+			bitPosition += 8
+		end
+		return buffer.tostring(output), bitPosition
 	end
 	if tag == Internal.HYBRID_COLOR3 then
 		local r,g,b; r,bitPosition=Internal.packetReadBits(data,bitPosition,8); g,bitPosition=Internal.packetReadBits(data,bitPosition,8); b,bitPosition=Internal.packetReadBits(data,bitPosition,8)
@@ -1559,9 +1564,13 @@ function Internal.BitFrameWriter:f32(value)
 	self:bits(buffer.readu32(Internal.BitFrameScratch, 0), 32)
 end
 function Internal.BitFrameWriter:f64(value)
+	local bitPosition = self.bitPosition
+	self:ensureBits(64)
 	buffer.writef64(Internal.BitFrameScratch, 0, value)
-	self:bits(buffer.readu32(Internal.BitFrameScratch, 0), 32)
-	self:bits(buffer.readu32(Internal.BitFrameScratch, 4), 32)
+	local target = self.buffer
+	buffer.writebits(target, bitPosition, 32, buffer.readu32(Internal.BitFrameScratch, 0))
+	buffer.writebits(target, bitPosition + 32, 32, buffer.readu32(Internal.BitFrameScratch, 4))
+	self.bitPosition = bitPosition + 64
 end
 function Internal.BitFrameWriter:rawString(value)
 	local length = #value
@@ -1694,10 +1703,14 @@ function Internal.BitFrameReader:f32()
 	return value
 end
 function Internal.BitFrameReader:f64()
-	buffer.writeu32(Internal.BitFrameScratch, 0, self:bits(32))
-	buffer.writeu32(Internal.BitFrameScratch, 4, self:bits(32))
+	local bitPosition = self.bitPosition
+	self:needBits(64)
+	local source = self.buffer
+	buffer.writeu32(Internal.BitFrameScratch, 0, buffer.readbits(source, bitPosition, 32))
+	buffer.writeu32(Internal.BitFrameScratch, 4, buffer.readbits(source, bitPosition + 32, 32))
 	local value = buffer.readf64(Internal.BitFrameScratch, 0)
 	if not math.isfinite(value) then error("NetStream BitFrame rejected non-finite F64", 0) end
+	self.bitPosition = bitPosition + 64
 	return value
 end
 function Internal.BitFrameReader:rawString(length)
