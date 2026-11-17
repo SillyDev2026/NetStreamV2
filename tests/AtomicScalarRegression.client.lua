@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "2.9.0")
+assert(NetStream.GetVersion() == "3.2.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Tiny = NetStream.Event("__NSAtomicTiny", {Id = 35811, Compression = false})
@@ -13,7 +13,7 @@ local completed = false
 Ack:Connect(function(code)
     assert(code == 1, "Unexpected scalar staging ACK")
     completed = true
-    print("NetStream v2.9.0 scalar staging PASS")
+    print("NetStream v3.2.0 scalar staging PASS")
 end)
 assert(Tiny:FireServerNow(nil), "Nil scalar event failed")
 for _, value in ipairs({true, false, 0, 127, 128, -1, "tiny"}) do
