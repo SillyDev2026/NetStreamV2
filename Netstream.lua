@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.0.0"
+local VERSION = "3.1.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -923,6 +923,7 @@ function Internal.hybridReadScalar(data, bitPosition)
 		if len > Config.HybridSmallStringMaxBytes or len > Config.MaxStringBytes then error("NetStream hybrid string too large", 0) end
 		if bitPosition + len * 8 > buffer.len(data) * 8 then error("NetStream hybrid string truncated", 0) end
 		if len == 0 then return "", bitPosition end
+		if len == 1 then return string.char(buffer.readbits(data, bitPosition, 8)), bitPosition + 8 end
 		local output = buffer.create(len)
 		for offset = 0, len - 1 do
 			buffer.writeu8(output, offset, buffer.readbits(data, bitPosition, 8))
@@ -1756,29 +1757,25 @@ function Internal.BitFrameReader:rawString(length)
 		self.bitPosition = bitPosition + length * 8
 		return value
 	end
-	if length >= 16 then
-		local output = buffer.create(length)
-		local offset = 0
-		while offset + 4 <= length do
-			buffer.writeu32(output, offset, buffer.readbits(self.buffer, bitPosition, 32))
-			bitPosition += 32
-			offset += 4
-		end
-		while offset < length do
-			buffer.writeu8(output, offset, buffer.readbits(self.buffer, bitPosition, 8))
-			bitPosition += 8
-			offset += 1
-		end
-		self.bitPosition = bitPosition
-		return buffer.tostring(output)
+	if length == 1 then
+		local result = string.char(buffer.readbits(self.buffer, bitPosition, 8))
+		self.bitPosition = bitPosition + 8
+		return result
 	end
-	local chars = table.create(length)
-	for i = 1, length do
-		chars[i] = string.char(buffer.readbits(self.buffer, bitPosition, 8))
+	local output = buffer.create(length)
+	local offset = 0
+	while offset + 4 <= length do
+		buffer.writeu32(output, offset, buffer.readbits(self.buffer, bitPosition, 32))
+		bitPosition += 32
+		offset += 4
+	end
+	while offset < length do
+		buffer.writeu8(output, offset, buffer.readbits(self.buffer, bitPosition, 8))
 		bitPosition += 8
+		offset += 1
 	end
 	self.bitPosition = bitPosition
-	return table.concat(chars)
+	return buffer.tostring(output)
 end
 function Internal.BitFrameReader:rawBuffer(length, compressed)
 	if length < 0 or length % 1 ~= 0 or length > Config.MaxIncomingPacketBytes or (not compressed and length > Config.MaxBufferBytes) then error("NetStream BitFrame buffer is too large", 0) end
