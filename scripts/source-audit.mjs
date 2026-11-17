@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "3.9.0";
+const version = "4.0.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,13 +32,30 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 65, "Regression suite unexpectedly missing");
+assert(tests.length >= 66, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
     const guards = [...content.matchAll(/NetStream\.GetVersion\(\) == "([^"]+)"/g)];
     for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
 }
+
+
+const compression = read("Compression.lua");
+assert(compression.includes('return "2.4.0"'), "Bundled compression API version was not advanced");
+assert(compression.includes("Compression.CodecVersion = 230") && compression.includes("Compression.EngineCode = 230") && compression.includes("Compression.Magic = 0x4E433233"), "Compression wire codec 230 must remain unchanged");
+assert(source.includes('compressionFamily == "2.3." or compressionFamily == "2.4."'), "NetStream must support legacy compatible compression module");
+assert(source.includes("Internal.CompressionCore.CodecVersion == 230"), "NetStream must check codec, not only package version");
+assert(compression.includes("if value < 128 then") && compression.includes("self:Ensure(1)"), "Compression single-byte varuint writer fast path missing");
+assert(compression.includes("local count = varUIntBytes(value)") && compression.includes("self:Ensure(count)"), "Compression multibyte writer exact preflight missing");
+assert(compression.includes("if first < 128 then"), "Compression one-byte varuint reader fast path missing");
+assert(compression.includes('error("NON_CANONICAL_VARUINT")') && compression.includes('error("VARUINT_TOO_LARGE")'), "Compression canonical varuint guards missing");
+assert(compression.includes('error("UNSUPPORTED_MAP_KEY:" .. keyType)'), "Unsupported map key validation missing");
+assert(source.includes("reader:needBits(count * width)"), "Packed receive burst preflight missing");
+assert(source.includes("Stats.BitFramePackedScalarFastReads += count"), "Packed scalar receive path stats missing");
+assert(source.includes("BitFramePackedScalarFastReads = stats.BitFramePackedScalarFastReads"), "Packed receive stats projection missing");
+assert(tests.includes("CompressionV24Regression.server.lua"), "Compression v2.4.0 Studio regression missing");
+for (const invalidKey of [{}, [], new Date()]) assert(!["string","number","boolean"].includes(typeof invalidKey), "Map-key type model broke");
 
 let state = 0x31415926;
 function random() {

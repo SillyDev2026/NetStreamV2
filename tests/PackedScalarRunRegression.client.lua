@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.9.0")
+assert(NetStream.GetVersion() == "4.0.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, PackedSchemaRunEnabled = true, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Numbers = NetStream.Event("__NSPackedScalarNumbers", {Id = 36201, Schema = {T.U16}, Compression = false})
@@ -11,7 +11,7 @@ local done = false
 Ack:Connect(function(value)
     assert(value == 1, "Packed scalar ACK invalid")
     done = true
-    print("NetStream v3.9.0 packed scalar run PASS")
+    print("NetStream v4.0.0 packed scalar run PASS")
 end)
 for i = 1, 40 do assert(Numbers:FireServer(60000 - i), "Packed U16 send failed") end
 for i = 1, 40 do assert(Bools:FireServer(i % 2 == 1), "Packed Bool send failed") end

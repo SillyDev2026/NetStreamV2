@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.9.0")
+assert(NetStream.GetVersion() == "4.0.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, PackedSchemaRunEnabled = true, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Numbers = NetStream.Event("__NSPackedScalarNumbers", {Id = 36201, Schema = {T.U16}, Compression = false})
@@ -17,7 +17,7 @@ local function complete(player)
     assert(stats.BitFramePackedScalarRunItems >= 40, "Expected packed one-field scalar run decode")
     assert(stats.DecodeErrors == 0, "Packed scalar run must not corrupt framing")
     assert(Ack:FireClientNow(player, 1), "Packed scalar ACK failed")
-    print("NetStream v3.9.0 packed scalar run PASS", stats.BitFramePackedScalarRunItems)
+    print("NetStream v4.0.0 packed scalar run PASS", stats.BitFramePackedScalarRunItems)
 end
 Numbers:Connect(function(player, value)
     numberCount += 1
@@ -29,4 +29,4 @@ Bools:Connect(function(player, value)
     assert(value == (boolCount % 2 == 1), "Bool packed scalar order changed")
     complete(player)
 end)
-print("NetStream v3.9.0 packed scalar server ready")
+print("NetStream v4.0.0 packed scalar server ready")

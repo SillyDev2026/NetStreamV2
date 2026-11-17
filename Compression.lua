@@ -144,7 +144,9 @@ function Writer.new(initialCapacity: number?): WriterObject
 	for i = #writerPool, 1, -1 do
 		local candidate = writerPool[i]
 		if candidate.Capacity >= capacity then
-			table.remove(writerPool, i)
+			local last = #writerPool
+			writerPool[i] = writerPool[last]
+			writerPool[last] = nil
 			candidate.Position = 0
 			return candidate
 		end
@@ -222,16 +224,19 @@ end
 function Writer:VarUInt(value: number)
 	assert(value >= 0 and value <= MAX_SAFE_INTEGER and value % 1 == 0, "VarUInt requires a non-negative safe integer")
 	local position = self.Position
-	if position + 8 > self.Capacity then
-		self:Ensure(8)
+	if value < 128 then
+		if position >= self.Capacity then self:Ensure(1) end
+		buffer.writeu8(self.Buffer, position, value)
+		self.Position = position + 1
+		return
 	end
+	local count = varUIntBytes(value)
+	if position + count > self.Capacity then self:Ensure(count) end
 	local target = self.Buffer
 	repeat
 		local byte = value % 128
 		value = math.floor(value / 128)
-		if value > 0 then
-			byte += 128
-		end
+		if value > 0 then byte += 128 end
 		buffer.writeu8(target, position, byte)
 		position += 1
 	until value == 0
@@ -343,33 +348,29 @@ function Reader:VarUInt(): number
 	local source = self.Buffer
 	local position = self.Position
 	local limit = self.Length
-	local value = 0
-	local multiplier = 1
-	local count = 0
-	while true do
-		if position >= limit then
-			error("COMPRESSION_TRUNCATED")
-		end
-		count += 1
-		if count > 8 then
-			error("VARUINT_TOO_LARGE")
-		end
+	if position >= limit then error("COMPRESSION_TRUNCATED") end
+	local first = buffer.readu8(source, position)
+	position += 1
+	if first < 128 then
+		self.Position = position
+		return first
+	end
+	local value = first % 128
+	local multiplier = 128
+	for count = 2, 8 do
+		if position >= limit then error("COMPRESSION_TRUNCATED") end
 		local byte = buffer.readu8(source, position)
 		position += 1
 		value += (byte % 128) * multiplier
 		if byte < 128 then
-			if count > 1 and byte == 0 then
-				error("NON_CANONICAL_VARUINT")
-			end
-			break
+			if byte == 0 then error("NON_CANONICAL_VARUINT") end
+			if value > MAX_SAFE_INTEGER then error("VARUINT_UNSAFE_INTEGER") end
+			self.Position = position
+			return value
 		end
 		multiplier *= 128
 	end
-	if value > MAX_SAFE_INTEGER then
-		error("VARUINT_UNSAFE_INTEGER")
-	end
-	self.Position = position
-	return value
+	error("VARUINT_TOO_LARGE")
 end
 
 function Reader:VarInt(): number
@@ -662,6 +663,10 @@ local function writeValue(
 			end
 		else
 			for key, child in pairs(value) do
+				local keyType = typeof(key)
+				if keyType ~= "string" and keyType ~= "number" and keyType ~= "boolean" then
+					error("UNSUPPORTED_MAP_KEY:" .. keyType)
+				end
 				writeValue(writer, key, dictionary, seen, state, options, depth + 1)
 				writeValue(writer, child, dictionary, seen, state, options, depth + 1)
 			end
@@ -740,9 +745,9 @@ local function readValue(
 		local seenKeys = {}
 		for _ = 1, count do
 			local key = readValue(reader, dictionary, state, options, depth + 1)
-			if key == nil then
-				error("NIL_MAP_KEY")
-			end
+			if key == nil then error("NIL_MAP_KEY") end
+			local keyType = typeof(key)
+			if keyType ~= "string" and keyType ~= "number" and keyType ~= "boolean" then error("UNSUPPORTED_MAP_KEY:" .. keyType) end
 			if seenKeys[key] then
 				error("DUPLICATE_MAP_KEY")
 			end
@@ -760,7 +765,7 @@ end
 
 -- Returns the codec version exposed to dependent modules.
 function Compression.Version(): string
-	return "2.3.5"
+	return "2.4.0"
 end
 
 -- Returns the stable table codec mode identifier.

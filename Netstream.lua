@@ -6,11 +6,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local Internal = {}
-Internal.CompressionCore = require(assert(script:WaitForChild("Compression", 10), "NetStream v2.3.0 requires a child ModuleScript named Compression (v2.3.x)"))
-assert(type(Internal.CompressionCore) == "table" and type(Internal.CompressionCore.Version) == "function", "NetStream v2.3.0 requires Compression v2.3.x")
+Internal.CompressionCore = require(assert(script:WaitForChild("Compression", 10), "NetStream v4.0.0 requires a child ModuleScript named Compression"))
+assert(type(Internal.CompressionCore) == "table" and type(Internal.CompressionCore.Version) == "function", "NetStream v4.0.0 requires the bundled Compression API")
 Internal.CompressionVersion = tostring(Internal.CompressionCore.Version())
-assert(string.sub(Internal.CompressionVersion, 1, 4) == "2.3.", "NetStream v2.3.0 requires Compression v2.3.x; got " .. Internal.CompressionVersion)
-assert(type(Internal.CompressionCore.CompressTablePacket) == "function" and type(Internal.CompressionCore.DecompressTable) == "function", "NetStream v2.3.0 requires the Compression v2.3 packet API")
+local compressionFamily = string.sub(Internal.CompressionVersion, 1, 4)
+assert(compressionFamily == "2.3." or compressionFamily == "2.4.", "NetStream v4.0.0 requires Compression 2.3.x or 2.4.x; got " .. Internal.CompressionVersion)
+assert(Internal.CompressionCore.CodecVersion == 230 and Internal.CompressionCore.Magic == 0x4E433233, "NetStream requires Compression wire codec 230")
+assert(type(Internal.CompressionCore.CompressTablePacket) == "function" and type(Internal.CompressionCore.DecompressTable) == "function", "NetStream requires the Compression 230 packet API")
 
 -- NetStream v2.3 keeps transport bit-packing local and uses Compression v2.3
 -- only for optional payload compression. This avoids coupling the wire hot path
@@ -211,7 +213,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.9.0"
+local VERSION = "4.0.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -586,6 +588,7 @@ local Stats = {
 	BitFrameScalarSchemaReads = 0,
 	BitFramePackedScalarRunItems = 0,
 	BitFramePackedScalarRunWrites = 0,
+	BitFramePackedScalarFastReads = 0,
 	BitPacketCallsSent = 0,
 	BitPacketCallsReceived = 0,
 	BitPacketHeaderBits = 0,
@@ -6328,9 +6331,24 @@ function Internal.parseBitFrame(player, reader, stage)
 				local schema = route._schema
 				local scalarKind = schema.scalarKind
 				if scalarKind and allowed then
-					for index = 1, count do
-						local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
-						Internal.stageBitFrameScalar(stage, kind, route, routeId, value, if index == 1 then count else 0)
+					if count > 1 and (scalarKind == SCHEMA_BOOL or scalarKind == SCHEMA_U8 or scalarKind == SCHEMA_U16) then
+						local width = if scalarKind == SCHEMA_BOOL then 1 elseif scalarKind == SCHEMA_U8 then 8 else 16
+						reader:needBits(count * width)
+						local data = reader.buffer
+						local position = reader.bitPosition
+						for index = 1, count do
+							local raw = buffer.readbits(data, position, width)
+							position += width
+							Internal.stageBitFrameScalar(stage, kind, route, routeId, if scalarKind == SCHEMA_BOOL then raw ~= 0 else raw, if index == 1 then count else 0)
+						end
+						reader.bitPosition = position
+						Stats.BitFrameScalarSchemaReads += count
+						Stats.BitFramePackedScalarFastReads += count
+					else
+						for index = 1, count do
+							local value = Internal.bitFrameReadScalarSchema(reader, scalarKind)
+							Internal.stageBitFrameScalar(stage, kind, route, routeId, value, if index == 1 then count else 0)
+						end
 					end
 					if count > 1 then Stats.BitFramePackedScalarRunItems += count end
 				elseif not allowed then
@@ -7564,7 +7582,7 @@ NetStream.ProtocolSingle = Internal.LEGACY_PROTOCOL_SINGLE
 NetStream.ProtocolCompactTable = Internal.LEGACY_PROTOCOL_COMPACT_TABLE
 NetStream.ProtocolFastSchema = Internal.LEGACY_PROTOCOL_FAST_SCHEMA
 NetStream.BitCallMarker = Internal.BIT_CALL_MARKER
-NetStream.RequiredCompressionVersion = "2.3.x"
+NetStream.RequiredCompressionVersion = "2.3.x or 2.4.x (codec 230)"
 NetStream.BitFrameVersion = 1
 NetStream.ProtocolHeaderBytes = 0
 NetStream.HybridEventStateMarker = Internal.HYBRID_EVENT_STATE_MARKER
@@ -8366,6 +8384,7 @@ function NetStream.GetPerformanceStats()
 		ScalarDispatches = stats.ScalarDispatches,
 		BitFramePackedScalarRunItems = stats.BitFramePackedScalarRunItems,
 		BitFramePackedScalarRunWrites = stats.BitFramePackedScalarRunWrites,
+		BitFramePackedScalarFastReads = stats.BitFramePackedScalarFastReads,
 		BitFrameScalarSchemaReads = stats.BitFrameScalarSchemaReads,
 		AverageMessagesPerBatch = stats.AverageMessagesPerBatch,
 		AverageBatchBytes = stats.AverageBatchBytes,

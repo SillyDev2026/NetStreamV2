@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v3.8.0, BitFrame v1, Compression v2.3.5 (codec 230).**
+**Applies to NetStream v4.0.0, BitFrame v1, Compression v2.4.0 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -92,7 +92,7 @@ The decoder rejects packets with unknown routes, unsupported kinds, malformed ad
 
 The bundled compression module is a distinct API (`CompressTablePacket` / `DecompressTable`). The Netstream main module adapts it into its local `Compression.Compress` / `Compression.Decode` helpers.
 
-The adapter currently translates dictionary settings, maximum depth/nodes, deterministic map and memory/preallocation options. The binary codec supports scalar, string dictionary, arrays/maps and checksum-verified frames. Options in NetStream config named for entropy/Huffman, delta or RLE **are not implemented by this bundled v2.3.5 compressor**.
+The adapter currently translates dictionary settings, maximum depth/nodes, deterministic map and memory/preallocation options. The binary codec supports scalar, string dictionary, arrays/maps and checksum-verified frames. Options in NetStream config named for entropy/Huffman, delta or RLE **are not implemented by this bundled v2.4.0 compressor**.
 
 Compressed data should only be chosen after checking route permission, data eligibility, rough byte savings, hybrid thresholds and the route's measured/estimated compression CPU budget. A per-route EMA and periodic probes prevent repeated costly automatic compression in expensive workloads. Explicit compression-on routes can bypass automatic CPU-gating.
 

@@ -2,7 +2,7 @@
 -- StarterPlayerScripts LocalScript; pair with BitFrameFloatGuard.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.9.0")
+assert(NetStream.GetVersion() == "4.0.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 NetStream.Event("__NSFloatGuard32", {Id = 35401, Schema = {T.F32}, Compression = false})
@@ -13,7 +13,7 @@ local done = false
 Ack:Connect(function(value)
     assert(value == 7, "Unexpected float guard acknowledgement")
     done = true
-    print("NetStream v3.9.0 non-finite float rejection and recovery PASS")
+    print("NetStream v4.0.0 non-finite float rejection and recovery PASS")
 end)
 local remote = ReplicatedStorage:WaitForChild("__NetStream_NetStream"):WaitForChild("R")
 local bits = NetStream.TransportCompression

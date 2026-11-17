@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v3.8.0. **Candidate:** v3.9.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v3.9.0. **Candidate:** v4.0.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -102,7 +102,7 @@ print("Overall Luau heap (KiB):", memory.LuaHeapKB)
 
 ## Release checklist
 
-- [ ] Client and server use NetStream v2.3.25 and bundled Compression v2.3.5
+- [ ] Client and server use NetStream v4.0.0 and bundled Compression v2.4.0 (codec 230)
 - [ ] Both sides agree on BitFrame setting, route IDs and schemas
 - [ ] At least one reliable and one unreliable lane scenario tested
 - [ ] HandshakeRecovery and HandshakeReplayRegression pass
@@ -182,3 +182,12 @@ Place `BurstSaturationBenchmark.server.lua` in ServerScriptService and `BurstSat
 | Client + server heap after GC (KiB) | — | — |
 | GC pause p95/p99 (MicroProfiler) | — | — |
 | Malformed packets / drops | — | — |
+
+
+## v4.0.0 / Compression v2.4.0 verification
+
+Run `CompressionV24Regression.server.lua` standalone first, then `PackedScalarRunRegression` and `BurstSaturationBenchmark` with each server/client pair in its own Play session. Confirm no unexpected decode errors, preserved packed Bool/U8/U16 values, FIFO order and rate-limit behavior. `BitFramePackedScalarFastReads` should increase when a packed run of more than one matching field is received.
+
+For a measured comparison, run the same 30,000-message benchmark on NetStream v3.9.0 + Compression v2.3.5 and v4.0.0 + Compression v2.4.0 under otherwise matched conditions. Compare send encode p50/p95/p99, receive decode p50/p95/p99, dispatch p50/p95/p99, effective delivered messages/second, heap/GC pauses and packet bytes. Run at least five trials per configuration. A Compression-specific microbenchmark should run many small numeric and dictionary-heavy payload round-trips and record wall-clock times, peak buffers and output byte parity; do not infer compression ratio improvements from the varuint CPU changes.
+
+The reference codec ID **230** deliberately does not change. No observed Roblox Studio metrics have been committed; source audits and static Luau compilation alone cannot establish performance gains.

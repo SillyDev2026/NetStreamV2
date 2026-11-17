@@ -1,6 +1,14 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v3.9.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.0.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.0.0 — two-module quality/optimization update
+
+| Component | Delivered | Validation pending |
+|---|---|---|
+| NetStream | Single-preflight packed Bool/U8/U16 receive runs; codec metadata guard | Studio p95/p99 decode, FIFO, rate and malformed packet regressions |
+| Compression | Single-byte varuint fast paths, exact capacity growth, O(1) pool removal | Studio microbenchmark CPU/heap and byte-identical codec 230 encoding |
+| Compression correctness | Reject nonprimitive map keys on encode and decode | Studio invalid-map, malicious codec-230 packet, truncation cases |
 
 ## v3.9.0 — burst-focused iteration
 

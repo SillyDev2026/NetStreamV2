@@ -1,6 +1,14 @@
 # NetStreamV2 Changelog
 
-The current release is **v3.9.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v4.0.0**, using **BitFrame v1** and bundled **Compression v2.4.0** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.0.0 — Packed receive optimization and Compression v2.4.0 hardening
+
+- **NetStream receive performance:** Packed one-field Bool/U8/U16 event runs get one total-bit capacity preflight and direct `buffer.readbits` iteration. Preserve scalar atomic staging, rate-limit groups and FIFO, recording `BitFramePackedScalarFastReads`.
+- **Compression v2.4.0:** A dedicated one-byte varuint writer/reader path, exact multi-byte preallocation instead of reserving eight bytes on each varuint, and O(1) eligible writer-pool removal.
+- **Correctness:** Reject table/reference map keys that cannot preserve identity across the packet boundary on both encode and decode; malformed varuint decode stays canonical and bounded.
+- **Wire:** Retain Compression magic and codec 230, BitFrame v1, all tags/headers, route IDs and existing APIs. NetStream accepts bundled 2.3.x or 2.4.x compressor only if the expected codec metadata matches.
+- **Testing:** Added `CompressionV24Regression.server.lua` including integer/writer-pool/malformed data cases; refreshed version assertions across all existing Studio scripts and expanded source audit. Source CI is not a Studio runtime benchmark.
 
 ## v3.9.0 — Burst throughput, packed hot path and regression benchmarking
 
