@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.2.0")
+assert(NetStream.GetVersion() == "3.5.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local First = NetStream.Event("__NSFixedDiscardFirst", {Id = 36001, Schema = {T.U8}, Compression = false})
@@ -12,7 +12,7 @@ local done = false
 Ack:Connect(function(value)
     assert(value == 1, "Unexpected fixed discard ACK")
     done = true
-    print("NetStream 3.2.0 fixed discard PASS")
+    print("NetStream 3.5.0 fixed discard PASS")
 end)
 assert(First:FireServerNow(9), "Failed to send accepted first event")
 assert(Mixed:FireServerNow(true, 3, 65000, -12345, 4000000000, -2000000000, Color3.fromRGB(12, 36, 250)), "Failed to send rejected mixed event")

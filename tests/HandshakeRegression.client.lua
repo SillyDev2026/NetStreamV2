@@ -2,7 +2,7 @@
 -- Run this LocalScript alone in StarterPlayerScripts with the paired server regression.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "3.2.0", "Wrong NetStream version")
+assert(NetStream.GetVersion() == "3.5.0", "Wrong NetStream version")
 NetStream.Configure({HandshakeEnabled = true, HandshakeRequireReady = true, TransportFastFlushEnabled = true})
 local probe = NetStream.Event("__NSHandshakeProbe", {Id = 34111, Priority = "Realtime", Compression = false})
 local ack = NetStream.Event("__NSHandshakeReply", {Id = 34112, Priority = "Critical", Compression = false})
