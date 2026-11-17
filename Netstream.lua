@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "3.5.0"
+local VERSION = "3.6.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -1562,9 +1562,11 @@ end
 
 function Internal.BitFrameWriter:ensure(bytes) self:ensureBits(bytes * 8) end
 function Internal.BitFrameWriter:bits(value, count)
-	self:ensureBits(count)
-	buffer.writebits(self.buffer, self.bitPosition, count, value)
-	self.bitPosition += count
+	local position = self.bitPosition
+	local nextPosition = position + count
+	if nextPosition > self.capacity * 8 or nextPosition > Config.BitFrameMaxBytes * 8 then self:ensureBits(count) end
+	buffer.writebits(self.buffer, position, count, value)
+	self.bitPosition = nextPosition
 end
 function Internal.BitFrameWriter:adaptiveUInt(value)
 	local bitPosition = self.bitPosition
@@ -3386,8 +3388,19 @@ end
 local function makeArgs(...)
 	local n = select("#", ...)
 	local args = acquireArgsCount(n)
-	for i = 1, n do
-		args[i] = select(i, ...)
+	if n == 1 then
+		args[1] = ...
+	elseif n == 2 then
+		local a, b = ...
+		args[1] = a
+		args[2] = b
+	elseif n == 3 then
+		local a, b, c = ...
+		args[1] = a
+		args[2] = b
+		args[3] = c
+	else
+		for i = 1, n do args[i] = select(i, ...) end
 	end
 	return args
 end
