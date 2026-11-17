@@ -1,6 +1,26 @@
 # NetStreamV2 Changelog
 
-The current release is **v3.5.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release is **v3.8.0**, using **BitFrame v1** and the bundled **Compression v2.3.5** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v3.8.0 — Packed-run high-water memory retention fix
+
+- Keep a weak-key high-water marker for packed value backing tables that ever exceed `MaxPooledPackedValues`, including arrays grown by appended events and arrays whose message was split.
+- Do not pool those backing tables after a later split reduces their live element count; this avoids keeping a high-capacity array in the small-value pool.
+- Prefer direct unpooled allocation when the requested packed array is already oversized, preserving warm small-object pool entries.
+- Add `PackedValueHighWaterDrops` memory diagnostics and paired `PackedHighWaterRegression` Studio scripts.
+
+## v3.7.0 — Packed one-field numeric runs without per-value argument tables
+
+- Decode packed one-field Bool/U8/U16/I16/U32/I32/F32/F64 event runs directly into scalar staging.
+- Extend signed group tags so the first item retains its run rate-limit allowance and followers consume it without repeated bucket calls.
+- Preserve FIFO order and scalar nil handling, and expose `BitFramePackedScalarRunItems`.
+- Add paired `PackedScalarRunRegression` Studio scripts.
+
+## v3.6.0 — Bit-write and small outgoing varargs CPU hot paths
+
+- Avoid an `ensureBits` method invocation for ordinary in-capacity writes in `BitFrameWriter:bits`, while checking both buffer and maximum packet limits.
+- Pack one-, two- and three-argument outgoing messages directly instead of repeating indexed `select` calls.
+- Retain arbitrary arity and nil-preserving fallback behavior.
 
 ## v3.5.0 — Bounded retained pools and reduced cleanup work
 

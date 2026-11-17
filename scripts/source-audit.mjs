@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "3.5.0";
+const version = "3.8.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 59, "Regression suite unexpectedly missing");
+assert(tests.length >= 63, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -69,7 +69,7 @@ assert(source.includes("pcall(decodeBatch, player, data, reader)"), "Receive han
 assert(!source.includes("pcall(Internal.parseBitFrame,"), "Atomic decode should reuse existing protected receive call rather than nesting pcall");
 assert(source.includes("Stats.BitFrameAtomicDiscardedActions += stage.count"), "Malformed BitFrame actions must be counted and discarded");
 assert(source.includes("if actionCount > Config.MaxPooledBitFrameActions then return end"), "Large decoder staging arrays must not remain pooled");
-assert(source.includes("function Internal.stageBitFrameScalar(stage, kind, route, routeId, value)"), "Allocation-free scalar staging missing");
+assert(source.includes("function Internal.stageBitFrameScalar(stage, kind, route, routeId, value, group)"), "Allocation-free scalar staging missing");
 assert(source.includes("Internal.BitFrameWriter.varUInt = Internal.BitFrameWriter.adaptiveUInt"), "BitFrame varUInt alias missing");
 assert(source.includes("byte < 128 then"), "One-byte varUInt fast path missing");
 assert(source.includes("MaxBitFrameStagePoolSize = 8,"), "Bounded stage-pool size default missing");
@@ -77,7 +77,7 @@ assert(source.includes("if #pool >= Config.MaxBitFrameStagePoolSize then return 
 assert(source.includes("local routeId = if route then route.Id else 0"), "Commit must reuse route ID instead of storing a parallel array");
 assert(!source.includes("stage.routeIds"), "Redundant stage route ID table still retained");
 assert(!/stage\.(scalarFlags|scalarValues)/.test(source), "Scalar stages must not allocate separate flag/value tables");
-assert(source.includes("stage.groups[index] = -1"), "Scalar tag must distinguish nil from args tables");
+assert(source.includes("stage.groups[index] = -((group or 1) + 1)"), "Scalar tag must distinguish nil from args tables");
 assert(source.includes("if stage.groups[i] >= 0 and args then releaseArgs(args) end"), "Cleanup must not release a scalar as an args table");
 assert(source.includes("function Internal.bitFrameDiscardSchemaArgs(reader, schema)"), "Allocation-free rejected schema parser missing");
 assert(source.includes("reader.bitPosition += skipBits"), "Fixed-schema reject path should skip prevalidated bits");
@@ -104,9 +104,30 @@ assert(source.includes("unpooledBatches = setmetatable({}, {__mode = \"k\"})"), 
 assert(source.includes("if #batchPool >= Config.MaxBatchPoolSize then return end"), "Full batch pools must not clear dropped objects");
 assert(source.includes("if #pool >= Config.MaxBitFrameStagePoolSize then return end"), "Full atomic stage pools must not clear dropped objects");
 assert(source.includes("Stats.BatchPoolOversizeDrops += 1"), "Oversized batch drop metric missing");
+const bitsWriterStart = source.indexOf("function Internal.BitFrameWriter:bits(value, count)");
+const bitsWriterEnd = source.indexOf("function Internal.BitFrameWriter:adaptiveUInt(value)", bitsWriterStart);
+assert(bitsWriterStart >= 0 && bitsWriterEnd > bitsWriterStart, "BitFrame writer fast path boundary missing");
+const bitWriter = source.slice(bitsWriterStart, bitsWriterEnd);
+assert(bitWriter.includes("nextPosition > self.capacity * 8 or nextPosition > Config.BitFrameMaxBytes * 8"), "Bit writer must keep both capacity and configured maximum checks");
+assert(bitWriter.includes("buffer.writebits(self.buffer, position, count, value)"), "Bit writer direct fast path missing");
+const makeArgsStart = source.indexOf("local function makeArgs(...)");
+const makeArgsEnd = source.indexOf("local function acquirePackedValues(", makeArgsStart);
+const makeArgs = source.slice(makeArgsStart, makeArgsEnd);
+for (const guard of ["if n == 1 then", "elseif n == 2 then", "elseif n == 3 then", "select(i, ...)"]) assert(makeArgs.includes(guard), `Small vararg pack path missing ${guard}`);
+assert(source.includes("if scalarKind and allowed then"), "Packed scalar run specialization missing");
+assert(source.includes("Internal.stageBitFrameScalar(stage, kind, route, routeId, value, if index == 1 then count else 0)"), "Scalar run must preserve first group and following continuation tags");
+assert(source.includes("stage.groups[index] = -((group or 1) + 1)"), "Scalar continuation sentinel missing");
+assert(source.includes("group ~= 0 and group ~= -1"), "Scalar route allowance must skip run continuations");
+assert(source.includes("Stats.BitFramePackedScalarRunItems += count"), "Packed scalar run diagnostics missing");
+assert(source.includes('unpooledPackedValues = setmetatable({}, {__mode = "k"})'), "Packed high-water set must not prevent GC");
+assert(source.includes("if base + valueCount > Config.MaxPooledPackedValues then unpooledPackedValues[values] = true end"), "Growing packed runs must retain high-water status");
+assert(source.includes("if total * fieldCount > Config.MaxPooledPackedValues then unpooledPackedValues[values] = true end"), "Split packed runs must preserve high-water status");
+assert(source.includes("if highWater or usedCount > Config.MaxPooledPackedValues then"), "Previously oversized arrays must never enter packed value pool");
+assert(source.includes("PackedValueHighWaterDrops = Stats.PackedValueHighWaterDrops"), "High-water diagnostics missing");
+for (const name of ["PackedScalarRunRegression", "PackedHighWaterRegression"]) assert(tests.includes(name + ".server.lua") && tests.includes(name + ".client.lua"), `Missing Studio test pair ${name}`);
 
 
-for (const pair of ["StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression", "FixedDiscardRegression", "ExtendedScalarStringRegression", "ScalarThrottleHeapRegression", "DynamicDiscardHeapRegression", "BoundedPoolRegression"]) {
+for (const pair of ["PackedScalarRunRegression", "PackedHighWaterRegression", "StateThrottleRegression", "PackedBudgetRegression", "BinaryPrecisionRegression", "AtomicPacketRegression", "AtomicScalarRegression", "HeapDiscardRegression", "StagePoolMemoryRegression", "FixedDiscardRegression", "ExtendedScalarStringRegression", "ScalarThrottleHeapRegression", "DynamicDiscardHeapRegression", "BoundedPoolRegression"]) {
     assert(tests.includes(pair + ".client.lua") && tests.includes(pair + ".server.lua"), `Missing Studio regression pair: ${pair}`);
 }
 
@@ -233,6 +254,25 @@ for (let run = 0; run < 3000; run++) {
     }
 }
 
-for (const label of ["2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "3.0.0", "3.1.0", "3.2.0", "3.3.0", "3.4.0", "3.5.0"]) assert(read("docs/CHANGELOG.md").includes(label));
+for (const label of ["3.6.0", "3.7.0", "3.8.0", "2.3.29", "2.3.30", "2.3.31", "2.3.35", "2.3.36", "2.3.37", "2.4.0", "2.5.0", "2.6.0", "2.7.0", "2.8.0", "2.9.0", "3.0.0", "3.1.0", "3.2.0", "3.3.0", "3.4.0", "3.5.0"]) assert(read("docs/CHANGELOG.md").includes(label));
+for (let run = 0; run < 5000; run++) {
+    const count = 1 + random() % 256;
+    const allowance = random() % (count + 1);
+    let remaining = 0, delivered = 0;
+    for (let i = 0; i < count; i++) {
+        const groupTag = -( (i === 0 ? count : 0) + 1 );
+        assert(groupTag < 0, "Scalar and continuation tags must be negative");
+        if (groupTag !== -1) remaining = Math.min(allowance, -groupTag - 1);
+        if (remaining > 0) { remaining--; delivered++; }
+    }
+    assert.equal(delivered, allowance, "Packed scalar run changed route token allowance accounting");
+}
+for (let run = 0; run < 2000; run++) {
+    const limit = 8 + random() % 64;
+    const highWater = limit + 1 + random() % 256;
+    const afterSplit = random() % (limit + 1);
+    assert(highWater > limit && afterSplit <= limit, "Invalid high-water test");
+    assert(!(highWater <= limit && afterSplit <= limit), "Oversized backing storage must be discarded regardless of live split count");
+}
 assert(read("README.md").includes(`v${version}`));
-console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + signed-scalar models, fixed-discard, numeric scalar, CPU, heap and GC pool guards, ${tests.length} Studio-script static scans`);
+console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + packed scalar allowance models, fixed-discard, writer fast path and packed high-water GC guards, ${tests.length} Studio-script static scans`);

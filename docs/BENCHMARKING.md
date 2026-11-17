@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v3.2.0. **Candidate:** v3.5.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v3.5.0. **Candidate:** v3.8.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,8 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `PackedScalarRunRegression` | Single-field U16 and Bool runs, FIFO, signed group continuation rate-limit semantics |
+| `PackedHighWaterRegression` | Correct packed-run FIFO and discarding oversized backing tables despite later small run slices |
 | `ScalarThrottleHeapRegression` | Scalar route-level rejection, no argument-table cleanup error, accepted value preserved |
 | `DynamicDiscardHeapRegression` | Globally rejected dynamic args are validated without acquiring an args table |
 | `BoundedPoolRegression` | Idle pool caps set to zero, correct FIFO, no retained batch/args/message tables |
@@ -153,3 +155,7 @@ Use separate identical server/client sessions for each paired Studio script. Mea
 ## v3.5.0 CPU/heap/GC comparison
 
 Run identical v3.2.0 and v3.5.0 Studio sessions with the same player count, numeric/event schemas, event rate, payload distribution, traffic throttles and compression settings. Include a sustained 10,000-message small-scalar workload, a batched 32–256 message workload, a rejected schema-run workload, and an idle-after-burst period. Collect `GetStats()`, `GetMemoryDiagnostics()`, `GetLatencyStats()`, Lua heap KB (`gcinfo()`), MicroProfiler network decode/dispatch CPU and observed GC pauses. Report p50/p95/p99 and allocation/GC measures as *observations*, not a 1–10 speed rating. Smaller pool caps may raise churn under constant saturation; compare stable throughput before selecting a lower cap.
+
+## v3.8.0 CPU / heap / GC comparison
+
+Compare v3.5.0 and v3.8.0 under identical Play Solo and multi-client Studio sessions. Run (a) 10,000 single-, two- and three-value messages; (b) sustained one-field U16 and Bool packed runs; and (c) bursty 96-event U8×8 traffic under a small outbound byte cap. Record per-path CPU p50/p95/p99 with the MicroProfiler, `GetStats().BitFramePackedScalarRunItems`, `GetMemoryDiagnostics().PackedValueHighWaterDrops`, `gcinfo()` before/during/after stable loads, packet bytes and observed garbage collector pauses. Validate callback order, no decoding errors, and rejected packet accounting. No observed results have been prefilled.

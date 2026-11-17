@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v3.5.0-2563eb)
+![Release](https://img.shields.io/badge/release-v3.8.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.3.5-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v3.5.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v3.5.0 has not yet been measured in Roblox Studio.
+> **Current `main` release: NetStream v3.8.0.** Bundled child Compression: **v2.3.5**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v3.8.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -281,6 +281,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **3.8.0** | Drop oversized packed value tables even after runs are split into smaller prefixes; preserve high-water flags through weak keys |
+| **3.7.0** | Decode packed one-field Bool/U8/U16/I16/U32/I32/F32/F64 runs without per-value args tables; preserve rate-limit grouping |
+| **3.6.0** | Inline BitFrame writer capacity fast path and specialize 1–3 outgoing argument packing |
 | **3.5.0** | Bound idle args/message/batch pools, discard oversized transient batches, and avoid unnecessary clearing when pools are full |
 | **3.4.0** | Merge scalar dispatch payloads into the existing argument slot; avoid args arrays on rejected dynamic packets |
 | **3.3.0** | Bulk skip rate-limited fixed-width schema runs, harden scalar throttling and stage cleanup |
@@ -355,3 +358,11 @@ Paired Studio scripts: `FixedDiscardRegression` and `ExtendedScalarStringRegress
 **Tuning:** Reducing pool limits lowers retained idle memory after spikes but may raise allocations in sustained burst workloads; increase caps when real Studio profiles justify it. Run `NetStream.GetMemoryDiagnostics()` after spikes and `NetStream.TrimPools()` only at safe transition points, not every frame.
 
 **Verification:** Three new Studio regression pairs: `ScalarThrottleHeapRegression`, `DynamicDiscardHeapRegression`, and `BoundedPoolRegression`. GitHub Actions audits and Luau parse/compile checks are source-level only. No measured throughput/heap/GC improvement is claimed. The wire format remains BitFrame v1 and the bundled codec stays Compression v2.3.5.
+
+## CPU / Luau heap / GC pressure cycle (v3.6.0–v3.8.0)
+
+- **v3.6.0 — CPU overhead:** The common `BitFrameWriter:bits` operation avoids calling `ensureBits` when both buffer capacity and configured maximum allow an immediate bit write. Incoming limits remain enforced. Outgoing `makeArgs` packs 1, 2 or 3 values directly (including nil); larger arities retain the existing general loop.
+- **v3.7.0 — Fewer Luau allocations:** Packed BitFrame event runs with a one-field Bool, U8, U16, I16, U32, I32, F32 or F64 schema directly stage scalar values, without acquiring one arguments table per item. Group tags preserve one route-token allowance charge per run and FIFO delivery. `BitFramePackedScalarRunItems` tracks logical items using this path.
+- **v3.8.0 — Lower retained heap and GC pressure:** A weak-key high-water set tracks packed value arrays once they exceed `MaxPooledPackedValues`, including while appending or splitting runs. Such arrays cannot be returned to the small-value pool even when the final prefix contains very few values. `PackedValueHighWaterDrops` records these discards. Idle pool configuration and `TrimPools()` remain unchanged.
+
+Paired Studio regression scripts: `PackedScalarRunRegression` and `PackedHighWaterRegression`. These patches retain **BitFrame v1**, existing public routes and **Compression v2.3.5**. GitHub Actions syntax/source checks do not establish faster CPU p95, lower `gcinfo()`, smaller GC pauses, or lower network RTT; measure identical before-and-after Studio loads.

@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v3.5.0, BitFrame v1, Compression v2.3.5 (codec 230).**
+**Applies to NetStream v3.8.0, BitFrame v1, Compression v2.3.5 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -179,3 +179,10 @@ Atomic BitFrame staging retains five parallel arrays rather than the original ei
 ## v3.3.0–v3.5.0 CPU, allocation, and GC refinements
 
 The BitFrame parser skips entire rejected fixed-width schema runs after a single preflight; variable-width schemas preserve per-field validation. During commit, route-limited scalar payloads never enter arguments-table cleanup; the active stage remains attached to the reader until commit completes so unexpected errors can release uncommitted argument arrays. The dispatcher stores scalar values in the existing `dispatchArgs` queue, using the scalar flag to distinguish a payload including `nil`. Rejected dynamic multi-argument and return packets validate fields without acquiring args tables. Idle arguments/messages and outgoing batch-array retention are independently bounded. Oversized batches are tracked in a weak-key set and never returned to the batch pool; pools skip clearing objects they will discard. All changes preserve BitFrame v1.
+
+## v3.6.0–v3.8.0 CPU/heap/GC hot paths
+
+- BitFrame writes use a direct capacity-and-limit fast path; slow growth remains handled by `ensureBits` and retains wire-format validation.
+- One-, two- and three-value argument lists are packed directly into pooled arg tables; arbitrary-length lists retain the general indexed varargs loop.
+- Packed single-field scalar events are committed from scalar values without per-item argument tables. A negative group encoding `-(count + 1)` identifies the first grouped scalar and `-1` marks a following scalar; route token accounting occurs once per group, while each accepted callback still dispatches in FIFO order.
+- Packed value arrays carry a weak-key high-water marker if ever grown beyond `MaxPooledPackedValues`. Both initial allocation and append/split paths mark them, so shortened prefixes cannot leave unexpectedly huge arrays in idle pools. Weak keys do not retain otherwise discarded arrays.
