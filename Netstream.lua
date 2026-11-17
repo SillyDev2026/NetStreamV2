@@ -211,7 +211,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "2.8.0"
+local VERSION = "2.9.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -599,6 +599,7 @@ local Stats = {
 	BitFrameStagePoolHits = 0,
 	BitFrameAtomicRejectedPackets = 0,
 	BitFrameAtomicDiscardedActions = 0,
+	BitFrameDiscardedSchemaArgs = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -2590,6 +2591,26 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 	end
 	args.n = schema.count
 	return args
+end
+
+-- Validate and consume dropped schema fields without materializing an args array.
+-- Reader field decoders still run for variable-width values and malformed input.
+function Internal.bitFrameDiscardSchemaArgs(reader, schema)
+	local count = schema.count
+	if count == 0 then return end
+	if schema.bitPackedBooleans or (count == 1 and schema.fields[1].Kind == SCHEMA_BOOL) then
+		reader:bits(count)
+	elseif schema.byteRunU8 then
+		local bits = count * 8
+		reader:needBits(bits)
+		reader.bitPosition += bits
+	else
+		for i = 1, count do
+			local field = schema.fields[i]
+			if field.Kind == SCHEMA_BOOL then reader:bits(1) else readSchemaValue(reader, field) end
+		end
+	end
+	Stats.BitFrameDiscardedSchemaArgs += 1
 end
 
 local function validateValue(value, depth, seen)
@@ -6179,14 +6200,12 @@ function Internal.parseBitFrame(player, reader, stage)
 				if scalarField and (scalarField.Kind == SCHEMA_U8 or scalarField.Kind == SCHEMA_BOOL) then
 					local value = if scalarField.Kind == SCHEMA_BOOL then reader:bits(1) ~= 0 else reader:bits(8)
 					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
+				elseif not allowed then
+					for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
 				else
 					for index = 1, count do
 						local args = Internal.bitFrameReadSchemaArgs(reader, schema)
-						if allowed then
-							Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
-						else
-							releaseArgs(args)
-						end
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
 					end
 				end
 				logicalCount += count
@@ -6198,13 +6217,11 @@ function Internal.parseBitFrame(player, reader, stage)
 				if scalarField and (scalarField.Kind == SCHEMA_U8 or scalarField.Kind == SCHEMA_BOOL) then
 					local value = if scalarField.Kind == SCHEMA_BOOL then reader:bits(1) ~= 0 else reader:bits(8)
 					if allowed then Internal.stageBitFrameScalar(stage, kind, route, routeId, value) end
-				else
+				elseif allowed then
 					local args = Internal.bitFrameReadSchemaArgs(reader, schema)
-					if allowed then
-						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1)
-					else
-						releaseArgs(args)
-					end
+					Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, 1)
+				else
+					Internal.bitFrameDiscardSchemaArgs(reader, schema)
 				end
 				logicalCount += 1
 			end
@@ -8134,6 +8151,7 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameStagePoolHits = Stats.BitFrameStagePoolHits,
 		BitFrameAtomicRejectedPackets = Stats.BitFrameAtomicRejectedPackets,
 		BitFrameAtomicDiscardedActions = Stats.BitFrameAtomicDiscardedActions,
+		BitFrameDiscardedSchemaArgs = Stats.BitFrameDiscardedSchemaArgs,
 		LegacyReaderPoolSize = #readerPool,
 		ArgsPoolSize = #argsPool,
 		MessagePoolSize = #messagePool,
