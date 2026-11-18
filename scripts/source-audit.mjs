@@ -67,7 +67,7 @@ for (const width of [16, 32]) {
                 if (index === 0) return sample % 256;
                 if (index === 1) return 0;
                 if (index === 2) return max;
-                return Math.floor(random() % (max + 1));
+                return Math.floor(((sample + 1) * 7919 + index * 104729) % (max + 1));
             });
             const bits = new Uint8Array(offset + count * width);
             let position = offset;
