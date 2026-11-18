@@ -60,6 +60,11 @@ for (const fragment of [
     "xpcall(Internal.handleCall, debug.traceback, player, routeId, id, args)",
     "function NetStream.GetRPCStats(player)",
     "copy.ActiveIncomingCalls = activeIncomingCalls",
+    "Stats.IncomingCallPeak = activeIncomingCalls",
+    "RPCActive = activeIncomingCalls",
+    "RPCCapacity = Config.MaxConcurrentIncomingCalls",
+    "RPCUtilization = rpcUtilization",
+    "RPCConcurrencyDrops = Stats.IncomingCallConcurrencyDrops",
 ]) assert(source.includes(fragment), "Missing bounded RPC concurrency guard: " + fragment);
 assert.equal((source.match(/task\.spawn\(Internal\.runIncomingCall/g) || []).length,4,"Every incoming RPC codec path must use safe in-flight wrapper");
 assert(!source.includes("task.spawn(Internal.handleCall"),"Unhandled raw RPC spawn bypasses concurrency slot cleanup");
