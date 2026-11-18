@@ -171,7 +171,7 @@ The receiver checks incoming envelope rates, optional handshake readiness and by
 
 Server RPCs now have in-flight limits **in addition to** existing per-second rate limits: `MaxConcurrentIncomingCalls=512` globally and `MaxConcurrentIncomingCallsPerPlayer=64` by default. Set either to `0` to disable that concurrency cap. A guarded runner across all four RPC packet formats returns capacity after completion or errors; it does not cancel existing callbacks. Rejected RPCs follow existing silent rate-rejection behavior, so the caller may hit `CallTimeout`. Configure application-level retries and idempotency for critical requests.
 
-`GetRPCStats(player?)` reports active/peak handlers, concurrency rejections, execution errors and limits. `GetStats().ActiveIncomingCalls` and `GetMemoryDiagnostics()` expose the same global gauge.
+`GetRPCStats(player?)` reports active/peak handlers, concurrency rejections, execution errors and limits. `GetHealth()` also reports `RPCActive`, `RPCCapacity`, `RPCUtilization`, and `RPCConcurrencyDrops`, and considers saturated RPC capacity in congestion classification. `GetStats().ActiveIncomingCalls` and `GetMemoryDiagnostics()` expose the same global gauge.
 
 4–8 and 12-field argument/packed-run values now use direct vararg-to-array assignments rather than repeated `select(i, ...)` scans, preserving nil positions and packet bytes without temporary arrays. A performance benefit is **not yet measured in Roblox Studio**.
 

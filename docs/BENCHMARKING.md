@@ -61,7 +61,7 @@ The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing samp
 
 ## RPC concurrency and argument-copy performance
 
-Run `RPCConcurrencyRegression.server.lua` and `RPCConcurrencyRegression.client.lua` in isolation. It tests a two-callback-per-player cap under a 16-call burst and a post-exception recovery. For benchmarks compare capped and uncapped configurations at 1/10/25 players with identical yielding callback duration, call rates and hardware. Record live/peak active callbacks, rejected/timed-out calls, server heap after GC, CPU scheduling, and callback turnaround p95/p99. This cap protects outstanding tasks, not per-second CPU work; use both controls together.
+Run `RPCConcurrencyRegression.server.lua` and `RPCConcurrencyRegression.client.lua` in isolation. It tests a two-callback-per-player cap under a 16-call burst and a post-exception recovery. For benchmarks compare capped and uncapped configurations at 1/10/25 players with identical yielding callback duration, call rates and hardware. Record live/peak active callbacks, rejected/timed-out calls, `GetHealth().RPCUtilization`, server heap after GC, CPU scheduling, and callback turnaround p95/p99. This cap protects outstanding tasks, not per-second CPU work; use both controls together.
 
 Compare the 4–8 and 12-field direct vararg copier against the earlier v4.3.0 commit under identical payloads and message rates. Encoding/decoding p95, allocations and GC must be measured in Roblox Studio; the code change alone does not prove speed. See [RPC concurrency](RPC_CONCURRENCY.md).
 

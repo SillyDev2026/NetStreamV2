@@ -6,6 +6,7 @@ The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled *
 
 - Add global/per-player server in-flight RPC caps (default 512/64; 0 disables), complementary to per-second rate budgets, to bound yielding callbacks and callback-owned memory.
 - Funnel all four inbound RPC formats through exception-safe active-count accounting. `ResetStats()` retains the current active-count peak baseline. Add `GetRPCStats(player?)`, stats and memory diagnostics; no packet format change.
+- `GetHealth()` now considers RPC in-flight utilization when diagnosing congestion and includes live RPC capacity/drops.
 - Rejected RPCs follow the existing no-response rate-rejection convention, so a remote invoker may time out; no automatic cancellation of already-running callbacks.
 - Directly unpack 4–8 and 12-field varargs to arguments/packed values without repeated `select(i, ...)` calls or an intermediate array.
 - Add `RPCConcurrencyRegression` paired Studio scripts, deterministic source/model checks and benchmarking notes; **94 authored Studio test/benchmark scripts** total. Runtime correctness and speed still require Studio execution.

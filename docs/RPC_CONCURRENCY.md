@@ -29,7 +29,7 @@ local one = NetStream.GetRPCStats(player)
 print(one.Active, one.PerPlayerLimit)
 ```
 
-`GetStats().ActiveIncomingCalls` and `GetMemoryDiagnostics().ActiveIncomingCalls` expose the same global active gauge; the memory diagnostics also include the peak, rejection and execution-error counters. `NetStream.ResetStats()` resets cumulative counters but retains the current active count as the new peak baseline.
+`GetStats().ActiveIncomingCalls` and `GetMemoryDiagnostics().ActiveIncomingCalls` expose the same global active gauge; `GetHealth()` reports `RPCActive`, `RPCCapacity`, `RPCUtilization`, and `RPCConcurrencyDrops` and uses 40%/80% global capacity thresholds for congestion/overload, alongside queue thresholds; the memory diagnostics also include the peak, rejection and execution-error counters. `NetStream.ResetStats()` resets cumulative counters but retains the current active count as the new peak baseline.
 
 ## Vararg-copy hot paths
 
