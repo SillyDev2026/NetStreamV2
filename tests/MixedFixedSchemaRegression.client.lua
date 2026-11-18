@@ -20,6 +20,7 @@ local function finish()
     local stats = NetStream.GetStats()
     assert(serverReads >= 40 and stats.BitFrameFixedSchemaFastReads >= 40, "Mixed reader fast paths not used")
     assert(stats.BitFrameFixedSchemaFastWrites >= 40, "Mixed writer fast path not used")
+    assert(stats.BitFrameFixedSchemaRunWrites > 0 and stats.BitFrameFixedSchemaRunReads > 0, "Mixed packed-run fast path was not used both ways")
     assert(stats.PackedSchemaRunAppends > 0, "12-field packed runs were not batched")
     assert(stats.DecodeErrors == 0, "Client mixed packet decode errors")
     completed = true

@@ -19,6 +19,7 @@ Mixed:Connect(function(player, a, b, c, d, e, f, g, h, j, k, l, m)
     assert(Mixed:FireClient(player, a, b, c, d, e, f, g, h, j, k, l, m), "Mixed echo enqueue failed")
     if i == 40 then
         local stats = NetStream.GetStats()
+        assert(stats.BitFrameFixedSchemaRunReads > 0, "Mixed packed-run receive fast path missing")
         assert(stats.BitFrameFixedSchemaFastReads >= 40, "Mixed server fast decoder not exercised")
         assert(stats.DecodeErrors == 0, "Server mixed decode errors")
         assert(Ack:FireClient(player, stats.BitFrameFixedSchemaFastReads), "Mixed ACK enqueue failed")

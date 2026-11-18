@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.2.0";
+const version = "4.2.3";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 78, "Regression suite unexpectedly missing");
+assert(tests.length >= 82, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -104,6 +104,50 @@ for (const state of [false, true, 0, 1, -1, 255, "same"]) {
 }
 
 
+for (const file of ["DeltaCodecRegression.server.lua", "DeltaCodecRegression.client.lua", "InterestGroupRegression.server.lua", "InterestGroupRegression.client.lua"]) {
+    assert(tests.includes(file), "Missing v4.2.3 paired Studio regression: " + file);
+}
+for (const fragment of [
+    "BitFrameFixedSchemaRunWrites = 0,",
+    "BitFrameFixedSchemaRunReads = 0,",
+    "writer:ensureBits(schema.discardBits * item.runCount)",
+    "reader:needBits(schema.discardBits * count)",
+    "function NetStream.CreateDeltaCodec(fieldNames)",
+    "function codec:Full(state, revision)",
+    "function codec:Diff(before, after, baseRevision)",
+    "function codec:Apply(previous, previousRevision, frame)",
+    "frame.Revision ~= previousRevision + 1",
+    "bit32.band(nilMask, bit32.bnot(mask)) ~= 0",
+    "function NetStream.CreateInterestGroup()",
+    "function group:Fire(route, ...)",
+    "function group:FireUnreliable(route, ...)",
+    "function group:SetState(route, value, unreliable)",
+    "player.Parent == Players",
+    "InterestRecipientsQueued",
+]) assert(source.includes(fragment), "Three-option feature guard missing: " + fragment);
+function deltaModel(fields, prev, next) {
+    let mask = 0, nilMask = 0, changes = [];
+    for (let i = 0; i < fields.length; i++) {
+        if (prev[fields[i]] !== next[fields[i]]) {
+            mask += 2 ** i;
+            if (next[fields[i]] === undefined) nilMask += 2 ** i;
+            else changes.push(next[fields[i]]);
+        }
+    }
+    return {mask, nilMask, changes};
+}
+for (let n = 1; n <= 32; n++) {
+    const fields = Array.from({length:n},(_,i)=>"f"+i);
+    const prev = Object.fromEntries(fields.map(x=>[x,0]));
+    const next = {...prev, [fields[n-1]]:null};
+    const model = deltaModel(fields,prev,next);
+    assert.equal(model.mask,2 ** (n-1),"Delta bit mask at high field is incorrect");
+    assert.equal(model.changes.length,1,"Delta changed field lost");
+    const deleted = {...prev};
+    delete deleted[fields[n-1]];
+    const remove = deltaModel(fields,prev,deleted);
+    assert.equal(remove.nilMask,remove.mask,"Delta explicit deletion mask is incorrect");
+}
 assert(tests.includes("MixedFixedSchemaRegression.server.lua") && tests.includes("MixedFixedSchemaRegression.client.lua"), "Paired mixed fixed-schema Studio regression missing");
 assert(tests.includes("PacketSizeAuditRegression.server.lua") && tests.includes("PacketSizeAuditRegression.client.lua"), "Paired packet byte-audit Studio regression missing");
 for (const fragment of [
