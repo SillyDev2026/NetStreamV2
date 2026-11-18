@@ -2,6 +2,13 @@
 
 **Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
+## v4.3.0 — U16/U32 serialization improvements
+
+- Implemented: homogeneous U16/U32 tuple and packed-run fast paths with one aggregate bounds preflight and direct buffer access.
+- Implemented: runtime A/B flag `TypedTupleFastPathEnabled`, preserving wire bytes and providing a reliable generic fallback.
+- Added paired Studio boundary/FIFO regression, counter projection and deterministic bit parity models. Run actual Luau CPU/heap benchmarks before claiming speed improvements.
+- Full static/generated serializers for arbitrary types remain an open project, as do competitor-parity benchmarks.
+
 ## v4.3.0 — message-processing audit and changes
 
 - Implemented: per-player callback backlog quotas, disconnected callback cleanup, configurable dispatch time checks, and broadcast budget reservation.

@@ -2,6 +2,14 @@
 
 The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
 
+## v4.3.0 — Homogeneous integer codec specialization
+
+- Specialized 2–32-field U16/U32 tuples and packed runs with single bounds preflight and direct bit reads/writes, avoiding per-field type dispatch.
+- Added `TypedTupleFastPathEnabled=true` by default; false uses the previous wire-identical generic mixed fixed-width path. Both settings are interoperable between peers.
+- Exposed six scalar and batched tuple fast-path counters in `GetStats()` / `GetPerformanceStats()`.
+- Added paired 12-field U16/U32 test cases and deterministic bit-parity models at unaligned offsets. The full suite now contains 88 Studio-script sources.
+- No benchmark-derived performance claim; BitFrame v1 and Compression codec 230 unchanged.
+
 ## v4.3.0 — Dispatch overload protection and fair outbound processing
 
 - Protect the global bounded dispatch queue with a separate per-Player pending callback limit (default 2048, 0 disables), covering both scalar and argument-table callbacks. Dequeue releases that quota before callback invocation; Destroy clears accounting.

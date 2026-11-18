@@ -8,6 +8,7 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `HomogeneousIntegerRunRegression` | 12-field U16/U32 packed runs, boundary values, FIFO, paired echoes, fast path counters |
 | `DispatchFairnessRegression` | 160-message client burst; validates per-player queue cap and dropped work stats |
 | `BroadcastBudgetRegression` | Competing broadcast and per-player traffic; validates budget slicing and send path |
 | `DeltaCodecRegression` | Paired full-to-delta apply, field deletion, wrong base and malformed mask rejection |
@@ -54,6 +55,12 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing sample returns `nil`; do not substitute 0 ms. Since measurements are sampled and retained in a bounded ring, results only reflect **retained observations**, not all lifetime traffic.
 
 `RoundTripMs` must be explicitly recorded by a client-side ping/pong benchmark using `RecordRoundTripSample`. Handshake RTT is a different metric. `JitterMs` represents the absolute difference between sequential recorded RTTs (not network packet-delay variation per RFC 3550).
+
+## v4.3.0 controlled serializer A/B protocol
+
+Use identical Studio server/client settings for separate trials with `NetStream.Configure({TypedTupleFastPathEnabled=false})` (previous codec) and `NetStream.Configure({TypedTupleFastPathEnabled=true})` (new codec). Keep schema (2, 12, 32 U16 or U32 fields), identical values, players (1/10/25), 30/60/120 messages per second, batching, compression, and test duration fixed. Warm up first and repeat each trial at least three times. Record encoded buffer bytes/message, encoded packets/sec, encode/decode p50/p95/p99 CPU, Luau heap/GC, dropped/queued messages, and client-observed RTT. Check that homogeneous fast-path counters stay at zero with the toggle false and rise with it true.
+
+Compare BlinkBlox, Zap, Satset and ByteNet only with the *same schemas, validation settings, reliability, message rate, batching, player count, hardware and runtime*. Use a shared place file and retain the actual benchmark scripts/results. Raw buffer lengths are not equivalent to Roblox transport bytes. No best-in-class performance claim before matched results.
 
 ## v4.3.0 server processing comparison
 

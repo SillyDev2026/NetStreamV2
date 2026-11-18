@@ -11,6 +11,10 @@ The following are **public feature references**, not code sources copied into Ne
 | [Satset](https://github.com/bookek/satset) | Buffer-backed batching, grouped reliable messages, rate limiting, state sync | Packed schema runs, two outbound reliability lanes and manual revisioned delta codec | Preserve batching; add fair scheduling when broadcast and individual traffic compete |
 | [ByteNet](https://github.com/ffrostfall/ByteNet) | Typed buffer serialization, processing/queue refinements | Fixed schemas and existing pooled tables | Keep stable encoding; reduce callback starvation with smaller configurable dispatch time-check intervals |
 
+## New v4.3.0 serializer specialization
+
+BlinkBlox and Zap illustrate what a generated schema-specific encoder can achieve, but NetStream does not yet have a full code generator. This patch instead selects homogeneous U16/U32 encoding/decoding fast paths at schema registration, including entire packed runs. `TypedTupleFastPathEnabled=false` provides a packet-identical generic fallback for reliable performance A/B comparisons. There is no copying of competitor code and no measured speed ranking. See [the benchmark protocol](BENCHMARKING.md).
+
 ## Concrete v4.2.3 findings
 
 1. **Global dispatch slot monopoly.** `enqueueDispatch` and `enqueueDispatchScalar` checked only `MaxDispatchBacklog`. A client allowed by upstream packet/rate controls could fill most queued callback slots. Other clients could then be rejected without their own queue sharing. The v4.3.0 fix adds `DispatchPerPlayerBacklogLimit`, pending counters and drop diagnostics. It does not reorder callbacks and it is not a substitute for validating game actions.

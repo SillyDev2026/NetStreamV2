@@ -167,6 +167,14 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## v4.3.0: Dedicated U16/U32 tuple fast paths
+
+Homogeneous 2–32-field `U16` and `U32` schemas now use dedicated BitFrame buffer loops in both directions, including packed event runs. Unlike the existing mixed-field path, these specialize the field width at the route level and avoid per-field kind dispatch. They still perform a whole-payload bounds preflight.
+
+The new `TypedTupleFastPathEnabled` configuration defaults to `true`. Set it to `false` for a wire-identical fallback to the original mixed-field decoder and encoder. This enables a fair, per-experience A/B performance test without changing packet formats. Counters: `U16SchemaFastWrites`, `U16SchemaFastReads`, `U32SchemaFastWrites`, `U32SchemaFastReads`, `BitFrameHomogeneousRunFastWrites`, and `BitFrameHomogeneousRunFastReads`.
+
+The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32 U32 packets of 12 fields with boundary values, FIFO ordering, server echoes, and fast-path counters. Static checks model unaligned bit positions. **Actual speed wins over any competitor are unverified.** Benchmark instructions: [BENCHMARKING.md](docs/BENCHMARKING.md). BitFrame v1 and Compression codec 230 remain unchanged.
+
 ## v4.3.0: Fair message processing
 
 - **Per-client protection:** `DispatchPerPlayerBacklogLimit=2048` caps one server-side player's pending event callbacks independently of the global limit (set `0` to disable). The limit covers scalar and table event payloads; queue credits return before callbacks execute.
@@ -174,7 +182,7 @@ The receiver checks incoming envelope rates, optional handshake readiness and by
 - **Tighter time slices:** `DispatchBudgetCheckInterval=8` replaces the fixed 32-callback time-check cadence; choose 1–128. A single expensive or yielding listener may still overrun.
 - **Broadcast fairness:** `BroadcastFlushBudgetFraction=0.5` reserves the remaining periodic flush time for player-specific traffic when both queues are active; 1 restores the original behavior.
 - **Diagnostics:** `GetDispatchStats(player?)`, `DispatchPerPlayerDrops`, `DispatchDisconnectedDrops`, `DispatchPeakBacklog`, `DispatchMaxPlayerBacklog` and `BroadcastBudgetSlices`.
-- **Tests:** 86 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
+- **Tests:** 88 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
 
 ```luau
 NetStream.Configure({
