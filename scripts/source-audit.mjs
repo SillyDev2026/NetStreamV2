@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.2.3";
+const version = "4.3.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 82, "Regression suite unexpectedly missing");
+assert(tests.length >= 86, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -40,6 +40,56 @@ for (const name of tests) {
     for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
 }
 
+
+for (const name of ["DispatchFairnessRegression.client.lua", "DispatchFairnessRegression.server.lua", "BroadcastBudgetRegression.client.lua", "BroadcastBudgetRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing message-processing Studio regression: " + name);
+}
+for (const fragment of [
+    "DispatchPerPlayerBacklogLimit = 2048,",
+    "DispatchBudgetCheckInterval = 8,",
+    "BroadcastFlushBudgetFraction = 0.5,",
+    "local dispatchPendingByPlayer = setmetatable({}, {__mode = \"k\"})",
+    "function NetStream.GetDispatchStats(player)",
+    "local function dispatchCanEnqueue(player)",
+    "local function dispatchRecordEnqueue(player)",
+    "local function dispatchRecordDequeue(player)",
+    "dispatchRecordDequeue(player)",
+    "dispatchRecordEnqueue(player)",
+    "player.Parent ~= Players",
+    "Stats.DispatchPerPlayerDrops += 1",
+    "Stats.DispatchDisconnectedDrops += 1",
+    "budgetCheck += Config.DispatchBudgetCheckInterval",
+    "Config.FlushBudgetSeconds * Config.BroadcastFlushBudgetFraction",
+    "Stats.BroadcastBudgetSlices += 1",
+    "table.clear(dispatchPendingByPlayer)",
+]) assert(source.includes(fragment), "Message processing safety fragment missing: " + fragment);
+for (let iteration = 1; iteration <= 1024; iteration++) {
+    const cap = 1 + iteration % 40;
+    const total = cap * 5;
+    const queued = [];
+    let aPending = 0, bPending = 0, aDrops = 0;
+    for (let i = 0; i < total; i++) {
+        if (aPending >= cap) aDrops++;
+        else { queued.push("A"); aPending++; }
+    }
+    queued.push("B");
+    bPending++;
+    assert.equal(aPending,cap, "Noisy player exceeded per-player pending cap");
+    assert.equal(aDrops,total-cap, "Per-player overflow accounting incorrect");
+    assert.equal(bPending,1, "Quiet player must retain dispatch capacity");
+    while (queued.length) {
+        const next = queued.shift();
+        if (next === "A") aPending--;
+        else bPending--;
+        assert(aPending >= 0 && bPending >= 0, "Dispatch pending counter underflow");
+    }
+    assert.equal(aPending,0,"Dispatch counter leaked on drain");
+    assert.equal(bPending,0,"Quiet-player dispatch counter leaked");
+    const fullDeadline = 1.5;
+    const flushFraction = 0.1 + 0.9 * ((iteration % 100) / 100);
+    const broadcastDeadline = Math.min(fullDeadline,1 + 0.5 * flushFraction);
+    assert(broadcastDeadline <= fullDeadline && broadcastDeadline >= 1, "Broadcast budget does not reserve player processing time");
+}
 
 const compression = read("Compression.lua");
 assert(compression.includes('return "2.4.2"'), "Bundled compression API version was not advanced");
