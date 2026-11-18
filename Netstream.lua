@@ -3583,6 +3583,18 @@ local function makeArgs(...)
 		args[1] = a
 		args[2] = b
 		args[3] = c
+	elseif n >= 4 and n <= 8 then
+		local a, b, c, d, e, f, g, h = ...
+		args[1] = a; args[2] = b; args[3] = c; args[4] = d
+		if n >= 5 then args[5] = e end
+		if n >= 6 then args[6] = f end
+		if n >= 7 then args[7] = g end
+		if n >= 8 then args[8] = h end
+	elseif n == 12 then
+		local a, b, c, d, e, f, g, h, j, k, l, m = ...
+		args[1] = a; args[2] = b; args[3] = c; args[4] = d
+		args[5] = e; args[6] = f; args[7] = g; args[8] = h
+		args[9] = j; args[10] = k; args[11] = l; args[12] = m
 	else
 		for i = 1, n do args[i] = select(i, ...) end
 	end
@@ -3683,6 +3695,18 @@ local function fillPackedValues(values, base, count, ...)
 		values[base + 1] = a
 		values[base + 2] = b
 		values[base + 3] = c
+	elseif count >= 4 and count <= 8 then
+		local a, b, c, d, e, f, g, h = ...
+		values[base + 1] = a; values[base + 2] = b; values[base + 3] = c; values[base + 4] = d
+		if count >= 5 then values[base + 5] = e end
+		if count >= 6 then values[base + 6] = f end
+		if count >= 7 then values[base + 7] = g end
+		if count >= 8 then values[base + 8] = h end
+	elseif count == 12 then
+		local a, b, c, d, e, f, g, h, j, k, l, m = ...
+		values[base + 1] = a; values[base + 2] = b; values[base + 3] = c; values[base + 4] = d
+		values[base + 5] = e; values[base + 6] = f; values[base + 7] = g; values[base + 8] = h
+		values[base + 9] = j; values[base + 10] = k; values[base + 11] = l; values[base + 12] = m
 	else
 		for i = 1, count do values[base + i] = select(i, ...) end
 	end
