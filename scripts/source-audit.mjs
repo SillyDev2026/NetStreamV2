@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 86, "Regression suite unexpectedly missing");
+assert(tests.length >= 88, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -41,6 +41,49 @@ for (const name of tests) {
 }
 
 
+for (const name of ["HomogeneousIntegerRunRegression.client.lua", "HomogeneousIntegerRunRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing paired U16/U32 packed-run regression: " + name);
+}
+for (const fragment of [
+    "TypedTupleFastPathEnabled = true,",
+    "TypedTupleFastPathEnabled must be a boolean",
+    "wordRunU16 = wordRunU16,",
+    "dwordRunU32 = dwordRunU32,",
+    "Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32)",
+    "Config.TypedTupleFastPathEnabled and (item.schema.wordRunU16 or item.schema.dwordRunU32)",
+    "count > 1 and Config.TypedTupleFastPathEnabled",
+    "Stats.U16SchemaFastWrites += 1",
+    "Stats.U32SchemaFastReads += 1",
+    "Stats.BitFrameHomogeneousRunFastWrites += item.runCount",
+    "Stats.BitFrameHomogeneousRunFastReads += count",
+]) assert(source.includes(fragment), "U16/U32 serializer optimization missing: " + fragment);
+assert.equal((source.match(/Config\.TypedTupleFastPathEnabled and \(schema\.wordRunU16 or schema\.dwordRunU32\)/g) || []).length, 2, "Single-message U16/U32 A/B guard must exist on both encode and decode");
+for (const width of [16, 32]) {
+    for (const offset of [0, 1, 3, 7]) {
+        for (let sample = 0; sample < 256; sample++) {
+            const count = 1 + sample % 16;
+            const max = 2 ** width - 1;
+            const values = Array.from({length:count}, (_,index) => {
+                if (index === 0) return sample % 256;
+                if (index === 1) return 0;
+                if (index === 2) return max;
+                return Math.floor(random() % (max + 1));
+            });
+            const bits = new Uint8Array(offset + count * width);
+            let position = offset;
+            for (const initial of values) {
+                let value = initial;
+                for (let i = 0; i < width; i++) { bits[position++] = value % 2; value = Math.floor(value / 2); }
+            }
+            position = offset;
+            for (const expected of values) {
+                let decoded = 0;
+                for (let i = 0; i < width; i++) decoded += bits[position++] * 2 ** i;
+                assert.equal(decoded,expected,"Homogeneous U16/U32 byte-unaligned bit layout changed");
+            }
+        }
+    }
+}
 for (const name of ["DispatchFairnessRegression.client.lua", "DispatchFairnessRegression.server.lua", "BroadcastBudgetRegression.client.lua", "BroadcastBudgetRegression.server.lua"]) {
     assert(tests.includes(name), "Missing message-processing Studio regression: " + name);
 }
