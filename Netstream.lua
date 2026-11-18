@@ -8894,6 +8894,8 @@ function NetStream.ResetStats()
 	for key in pairs(Stats) do
 		Stats[key] = 0
 	end
+	-- Peak after reset must include handlers which are still running.
+	Stats.IncomingCallPeak = activeIncomingCalls
 	for _, field in ipairs(PACKET_AUDIT_FIELDS) do
 		Internal.PacketAuditTotals[field] = 0
 		Internal.LastPacketAudit[field] = 0
