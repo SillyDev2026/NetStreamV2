@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.2.3"
+local VERSION = "4.3.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -269,8 +269,11 @@ local DEFAULTS = {
 	MaxBatchesPerFlush = 8,
 	MaxDispatchPerCycle = 2048,
 	MaxDispatchBacklog = 16384,
+	DispatchPerPlayerBacklogLimit = 2048,
+	DispatchBudgetCheckInterval = 8,
 	DispatchBudgetSeconds = 0.0025,
 	FlushBudgetSeconds = 0.003,
+	BroadcastFlushBudgetFraction = 0.5,
 	ImmediateFlushBudgetSeconds = 0.004,
 	TimeoutSweepInterval = 0.25,
 	MaxPoolSize = 2048,
@@ -418,6 +421,7 @@ local dispatchArgs = {}
 local dispatchScalarFlags = {}
 local dispatchCount = 0
 local dispatchHead = 1
+local dispatchPendingByPlayer = setmetatable({}, {__mode = "k"})
 local lastPacketBytes = 0
 local overflowWarned = false
 local writerPool = {}
@@ -608,6 +612,10 @@ local Stats = {
 	PackedValuePoolOversizeDrops = 0,
 	PackedValueHighWaterDrops = 0,
 	ScalarDispatches = 0,
+	DispatchPerPlayerDrops = 0,
+	DispatchDisconnectedDrops = 0,
+	DispatchPeakBacklog = 0,
+	BroadcastBudgetSlices = 0,
 	BitFrameScalarSchemaReads = 0,
 	BitFramePackedScalarRunItems = 0,
 	BitFramePackedScalarRunWrites = 0,
@@ -5691,10 +5699,38 @@ local function dispatchRouteScalar(route, player, value)
 	end
 end
 
+local function dispatchCanEnqueue(player)
+	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
+	if backlog >= Config.MaxDispatchBacklog then
+		Stats.DroppedDispatch += 1
+		return false
+	end
+	if IS_SERVER and player and Config.DispatchPerPlayerBacklogLimit > 0 and (dispatchPendingByPlayer[player] or 0) >= Config.DispatchPerPlayerBacklogLimit then
+		Stats.DroppedDispatch += 1
+		Stats.DispatchPerPlayerDrops += 1
+		return false
+	end
+	return true
+end
+
+local function dispatchRecordEnqueue(player)
+	if IS_SERVER and player then
+		dispatchPendingByPlayer[player] = (dispatchPendingByPlayer[player] or 0) + 1
+	end
+	local backlog = dispatchCount - dispatchHead + 1
+	if backlog > Stats.DispatchPeakBacklog then Stats.DispatchPeakBacklog = backlog end
+end
+
+local function dispatchRecordDequeue(player)
+	if not IS_SERVER or not player then return end
+	local remaining = (dispatchPendingByPlayer[player] or 1) - 1
+	if remaining > 0 then dispatchPendingByPlayer[player] = remaining else dispatchPendingByPlayer[player] = nil end
+end
+
 local function runDispatch()
 	local processed = 0
 	local startedAt = os.clock()
-	local budgetCheck = 32
+	local budgetCheck = Config.DispatchBudgetCheckInterval
 	while dispatchHead <= dispatchCount and processed < Config.MaxDispatchPerCycle do
 		local index = dispatchHead
 		local route = dispatchRoutes[index]
@@ -5707,15 +5743,19 @@ local function runDispatch()
 		dispatchScalarFlags[index] = nil
 		dispatchHead += 1
 		processed += 1
-		if scalar then
+		dispatchRecordDequeue(player)
+		if IS_SERVER and player and player.Parent ~= Players then
+			Stats.DispatchDisconnectedDrops += 1
+			if not scalar then releaseArgs(args) end
+		elseif scalar then
 			dispatchRouteScalar(route, player, args)
 		else
 			dispatchRoute(route, player, args)
 			releaseArgs(args)
 		end
-		if processed == budgetCheck then
+		if processed >= budgetCheck then
 			if os.clock() - startedAt >= Config.DispatchBudgetSeconds then break end
-			budgetCheck += 32
+			budgetCheck += Config.DispatchBudgetCheckInterval
 		end
 	end
 	if dispatchHead > dispatchCount then
@@ -5748,9 +5788,7 @@ local function enqueueDispatch(route, player, args)
 		releaseArgs(args)
 		return false
 	end
-	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
-	if backlog >= Config.MaxDispatchBacklog then
-		Stats.DroppedDispatch += 1
+	if not dispatchCanEnqueue(player) then
 		releaseArgs(args)
 		return false
 	end
@@ -5758,6 +5796,7 @@ local function enqueueDispatch(route, player, args)
 	dispatchRoutes[dispatchCount] = route
 	dispatchPlayers[dispatchCount] = player
 	dispatchArgs[dispatchCount] = args
+	dispatchRecordEnqueue(player)
 	return true
 end
 
@@ -5765,16 +5804,13 @@ local function enqueueDispatchScalar(route, player, value)
 	if not route or route._listenerCount == 0 then
 		return false
 	end
-	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
-	if backlog >= Config.MaxDispatchBacklog then
-		Stats.DroppedDispatch += 1
-		return false
-	end
+	if not dispatchCanEnqueue(player) then return false end
 	dispatchCount += 1
 	dispatchRoutes[dispatchCount] = route
 	dispatchPlayers[dispatchCount] = player
 	dispatchArgs[dispatchCount] = value
 	dispatchScalarFlags[dispatchCount] = true
+	dispatchRecordEnqueue(player)
 	Stats.ScalarDispatches += 1
 	return true
 end
@@ -7189,7 +7225,12 @@ local function flushAll()
 	local deadline = os.clock() + Config.FlushBudgetSeconds
 	if IS_SERVER then
 		if broadcastBucket and not bucketEmpty(broadcastBucket) and os.clock() < deadline then
-			flushBucket(ALL, broadcastBucket, deadline)
+			local broadcastDeadline = deadline
+			if activeTargetHead <= activeTargetTail and Config.BroadcastFlushBudgetFraction < 1 then
+				broadcastDeadline = math.min(deadline, os.clock() + Config.FlushBudgetSeconds * Config.BroadcastFlushBudgetFraction)
+				Stats.BroadcastBudgetSlices += 1
+			end
+			flushBucket(ALL, broadcastBucket, broadcastDeadline)
 		end
 		local processedTargets = 0
 		while activeTargetHead <= activeTargetTail and processedTargets < Config.MaxTargetsPerFlush do
@@ -7845,8 +7886,11 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxBatchesPerFlush) == "number" and config.MaxBatchesPerFlush >= 1, "MaxBatchesPerFlush must be >= 1")
 	assert(type(config.MaxDispatchPerCycle) == "number" and config.MaxDispatchPerCycle >= 1, "MaxDispatchPerCycle must be >= 1")
 	assert(type(config.MaxDispatchBacklog) == "number" and config.MaxDispatchBacklog >= config.MaxDispatchPerCycle, "MaxDispatchBacklog must be >= MaxDispatchPerCycle")
+	assert(type(config.DispatchPerPlayerBacklogLimit) == "number" and isInteger(config.DispatchPerPlayerBacklogLimit) and config.DispatchPerPlayerBacklogLimit >= 0 and config.DispatchPerPlayerBacklogLimit <= 1048576, "DispatchPerPlayerBacklogLimit must be an integer from 0 to 1048576")
+	assert(type(config.DispatchBudgetCheckInterval) == "number" and isInteger(config.DispatchBudgetCheckInterval) and config.DispatchBudgetCheckInterval >= 1 and config.DispatchBudgetCheckInterval <= 128, "DispatchBudgetCheckInterval must be an integer from 1 to 128")
 	assert(type(config.DispatchBudgetSeconds) == "number" and isFiniteNumber(config.DispatchBudgetSeconds) and config.DispatchBudgetSeconds > 0, "DispatchBudgetSeconds must be a finite number > 0")
 	assert(type(config.FlushBudgetSeconds) == "number" and isFiniteNumber(config.FlushBudgetSeconds) and config.FlushBudgetSeconds > 0, "FlushBudgetSeconds must be a finite number > 0")
+	assert(type(config.BroadcastFlushBudgetFraction) == "number" and isFiniteNumber(config.BroadcastFlushBudgetFraction) and config.BroadcastFlushBudgetFraction >= 0.1 and config.BroadcastFlushBudgetFraction <= 1, "BroadcastFlushBudgetFraction must be between 0.1 and 1")
 	assert(type(config.ImmediateFlushBudgetSeconds) == "number" and isFiniteNumber(config.ImmediateFlushBudgetSeconds) and config.ImmediateFlushBudgetSeconds > 0, "ImmediateFlushBudgetSeconds must be a finite number > 0")
 	assert(type(config.TimeoutSweepInterval) == "number" and config.TimeoutSweepInterval > 0, "TimeoutSweepInterval must be > 0")
 	assert(type(config.MaxPoolSize) == "number" and config.MaxPoolSize >= 0, "MaxPoolSize must be >= 0")
@@ -8712,6 +8756,12 @@ function NetStream.GetStats()
 		copy.PendingCalls += 1
 	end
 	copy.DispatchBacklog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
+	copy.DispatchMaxPlayerBacklog = 0
+	if IS_SERVER then
+		for _, count in pairs(dispatchPendingByPlayer) do
+			if count > copy.DispatchMaxPlayerBacklog then copy.DispatchMaxPlayerBacklog = count end
+		end
+	end
 	copy.ActiveTargetBacklog = if IS_SERVER then math.max(0, activeTargetTail - activeTargetHead + 1) else 0
 	copy.AverageBatchBytes = if copy.SentBatches > 0 then copy.SentBytes / copy.SentBatches else 0
 	copy.AverageMessagesPerBatch = if copy.SentBatches > 0 then copy.SentMessages / copy.SentBatches else 0
@@ -8937,6 +8987,22 @@ function NetStream.GetTransportStats()
 		FastSchemaHeaderBytesSaved = Stats.FastSchemaHeaderBytesSaved,
 		FixedSchemaFastWrites = Stats.FixedSchemaFastWrites,
 		FixedSchemaFastReads = Stats.FixedSchemaFastReads,
+	}
+end
+
+function NetStream.GetDispatchStats(player)
+	if player ~= nil then
+		assert(IS_SERVER and typeof(player) == "Instance" and player:IsA("Player"), "GetDispatchStats(player) requires a Player on the server")
+	end
+	local current = if player then dispatchPendingByPlayer[player] or 0 else (if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1))
+	return {
+		Backlog = current,
+		GlobalLimit = Config.MaxDispatchBacklog,
+		PerPlayerLimit = Config.DispatchPerPlayerBacklogLimit,
+		BudgetCheckInterval = Config.DispatchBudgetCheckInterval,
+		PeakBacklog = Stats.DispatchPeakBacklog,
+		PerPlayerDrops = Stats.DispatchPerPlayerDrops,
+		DisconnectedDrops = Stats.DispatchDisconnectedDrops,
 	}
 end
 
@@ -9206,6 +9272,7 @@ function NetStream.Destroy()
 	table.clear(dispatchPlayers)
 	table.clear(dispatchArgs)
 	table.clear(dispatchScalarFlags)
+	table.clear(dispatchPendingByPlayer)
 	dispatchCount = 0
 	dispatchHead = 1
 
