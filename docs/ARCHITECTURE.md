@@ -154,6 +154,14 @@ By default `HandshakeEnabled = true` but `HandshakeRequireReady = false`. With s
 
 ## 7. Incoming checks and dispatch
 
+### Concurrent server RPC callback management (v4.3.0)
+
+All four inbound RPC formats use an active-handler admission limit after per-second rate checks, then execute callbacks with a guarded wrapper that releases per-player and global in-flight slots after normal completion or exceptions. `NetStream.GetRPCStats(player?)` exposes current and peak concurrency, configured caps, overload drops and unexpected execution errors. These limits are server-only, add no wire bytes, and do not forcibly cancel already-yielding game callbacks.
+
+Vararg-copy fast paths for 4–8/12 fields avoid repeated positional `select` scans in argument arrays and packed event runs without introducing temporary tables. See [RPC concurrency & callback lifecycle](RPC_CONCURRENCY.md) for limits, overload semantics and the test protocol.
+
+
+
 Incoming traffic passes these checks in broad order:
 1. Envelope rate limits on byte count and batch frequency (per-player and global).
 2. Optional session readiness gate.

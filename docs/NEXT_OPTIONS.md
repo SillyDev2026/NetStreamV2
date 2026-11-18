@@ -2,6 +2,13 @@
 
 **Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
+## v4.3.0 — RPC concurrency and common vararg hot paths
+
+- Implemented server-side in-flight RPC callback caps and live per-player/global counts, with guaranteed post-run reclamation and diagnostics.
+- Implemented direct 4–8/12-field array population without repeated `select(i, ...)`, preserving nil and schema behavior.
+- Added paired `RPCConcurrencyRegression` scripts, source-level bounded concurrency models, and a documented Studio performance/overload plan.
+- Remaining: run the Studio suite and multi-client load tests, check callback yielding, error recovery, and timeouts before describing the library as production-verified.
+
 ## v4.3.0 — memory-retention improvements
 
 - Implemented: clear idle pooled legacy/scratch writer references on release, cap pooled packet dictionary capacity and trim large native-size-estimator hash tables.

@@ -167,6 +167,24 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## v4.3.0: RPC overload protection and lower-cost argument copies
+
+Server RPCs now have in-flight limits **in addition to** existing per-second rate limits: `MaxConcurrentIncomingCalls=512` globally and `MaxConcurrentIncomingCallsPerPlayer=64` by default. Set either to `0` to disable that concurrency cap. A guarded runner across all four RPC packet formats returns capacity after completion or errors; it does not cancel existing callbacks. Rejected RPCs follow existing silent rate-rejection behavior, so the caller may hit `CallTimeout`. Configure application-level retries and idempotency for critical requests.
+
+`GetRPCStats(player?)` reports active/peak handlers, concurrency rejections, execution errors and limits. `GetStats().ActiveIncomingCalls` and `GetMemoryDiagnostics()` expose the same global gauge.
+
+4–8 and 12-field argument/packed-run values now use direct vararg-to-array assignments rather than repeated `select(i, ...)` scans, preserving nil positions and packet bytes without temporary arrays. A performance benefit is **not yet measured in Roblox Studio**.
+
+New paired `RPCConcurrencyRegression` scripts cover a 16-request burst, throttling, app callback errors and recovery. The suite now has **94 authored Studio test/benchmark scripts**, not verified live runs. See [RPC concurrency guide](docs/RPC_CONCURRENCY.md).
+
+```luau
+NetStream.Configure({
+    MaxConcurrentIncomingCalls = 512,
+    MaxConcurrentIncomingCallsPerPlayer = 64,
+})
+print(NetStream.GetRPCStats().Active)
+```
+
 ## v4.3.0: Lower idle memory and bounded queue storage
 
 - **Idle writer cleanup:** The legacy packet writer and scratch writer now clear packet dictionaries and route caches **when released**, not only on their next acquisition. This prevents idle pools retaining completed packet strings.
@@ -202,7 +220,7 @@ The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32
 - **Tighter time slices:** `DispatchBudgetCheckInterval=8` replaces the fixed 32-callback time-check cadence; choose 1–128. A single expensive or yielding listener may still overrun.
 - **Broadcast fairness:** `BroadcastFlushBudgetFraction=0.5` reserves the remaining periodic flush time for player-specific traffic when both queues are active; 1 restores the original behavior.
 - **Diagnostics:** `GetDispatchStats(player?)`, `DispatchPerPlayerDrops`, `DispatchDisconnectedDrops`, `DispatchPeakBacklog`, `DispatchMaxPlayerBacklog` and `BroadcastBudgetSlices`.
-- **Tests:** 92 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
+- **Tests:** 94 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
 
 ```luau
 NetStream.Configure({

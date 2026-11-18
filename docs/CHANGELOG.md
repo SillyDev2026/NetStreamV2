@@ -2,13 +2,21 @@
 
 The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
 
+## v4.3.0 — RPC in-flight limits, callback cleanup and vararg optimization
+
+- Add global/per-player server in-flight RPC caps (default 512/64; 0 disables), complementary to per-second rate budgets, to bound yielding callbacks and callback-owned memory.
+- Funnel all four inbound RPC formats through exception-safe active-count accounting. `ResetStats()` retains the current active-count peak baseline. Add `GetRPCStats(player?)`, stats and memory diagnostics; no packet format change.
+- Rejected RPCs follow the existing no-response rate-rejection convention, so a remote invoker may time out; no automatic cancellation of already-running callbacks.
+- Directly unpack 4–8 and 12-field varargs to arguments/packed values without repeated `select(i, ...)` calls or an intermediate array.
+- Add `RPCConcurrencyRegression` paired Studio scripts, deterministic source/model checks and benchmarking notes; **94 authored Studio test/benchmark scripts** total. Runtime correctness and speed still require Studio execution.
+
 ## v4.3.0 — Bounded idle memory and sparse queue storage
 
 - Clean up eligible legacy/scratch packet writers **upon pooling**, so retained writers cannot hold the last packet's string dictionaries or route caches during idle periods.
 - Bound idle dictionary storage with `MaxPooledDictionaryEntries=128`; release oversized Luau string dictionary arrays/maps in BitFrame and legacy writer/reader pools. Rebuild large native dynamic-size measurement dictionaries instead of retaining cleared hash capacity.
 - Compact sustained sparse outbound queues by copying live entries into a new array after a sufficient head advance; release oversized array storage on drain using `QueueRetainMaxSlots=512`. Surviving message order, logical queue count and packet format are preserved.
 - Extend `GetMemoryDiagnostics()` with pool rebuild, writer-release reset, and FIFO compaction counters/caps.
-- Add 2 paired `MemoryRetentionRegression` scripts and source-level deterministic FIFO + cleanup models (92 Studio script sources total). Measurements of GC/heap savings in Roblox Studio remain pending; table rebuilds may add allocation overhead.
+- Add 2 paired `MemoryRetentionRegression` scripts and source-level deterministic FIFO + cleanup models (94 Studio script sources total). Measurements of GC/heap savings in Roblox Studio remain pending; table rebuilds may add allocation overhead.
 
 ## v4.3.0 — Homogeneous integer codec specialization
 
