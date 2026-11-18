@@ -282,6 +282,8 @@ local DEFAULTS = {
 	MaxPooledArgs = 32,
 	MaxPooledWriterBytes = 128 * 1024,
 	MaxPooledStrings = 2048,
+	MaxPooledDictionaryEntries = 128,
+	QueueRetainMaxSlots = 512,
 	MaxBatchPoolSize = 64,
 	MaxPooledBatchItems = 512,
 	MaxPooledPackedValues = 64,
@@ -655,6 +657,11 @@ local Stats = {
 	BatchPoolOversizeDrops = 0,
 	ArgsPoolLimitDrops = 0,
 	MessagePoolLimitDrops = 0,
+	QueueStorageRebuilds = 0,
+	QueueCompactions = 0,
+	PooledWriterResets = 0,
+	DictionaryPoolRebuilds = 0,
+	NativeMeasureDictionaryRebuilds = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -1249,9 +1256,10 @@ end
 
 function Writer:reset()
 	self.position = 0
-	if #self.strings > Config.MaxPooledStrings then
+	if #self.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
 		self.strings = {}
 		self.stringToIndex = {}
+		Stats.DictionaryPoolRebuilds += 1
 	else
 		table.clear(self.strings)
 		table.clear(self.stringToIndex)
@@ -1403,6 +1411,8 @@ end
 
 function Internal.releaseScratchWriter(writer)
 	if writer and writer.capacity <= Config.MaxPooledWriterBytes and #scratchWriterPool < Config.MaxScratchWriterPoolSize then
+		writer:reset()
+		Stats.PooledWriterResets += 1
 		scratchWriterPool[#scratchWriterPool + 1] = writer
 	end
 end
@@ -1582,8 +1592,14 @@ end
 
 function Internal.releaseBitFrameWriter(writer)
 	-- Pooled writers must not retain per-packet dictionary keys or values.
-	if #writer.strings > Config.MaxPooledStrings then writer.strings = {} else table.clear(writer.strings) end
-	table.clear(writer.stringToIndex)
+	if #writer.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
+		writer.strings = {}
+		writer.stringToIndex = {}
+		Stats.DictionaryPoolRebuilds += 1
+	else
+		table.clear(writer.strings)
+		table.clear(writer.stringToIndex)
+	end
 	writer.bitPosition = 0
 	if writer.capacity <= math.min(Config.MaxPooledWriterBytes, Config.BitFrameRetainWriterMaxBytes) and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
 		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
@@ -1733,7 +1749,12 @@ function Internal.releaseBitFrameReader(reader)
 	reader.buffer = nil
 	reader.bitPosition = 0
 	reader.bitLength = 0
-	if #reader.strings > Config.MaxPooledStrings then reader.strings = {} else table.clear(reader.strings) end
+	if #reader.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
+		reader.strings = {}
+		Stats.DictionaryPoolRebuilds += 1
+	else
+		table.clear(reader.strings)
+	end
 	local pool = Internal.BitFrameReaderPool
 	if #pool < Config.MaxBitFrameReaderPoolSize then pool[#pool + 1] = reader end
 end
@@ -3036,11 +3057,12 @@ function Internal.acquireNativeMeasureState(writer)
 	if state then
 		pool[#pool] = nil
 	else
-		state = { strings = {}, seen = {}, nextStringIndex = 0 }
+		state = { strings = {}, seen = {}, nextStringIndex = 0, stringEntries = 0 }
 	end
 	table.clear(state.strings)
 	table.clear(state.seen)
 	state.nextStringIndex = writer and #writer.strings or 0
+	state.stringEntries = 0
 	return state
 end
 
@@ -3048,9 +3070,15 @@ function Internal.releaseNativeMeasureState(state)
 	if not state then
 		return
 	end
-	table.clear(state.strings)
+	if state.stringEntries > Config.MaxPooledDictionaryEntries then
+		state.strings = {}
+		Stats.NativeMeasureDictionaryRebuilds += 1
+	else
+		table.clear(state.strings)
+	end
 	table.clear(state.seen)
 	state.nextStringIndex = 0
+	state.stringEntries = 0
 	local pool = Internal._nativeMeasurePool
 	if #pool < Config.MaxScratchWriterPoolSize then
 		pool[#pool + 1] = state
@@ -3094,6 +3122,7 @@ function Internal.nativeValueByteLength(writer, value, state)
 		local length = #value
 		state.strings[value] = state.nextStringIndex
 		state.nextStringIndex += 1
+		state.stringEntries += 1
 		return Internal.nativeMetaByteLength(length) + length
 	elseif robloxType == "Vector3" then
 		local precision = Config.VectorPrecision
@@ -4640,6 +4669,8 @@ end
 
 local function releaseWriter(writer)
 	if writer.capacity <= Config.MaxPooledWriterBytes and #writerPool < Config.MaxWriterPoolSize then
+		writer:reset()
+		Stats.PooledWriterResets += 1
 		writerPool[#writerPool + 1] = writer
 	end
 end
@@ -5964,8 +5995,9 @@ local function releaseReader(reader)
 	reader.buffer = nil
 	reader.position = 0
 	reader.length = 0
-	if #reader.strings > Config.MaxPooledStrings then
+	if #reader.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
 		reader.strings = {}
+		Stats.DictionaryPoolRebuilds += 1
 	else
 		table.clear(reader.strings)
 	end
@@ -7976,6 +8008,8 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxPooledArgs) == "number" and config.MaxPooledArgs >= 0, "MaxPooledArgs must be >= 0")
 	assert(type(config.MaxPooledWriterBytes) == "number" and config.MaxPooledWriterBytes >= 512, "MaxPooledWriterBytes must be >= 512")
 	assert(type(config.MaxPooledStrings) == "number" and config.MaxPooledStrings >= 0, "MaxPooledStrings must be >= 0")
+	assert(type(config.MaxPooledDictionaryEntries) == "number" and isInteger(config.MaxPooledDictionaryEntries) and config.MaxPooledDictionaryEntries >= 0 and config.MaxPooledDictionaryEntries <= 8192, "MaxPooledDictionaryEntries must be an integer from 0 to 8192")
+	assert(type(config.QueueRetainMaxSlots) == "number" and isInteger(config.QueueRetainMaxSlots) and config.QueueRetainMaxSlots >= 0 and config.QueueRetainMaxSlots <= 65536, "QueueRetainMaxSlots must be an integer from 0 to 65536")
 	assert(type(config.MaxBatchPoolSize) == "number" and config.MaxBatchPoolSize >= 0, "MaxBatchPoolSize must be >= 0")
 	assert(type(config.MaxPooledBatchItems) == "number" and isInteger(config.MaxPooledBatchItems) and config.MaxPooledBatchItems >= 0 and config.MaxPooledBatchItems <= 65535, "MaxPooledBatchItems must be an integer from 0 to 65535")
 	assert(type(config.MaxPooledPackedValues) == "number" and isInteger(config.MaxPooledPackedValues) and config.MaxPooledPackedValues >= 0 and config.MaxPooledPackedValues <= 8192, "MaxPooledPackedValues must be between 0 and 8192")
@@ -8911,6 +8945,13 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameInitialWriterBytes = Config.BitFrameInitialWriterBytes,
 		BitFrameRetainWriterMaxBytes = Config.BitFrameRetainWriterMaxBytes,
 		PackedValuePoolSize = #packedValuePool,
+		MaxPooledDictionaryEntries = Config.MaxPooledDictionaryEntries,
+		QueueRetainMaxSlots = Config.QueueRetainMaxSlots,
+		QueueStorageRebuilds = Stats.QueueStorageRebuilds,
+		QueueCompactions = Stats.QueueCompactions,
+		PooledWriterResets = Stats.PooledWriterResets,
+		DictionaryPoolRebuilds = Stats.DictionaryPoolRebuilds,
+		NativeMeasureDictionaryRebuilds = Stats.NativeMeasureDictionaryRebuilds,
 		MaxPooledBatchItems = Config.MaxPooledBatchItems,
 		BatchPoolOversizeDrops = Stats.BatchPoolOversizeDrops,
 		MaxArgsPoolSize = Config.MaxArgsPoolSize,
