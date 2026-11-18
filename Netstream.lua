@@ -308,6 +308,8 @@ local DEFAULTS = {
 	MaxGlobalIncomingBatchesPerSecond = 8192,
 	MaxIncomingCallsPerSecond = 240,
 	MaxGlobalIncomingCallsPerSecond = 4096,
+	MaxConcurrentIncomingCalls = 512,
+	MaxConcurrentIncomingCallsPerPlayer = 64,
 	MaxReliableQueue = 8192,
 	MaxUnreliableQueue = 2048,
 	UnreliableMaxBytes = 900,
@@ -406,6 +408,8 @@ local activeTargets = {}
 local activeTargetHead = 1
 local activeTargetTail = 0
 local incomingRates = {}
+local activeIncomingCalls = 0
+local activeIncomingCallsByPlayer = setmetatable({}, {__mode = "k"})
 local clientBucket = nil
 local broadcastBucket = nil
 local CLIENT_STATE_CACHE_KEY = {}
@@ -513,6 +517,9 @@ local Stats = {
 	GlobalRateLimitedBatches = 0,
 	RateLimitedCalls = 0,
 	GlobalRateLimitedCalls = 0,
+	IncomingCallConcurrencyDrops = 0,
+	IncomingCallPeak = 0,
+	IncomingCallExecutionErrors = 0,
 	RejectedMessages = 0,
 	RejectedMalformedPackets = 0,
 	RejectedOversizedPackets = 0,
@@ -5981,6 +5988,20 @@ function Internal.handleCall(player, routeId, id, args)
 	end
 end
 
+-- Wrap every RPC callback so in-flight capacity is returned even when a handler fails.
+function Internal.runIncomingCall(player, routeId, id, args)
+	local ok, err = xpcall(Internal.handleCall, debug.traceback, player, routeId, id, args)
+	if IS_SERVER and player then
+		activeIncomingCalls = math.max(0, activeIncomingCalls - 1)
+		local remaining = (activeIncomingCallsByPlayer[player] or 1) - 1
+		if remaining > 0 then activeIncomingCallsByPlayer[player] = remaining else activeIncomingCallsByPlayer[player] = nil end
+	end
+	if not ok then
+		Stats.IncomingCallExecutionErrors += 1
+		Internal.debugWarn("RPC handler failed:", err)
+	end
+end
+
 function Internal.processReturn(player, id, args)
 	local entry = pending[id]
 	if not entry then
@@ -6108,9 +6129,7 @@ local function commitIncomingMessages(player, messages)
 end
 
 function Internal.chargeIncomingCall(player)
-	if not IS_SERVER or not player then
-		return true
-	end
+	if not IS_SERVER or not player then return true end
 	local now = os.clock()
 	local rate = getIncomingRate(player, now)
 	if rate.calls >= Config.MaxIncomingCallsPerSecond then
@@ -6122,8 +6141,17 @@ function Internal.chargeIncomingCall(player)
 		Stats.GlobalRateLimitedCalls += 1
 		return false
 	end
+	local perPlayer = activeIncomingCallsByPlayer[player] or 0
+	if (Config.MaxConcurrentIncomingCalls > 0 and activeIncomingCalls >= Config.MaxConcurrentIncomingCalls)
+		or (Config.MaxConcurrentIncomingCallsPerPlayer > 0 and perPlayer >= Config.MaxConcurrentIncomingCallsPerPlayer) then
+		Stats.IncomingCallConcurrencyDrops += 1
+		return false
+	end
 	rate.calls += 1
 	globalRate.calls += 1
+	activeIncomingCalls += 1
+	activeIncomingCallsByPlayer[player] = perPlayer + 1
+	if activeIncomingCalls > Stats.IncomingCallPeak then Stats.IncomingCallPeak = activeIncomingCalls end
 	return true
 end
 
@@ -6401,7 +6429,7 @@ function Internal.decodeHybridSmallSingle(player, data, markerValue)
 		local route = functionRoutes[routeId]
 		if not route or route._schema then error("NetStream invalid hybrid call route", 0) end
 		local args = acquireArgsCount(1); args[1] = value
-		if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) else releaseArgs(args) end
+		if Internal.chargeIncomingCall(player) then task.spawn(Internal.runIncomingCall, player, routeId, requestId, args) else releaseArgs(args) end
 	elseif markerValue == Internal.HYBRID_RETURN_MARKER then
 		local requestId; requestId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
 		local okBit; okBit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
@@ -6468,7 +6496,7 @@ function Internal.decodeBitCallSingle(player, data)
 	Stats.BitPacketCallsReceived += 1
 
 	if Internal.chargeIncomingCall(player) then
-		task.spawn(Internal.handleCall, player, routeId, callId, args)
+		task.spawn(Internal.runIncomingCall, player, routeId, callId, args)
 	else
 		releaseArgs(args)
 	end
@@ -6574,7 +6602,7 @@ function Internal.commitBitFrameStage(player, stage)
 			end
 		elseif kind == KIND_CALL then
 			if Internal.chargeIncomingCall(player) then
-				task.spawn(Internal.handleCall, player, routeId, requestId, args)
+				task.spawn(Internal.runIncomingCall, player, routeId, requestId, args)
 			else
 				releaseArgs(args)
 			end
@@ -7008,7 +7036,7 @@ local function decodeBatch(player, data, reader)
 				end
 			elseif kind == KIND_CALL then
 				if Internal.chargeIncomingCall(player) then
-					task.spawn(Internal.handleCall, player, routeId, id, args)
+					task.spawn(Internal.runIncomingCall, player, routeId, id, args)
 				else
 					releaseArgs(args)
 				end
@@ -8046,6 +8074,8 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxGlobalIncomingBatchesPerSecond) == "number" and config.MaxGlobalIncomingBatchesPerSecond >= 1, "MaxGlobalIncomingBatchesPerSecond must be >= 1")
 	assert(type(config.MaxIncomingCallsPerSecond) == "number" and config.MaxIncomingCallsPerSecond >= 1, "MaxIncomingCallsPerSecond must be >= 1")
 	assert(type(config.MaxGlobalIncomingCallsPerSecond) == "number" and config.MaxGlobalIncomingCallsPerSecond >= 1, "MaxGlobalIncomingCallsPerSecond must be >= 1")
+	assert(type(config.MaxConcurrentIncomingCalls) == "number" and isInteger(config.MaxConcurrentIncomingCalls) and config.MaxConcurrentIncomingCalls >= 0 and config.MaxConcurrentIncomingCalls <= 65536, "MaxConcurrentIncomingCalls must be an integer from 0 to 65536")
+	assert(type(config.MaxConcurrentIncomingCallsPerPlayer) == "number" and isInteger(config.MaxConcurrentIncomingCallsPerPlayer) and config.MaxConcurrentIncomingCallsPerPlayer >= 0 and config.MaxConcurrentIncomingCallsPerPlayer <= 65536, "MaxConcurrentIncomingCallsPerPlayer must be an integer from 0 to 65536")
 	assert(type(config.MaxReliableQueue) == "number" and config.MaxReliableQueue >= 1, "MaxReliableQueue must be >= 1")
 	assert(type(config.MaxUnreliableQueue) == "number" and config.MaxUnreliableQueue >= 1, "MaxUnreliableQueue must be >= 1")
 	assert(type(config.UnreliableMaxBytes) == "number" and config.UnreliableMaxBytes >= 1, "UnreliableMaxBytes must be >= 1")
@@ -8884,6 +8914,7 @@ function NetStream.GetStats()
 		queuedUnreliable = math.max(0, queueLogicalCount(clientBucket.unreliable)) + Internal.mapCount(clientBucket.latestUnreliable)
 	end
 	copy.QueuedReliable = queuedReliable
+	copy.ActiveIncomingCalls = activeIncomingCalls
 	copy.QueuedUnreliable = queuedUnreliable
 	copy.PendingCalls = 0
 	for _ in pairs(pending) do
@@ -8969,6 +9000,10 @@ function NetStream.GetMemoryDiagnostics()
 		PackedValuePoolSize = #packedValuePool,
 		MaxPooledDictionaryEntries = Config.MaxPooledDictionaryEntries,
 		QueueRetainMaxSlots = Config.QueueRetainMaxSlots,
+		ActiveIncomingCalls = activeIncomingCalls,
+		IncomingCallPeak = Stats.IncomingCallPeak,
+		IncomingCallConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
+		IncomingCallExecutionErrors = Stats.IncomingCallExecutionErrors,
 		QueueStorageRebuilds = Stats.QueueStorageRebuilds,
 		QueueCompactions = Stats.QueueCompactions,
 		PooledWriterResets = Stats.PooledWriterResets,
@@ -9134,6 +9169,20 @@ function NetStream.GetTransportStats()
 		FastSchemaHeaderBytesSaved = Stats.FastSchemaHeaderBytesSaved,
 		FixedSchemaFastWrites = Stats.FixedSchemaFastWrites,
 		FixedSchemaFastReads = Stats.FixedSchemaFastReads,
+	}
+end
+
+function NetStream.GetRPCStats(player)
+	if player ~= nil then
+		assert(IS_SERVER and typeof(player) == "Instance" and player:IsA("Player"), "GetRPCStats(player) requires a Player on the server")
+	end
+	return {
+		Active = if player then activeIncomingCallsByPlayer[player] or 0 else activeIncomingCalls,
+		GlobalLimit = Config.MaxConcurrentIncomingCalls,
+		PerPlayerLimit = Config.MaxConcurrentIncomingCallsPerPlayer,
+		PeakActive = Stats.IncomingCallPeak,
+		ConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
+		ExecutionErrors = Stats.IncomingCallExecutionErrors,
 	}
 end
 
