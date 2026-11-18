@@ -2,7 +2,7 @@
 -- Pair with DeltaCodecRegression.client.lua in a separate Roblox Studio Play session.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.2.3")
+assert(NetStream.GetVersion() == "4.3.0")
 NetStream.Configure({HandshakeEnabled = false})
 local T = NetStream.Types
 local Codec = NetStream.CreateDeltaCodec({"Coins", "Wins", "Title", "Ready"})
@@ -35,6 +35,6 @@ Start:Connect(function(player, ready)
 end)
 Ack:Connect(function(player, received)
     assert(started[player] and received == 2, "Delta result ACK invalid")
-    print("NetStream v4.2.3 delta codec SERVER PASS", player.UserId)
+    print("NetStream v4.3.0 delta codec SERVER PASS", player.UserId)
 end)
-print("NetStream v4.2.3 delta codec server ready")
+print("NetStream v4.3.0 delta codec server ready")
