@@ -15,6 +15,7 @@ Busy:SetCallback(function(player, request)
     local snapshot = NetStream.GetRPCStats(player)
     assert(snapshot.Active >= 1 and snapshot.Active <= 2, "In-flight RPC cap exceeded")
     assert(NetStream.GetRPCStats().Active <= 8, "Global in-flight RPC cap exceeded")
+    if request == 65001 then error("Intentional RPC callback fault") end
     task.wait(0.8)
     return request
 end)
