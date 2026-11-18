@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.2.0")
+assert(NetStream.GetVersion() == "4.2.3")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local U16 = NetStream.Event("__NSScalarU16", {Id = 36011, Schema = {T.U16}, Compression = false})
@@ -25,7 +25,7 @@ local function complete(player)
     assert(stats.BitFrameScalarSchemaReads >= 7, "Extended single-field scalar path was not executed")
     assert(stats.DecodeErrors == 0, "Extended scalar/string packets failed to decode")
     assert(Ack:FireClientNow(player, 1), "Extended scalar ACK failed")
-    print("NetStream 4.2.0 scalar/string PASS", stats.BitFrameScalarSchemaReads)
+    print("NetStream 4.2.3 scalar/string PASS", stats.BitFrameScalarSchemaReads)
 end
 local function scalarCheck(player, value, expected)
     assert(value == expected, "Single numeric schema value changed")
@@ -46,4 +46,4 @@ Text:Connect(function(player, value)
     assert(value == expectedText[textCount], "Short binary string data changed")
     complete(player)
 end)
-print("NetStream 4.2.0 scalar/string server ready")
+print("NetStream 4.2.3 scalar/string server ready")
