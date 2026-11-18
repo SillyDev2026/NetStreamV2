@@ -3370,6 +3370,29 @@ local function queueLogicalCount(queue)
 	return queue.logicalCount or queueCount(queue)
 end
 
+local function compactQueue(queue)
+	if queue.head <= 1024 or queue.head <= math.floor(queue.tail / 2) then return end
+	local pending = queue.tail - queue.head + 1
+	if pending <= 0 then return end
+	local old = queue.items
+	local items = table.create(pending)
+	for index = 1, pending do items[index] = old[queue.head + index - 1] end
+	queue.items = items
+	queue.head = 1
+	queue.tail = pending
+	Stats.QueueCompactions += 1
+end
+
+local function clearDrainedQueue(queue)
+	if queue.tail > Config.QueueRetainMaxSlots then
+		queue.items = {}
+		Stats.QueueStorageRebuilds += 1
+	end
+	queue.head = 1
+	queue.tail = 0
+	queue.logicalCount = 0
+end
+
 local function queuePush(queue, item)
 	queue.tail += 1
 	queue.items[queue.tail] = item
@@ -3385,9 +3408,9 @@ local function queuePop(queue)
 	queue.head += 1
 	queue.logicalCount = math.max(0, queue.logicalCount - messageLogicalCount(item))
 	if queue.head > queue.tail then
-		queue.head = 1
-		queue.tail = 0
-		queue.logicalCount = 0
+		clearDrainedQueue(queue)
+	else
+		compactQueue(queue)
 	end
 	return item
 end
@@ -3455,10 +3478,10 @@ function Internal.queueRemoveRoute(queue, routeId, kind)
 	end
 	queue.logicalCount = remainingLogical
 	if writeIndex == queue.head then
-		queue.head = 1
-		queue.tail = 0
+		clearDrainedQueue(queue)
 	else
 		queue.tail = writeIndex - 1
+		compactQueue(queue)
 	end
 	return removed
 end
@@ -5231,12 +5254,11 @@ local function collectBatch(queue, latest, limit)
 		consumed += count
 	end
 	if head > tail then
-		queue.head = 1
-		queue.tail = 0
-		queue.logicalCount = 0
+		clearDrainedQueue(queue)
 	else
 		queue.head = head
 		queue.logicalCount = math.max(0, queue.logicalCount - consumed)
+		compactQueue(queue)
 	end
 	if logical < limit and next(latest) ~= nil then
 		for key, item in pairs(latest) do
