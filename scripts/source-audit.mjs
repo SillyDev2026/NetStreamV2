@@ -57,7 +57,7 @@ for (const fragment of [
     "Stats.BitFrameHomogeneousRunFastWrites += item.runCount",
     "Stats.BitFrameHomogeneousRunFastReads += count",
 ]) assert(source.includes(fragment), "U16/U32 serializer optimization missing: " + fragment);
-assert.equal((source.match(/Config\.TypedTupleFastPathEnabled and \(schema\.wordRunU16 or schema\.dwordRunU32\)/g) || []).length, 2, "Single-message U16/U32 A/B guard must exist on both encode and decode");
+assert.equal((source.match(/Config\.TypedTupleFastPathEnabled and \(schema\.wordRunU16 or schema\.dwordRunU32\)/g) || []).length, 3, "U16/U32 A/B guard must cover both single-message paths and run reads");
 for (const width of [16, 32]) {
     for (const offset of [0, 1, 3, 7]) {
         for (let sample = 0; sample < 256; sample++) {
