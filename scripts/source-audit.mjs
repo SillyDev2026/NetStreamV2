@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 92, "Regression suite unexpectedly missing");
+assert(tests.length >= 94, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -41,6 +41,54 @@ for (const name of tests) {
 }
 
 
+
+for (const name of ["RPCConcurrencyRegression.client.lua", "RPCConcurrencyRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing paired in-flight RPC overload and recovery regression: " + name);
+}
+for (const fragment of [
+    "MaxConcurrentIncomingCalls = 512,",
+    "MaxConcurrentIncomingCallsPerPlayer = 64,",
+    "MaxConcurrentIncomingCalls must be an integer from 0 to 65536",
+    "MaxConcurrentIncomingCallsPerPlayer must be an integer from 0 to 65536",
+    "local activeIncomingCalls = 0",
+    "local activeIncomingCallsByPlayer = setmetatable({}, {__mode = \"k\"})",
+    "Stats.IncomingCallConcurrencyDrops += 1",
+    "activeIncomingCalls += 1",
+    "activeIncomingCallsByPlayer[player] = perPlayer + 1",
+    "activeIncomingCalls = math.max(0, activeIncomingCalls - 1)",
+    "function Internal.runIncomingCall(player, routeId, id, args)",
+    "xpcall(Internal.handleCall, debug.traceback, player, routeId, id, args)",
+    "function NetStream.GetRPCStats(player)",
+    "copy.ActiveIncomingCalls = activeIncomingCalls",
+]) assert(source.includes(fragment), "Missing bounded RPC concurrency guard: " + fragment);
+assert.equal((source.match(/task\.spawn\(Internal\.runIncomingCall/g) || []).length,4,"Every incoming RPC codec path must use safe in-flight wrapper");
+assert(!source.includes("task.spawn(Internal.handleCall"),"Unhandled raw RPC spawn bypasses concurrency slot cleanup");
+for (const pCap of [1, 2, 4, 16, 64]) {
+    const globalCap = pCap * 3;
+    let active = 0, peak = 0, rejected = 0;
+    const players = [0, 0, 0, 0, 0];
+    for (let i = 0; i < globalCap * 40; i++) {
+        const p = i % players.length;
+        if (active >= globalCap || players[p] >= pCap) { rejected++; continue; }
+        active++;players[p]++;peak = Math.max(peak,active);
+    }
+    assert(peak <= globalCap && players.every(n=>n <= pCap),"RPC concurrency model exceeded a cap");
+    assert(rejected > 0,"RPC concurrency test did not pressure caps");
+    for (let p = 0; p < players.length; p++) while (players[p] > 0) { players[p]--;active--; }
+    assert.equal(active,0,"Finished callback did not release RPC slot");
+    assert.equal(players.reduce((a,b)=>a+b,0),0,"RPC per-player count leaked");
+}
+for (const fragment of [
+    "elseif n >= 4 and n <= 8 then",
+    "elseif n == 12 then",
+    "elseif count >= 4 and count <= 8 then",
+    "elseif count == 12 then",
+]) assert(source.includes(fragment),"Missing vararg copy fast path: " + fragment);
+for (const count of [4,5,6,7,8,12]) {
+    const args = Array.from({length:count},(_,i)=>i % 3 === 0 ? null : i * 17);
+    const copied = Array.from({length:count},(_,i)=>args[i]);
+    assert.deepEqual(copied,args,"Vararg bulk copy semantics for n=4..8/12 changed");
+}
 for (const name of ["MemoryRetentionRegression.client.lua", "MemoryRetentionRegression.server.lua"]) {
     assert(tests.includes(name), "Missing paired memory high-water regression: " + name);
 }
