@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.1.1"
+local VERSION = "4.2.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -363,7 +363,7 @@ local DEFAULTS = {
 	FastSchemaMaxBytes = 512,
 	FastSchemaAllowHeaderExpansion = false,
 	PackedSchemaRunEnabled = true,
-	PackedSchemaRunMaxFields = 8,
+	PackedSchemaRunMaxFields = 16,
 	BitPacketEnabled = true,
 	BitPacketCompressedCalls = true,
 	HybridCodecEnabled = true,
@@ -593,6 +593,8 @@ local Stats = {
 	BooleanBitPackReads = 0,
 	U8SchemaFastWrites = 0,
 	U8SchemaFastReads = 0,
+	BitFrameFixedSchemaFastWrites = 0,
+	BitFrameFixedSchemaFastReads = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -1971,12 +1973,17 @@ function Internal.compileSchema(spec, label)
 	local discardFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	local byteRunU8 = #fields > 1 and #fields <= 32
+	local bitFrameWidths = if #fields > 1 and #fields <= 32 then table.create(#fields) else nil
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
 		local kind = field.Kind
+		if bitFrameWidths then
+			local width = if kind == SCHEMA_BOOL then 1 elseif kind == SCHEMA_U8 then 8 elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then 16 elseif kind == SCHEMA_U32 or kind == SCHEMA_I32 then 32 else nil
+			if width then bitFrameWidths[i] = width else bitFrameWidths = nil end
+		end
 		if kind == SCHEMA_BOOL then discardBits += 1
 		elseif kind == SCHEMA_U8 then discardBits += 8
 		elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then discardBits += 16
@@ -2005,6 +2012,7 @@ function Internal.compileSchema(spec, label)
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
 		byteRunU8 = byteRunU8,
+		bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,
 		discardBits = if discardFixed then discardBits else nil,
 		scalarKind = scalarKind,
 	}
@@ -2587,6 +2595,24 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		Stats.U8SchemaFastWrites += 1
 		return
 	end
+	if schema.bitFrameWidths then
+		local bitPosition = writer.bitPosition
+		writer:ensureBits(schema.discardBits)
+		local data = writer.buffer
+		local widths = schema.bitFrameWidths
+		for i = 1, schema.count do
+			local kind = schema.fields[i].Kind
+			local value = args[offset + i]
+			if kind == SCHEMA_BOOL then value = if value then 1 else 0
+			elseif kind == SCHEMA_I16 and value < 0 then value += 65536
+			elseif kind == SCHEMA_I32 and value < 0 then value += 4294967296 end
+			buffer.writebits(data, bitPosition, widths[i], value)
+			bitPosition += widths[i]
+		end
+		writer.bitPosition = bitPosition
+		Stats.BitFrameFixedSchemaFastWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		local field = schema.fields[i]
 		local value = args[offset + i]
@@ -2624,6 +2650,26 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 		end
 		reader.bitPosition = bitPosition
 		Stats.U8SchemaFastReads += 1
+		return args
+	end
+	if schema.bitFrameWidths then
+		reader:needBits(schema.discardBits)
+		local args = acquireArgsCount(schema.count)
+		local bitPosition = reader.bitPosition
+		local data = reader.buffer
+		local widths = schema.bitFrameWidths
+		for i = 1, schema.count do
+			local kind = schema.fields[i].Kind
+			local value = buffer.readbits(data, bitPosition, widths[i])
+			bitPosition += widths[i]
+			if kind == SCHEMA_BOOL then value = value ~= 0
+			elseif kind == SCHEMA_I16 and value >= 32768 then value -= 65536
+			elseif kind == SCHEMA_I32 and value >= 2147483648 then value -= 4294967296 end
+			args[i] = value
+		end
+		reader.bitPosition = bitPosition
+		args.n = schema.count
+		Stats.BitFrameFixedSchemaFastReads += 1
 		return args
 	end
 	local args = acquireArgsCount(schema.count)
@@ -8547,6 +8593,8 @@ function NetStream.GetPerformanceStats()
 		BooleanBitPackReads = stats.BooleanBitPackReads,
 		U8SchemaFastWrites = stats.U8SchemaFastWrites,
 		U8SchemaFastReads = stats.U8SchemaFastReads,
+		BitFrameFixedSchemaFastWrites = stats.BitFrameFixedSchemaFastWrites,
+		BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
