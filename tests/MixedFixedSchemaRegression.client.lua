@@ -2,7 +2,7 @@
 -- Pair with MixedFixedSchemaRegression.server.lua; run alone in a Studio Play session.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.2.3")
+assert(NetStream.GetVersion() == "4.3.0")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.05})
 local T = NetStream.Types
 local Mixed = NetStream.Event("__NSMixedFixed42", {Id = 36420, Compression = false, Schema = {T.Bool, T.U8, T.U16, T.I16, T.U32, T.I32, T.Bool, T.U8, T.U16, T.I16, T.U32, T.I32}})
@@ -24,7 +24,7 @@ local function finish()
     assert(stats.PackedSchemaRunAppends > 0, "12-field packed runs were not batched")
     assert(stats.DecodeErrors == 0, "Client mixed packet decode errors")
     completed = true
-    print("NetStream v4.2.3 mixed fixed schema regression PASS", stats.BitFrameFixedSchemaFastWrites, stats.BitFrameFixedSchemaFastReads)
+    print("NetStream v4.3.0 mixed fixed schema regression PASS", stats.BitFrameFixedSchemaFastWrites, stats.BitFrameFixedSchemaFastReads)
 end
 Mixed:Connect(function(a, b, c, d, e, f, g, h, j, k, l, m)
     echoes += 1
