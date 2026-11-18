@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.2.0")
+assert(NetStream.GetVersion() == "4.2.3")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local SchemaState = NetStream.State("__NSRateSchemaState", {Id = 35701, Schema = {T.U8}, Compression = false})
@@ -11,7 +11,7 @@ local done = false
 Ack:Connect(function(code)
     assert(code == 1, "Unexpected state throttle result")
     done = true
-    print("NetStream 4.2.0 state throttle PASS")
+    print("NetStream 4.2.3 state throttle PASS")
 end)
 assert(SchemaState:SetServer(11), "Failed to queue first schema state")
 assert(SchemaState:SetServer(22), "Failed to queue second schema state")

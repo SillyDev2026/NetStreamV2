@@ -4,7 +4,7 @@ local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
 local T = NetStream.Types
 
 NetStream.ConfigureLowTraffic({HandshakeEnabled = false, BandwidthGovernorEnabled = false, PacketSizeAuditEnabled = true, TransportFastFlushEnabled = false})
-assert(NetStream.GetVersion() == "4.2.0")
+assert(NetStream.GetVersion() == "4.2.3")
 
 local Ping32 = NetStream.Event("__PacketAuditU32", {Id = 1001, Schema = {T.U32}, Priority = "Normal", Compression = false})
 local Ping16 = NetStream.Event("__PacketAuditU16", {Id = 1002, Schema = {T.U16}, Priority = "Normal", Compression = false})
@@ -40,4 +40,4 @@ checkPacket(20, 128, 16, 8, 8)
 local totals = NetStream.GetPacketSizeAudit().Totals
 assert(totals.Packets == 4 and totals.LogicalMessages == 11, "Packet audit must count only sent packets")
 assert(totals.PhysicalBytes == 36, "Expected 7 + 5 + 4 + 20 total bytes")
-print("NetStream 4.2.0 Packet Audit CLIENT PASS", "sent", totals.PhysicalBytes, "bytes", "messages", totals.LogicalMessages)
+print("NetStream 4.2.3 Packet Audit CLIENT PASS", "sent", totals.PhysicalBytes, "bytes", "messages", totals.LogicalMessages)
