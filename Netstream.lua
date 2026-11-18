@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.2.1"
+local VERSION = "4.2.2"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -8248,6 +8248,105 @@ function NetStream.State(nameOrId, options, colonOptions)
 	return route
 end
 
+
+-- Revision-checked, field-level deltas for reliable, explicitly managed state streams.
+-- This codec produces ordinary NetStream-compatible tables and does not alter BitFrame v1.
+function NetStream.CreateDeltaCodec(fieldNames)
+	assert(type(fieldNames) == "table" and #fieldNames >= 1 and #fieldNames <= 32, "Delta codec expects 1..32 named fields")
+	local count = #fieldNames
+	local names = table.create(count)
+	local seen = {}
+	for i = 1, count do
+		local name = fieldNames[i]
+		assert(type(name) == "string" and #name >= 1 and #name <= 128 and not seen[name], "Delta codec fields must be unique nonempty strings of at most 128 bytes")
+		seen[name] = true
+		names[i] = name
+	end
+	local fullMask = 2 ^ count - 1
+	local codec = {}
+	local function validValue(value)
+		if value == nil or type(value) == "boolean" then return true end
+		if type(value) == "number" then return isFiniteNumber(value) end
+		if type(value) == "string" then return #value <= Config.MaxStringBytes end
+		return false
+	end
+	local function validRevision(value)
+		return type(value) == "number" and isInteger(value) and value >= 1 and value <= MAX_SAFE_INTEGER
+	end
+	function codec:Full(state, revision)
+		assert(self == codec and type(state) == "table" and validRevision(revision), "Delta Full expects state and a positive integer revision")
+		local values = {}
+		local nilMask = 0
+		for i = 1, count do
+			local value = state[names[i]]
+			assert(validValue(value), "Delta Full contains an invalid field value")
+			if value == nil then nilMask = bit32.bor(nilMask, bit32.lshift(1, i - 1)) else values[#values + 1] = value end
+		end
+		return {Full = true, Base = 0, Revision = revision, Mask = fullMask, NilMask = nilMask, Values = values}
+	end
+	function codec:Diff(before, after, baseRevision)
+		assert(self == codec and type(before) == "table" and type(after) == "table" and validRevision(baseRevision) and baseRevision < MAX_SAFE_INTEGER, "Delta Diff expects two states and a valid base revision")
+		local mask = 0
+		local nilMask = 0
+		local values = {}
+		for i = 1, count do
+			local previous = before[names[i]]
+			local current = after[names[i]]
+			assert(validValue(previous) and validValue(current), "Delta Diff contains an invalid field value")
+			if previous ~= current then
+				local bit = bit32.lshift(1, i - 1)
+				mask = bit32.bor(mask, bit)
+				if current == nil then nilMask = bit32.bor(nilMask, bit) else values[#values + 1] = current end
+			end
+		end
+		if mask == 0 then return nil end
+		return {Full = false, Base = baseRevision, Revision = baseRevision + 1, Mask = mask, NilMask = nilMask, Values = values}
+	end
+	function codec:Apply(previous, previousRevision, frame)
+		if self ~= codec or type(frame) ~= "table" then return nil, previousRevision, "Invalid delta frame" end
+		local full = frame.Full
+		local mask = frame.Mask
+		local nilMask = frame.NilMask
+		local values = frame.Values
+		if type(full) ~= "boolean" or type(mask) ~= "number" or not isInteger(mask) or mask < 0 or mask > fullMask
+			or type(nilMask) ~= "number" or not isInteger(nilMask) or nilMask < 0 or bit32.band(nilMask, bit32.bnot(mask)) ~= 0
+			or type(values) ~= "table" or not validRevision(frame.Revision) then
+			return nil, previousRevision, "Malformed delta frame"
+		end
+		if full then
+			if frame.Base ~= 0 or mask ~= fullMask then return nil, previousRevision, "Invalid full snapshot" end
+			if type(previousRevision) == "number" and frame.Revision <= previousRevision then return nil, previousRevision, "Stale snapshot" end
+		elseif type(previous) ~= "table" or not validRevision(previousRevision) or frame.Base ~= previousRevision
+			or frame.Revision ~= previousRevision + 1 or mask == 0 then
+			return nil, previousRevision, "Delta revision mismatch; request a full snapshot"
+		end
+		local nextState = {}
+		if not full then
+			for i = 1, count do
+				local value = previous[names[i]]
+				if not validValue(value) then return nil, previousRevision, "Invalid previous state" end
+				nextState[names[i]] = value
+			end
+		end
+		local readIndex = 1
+		for i = 1, count do
+			local bit = bit32.lshift(1, i - 1)
+			if bit32.band(mask, bit) ~= 0 then
+				if bit32.band(nilMask, bit) ~= 0 then
+					nextState[names[i]] = nil
+				else
+					local value = values[readIndex]
+					if value == nil or not validValue(value) then return nil, previousRevision, "Invalid delta field" end
+					nextState[names[i]] = value
+					readIndex += 1
+				end
+			end
+		end
+		if #values ~= readIndex - 1 then return nil, previousRevision, "Delta value count mismatch" end
+		return nextState, frame.Revision, nil
+	end
+	return table.freeze(codec)
+end
 
 function NetStream.Define(schema, colonSchema)
 	if schema == NetStream then
