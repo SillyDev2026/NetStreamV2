@@ -1,6 +1,20 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.1.1. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.2.3. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.2.1–v4.2.3 — three option patches
+
+- **4.2.1:** Single-preflight mixed fixed-width packed runs; benchmark against per-field preflight and inspect GC/byte-budget correctness.
+- **4.2.2:** Explicit revision-checked delta codec; next upgrade is per-peer acknowledged baseline management, full-snapshot resync and an efficient dedicated delta wire encoding.
+- **4.2.3:** Server-only interest group filtering; next upgrade is automatic spatial membership management and load testing with 10–50 players.
+- Source CI and Roblox Studio runtime/CPU/RTT verification remain independent gates.
+
+## v4.2.0 — mixed fixed-field specialization
+
+- Implemented: whole-schema BitFrame preflight, direct fixed Bool/U8/U16/I16/U32/I32 bit-buffer loops and fast-path telemetry.
+- Implemented: configurable packed event-run field default increased to 16, without changing per-field bit widths.
+- Verify: 12-field paired Studio regression, p95 CPU/heap and bandwidth under 1/10/25 clients, transient allocations, and FIFO under splitting.
+- Still open: fully generated serializers, field-level delta replication, interest management and controlled Studio performance proof.
 
 ## v4.1.0 — bandwidth-conscious scheduling and state suppression
 

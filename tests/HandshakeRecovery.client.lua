@@ -2,7 +2,7 @@
 -- Standalone StarterPlayerScripts LocalScript; pair with HandshakeRecovery.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.1.1")
+assert(NetStream.GetVersion() == "4.2.3")
 NetStream.Configure({HandshakeEnabled = true, HandshakeRequireReady = false})
 NetStream.Start()
 local folder = ReplicatedStorage:WaitForChild("__NetStream_NetStream")
@@ -41,7 +41,7 @@ remote.OnClientEvent:Connect(function(data)
     elseif stage == 4 and op == 4 then
         assert(buffer.readu32(data, 9) == serverNonce, "Recovery READY nonce mismatch")
         done = true
-        print("NetStream v4.1.1 duplicate HELLO recovery PASS (WELCOME -> READY)")
+        print("NetStream v4.2.3 duplicate HELLO recovery PASS (WELCOME -> READY)")
     end
 end)
 task.delay(0.5, function() stage = 1; send(1) end)

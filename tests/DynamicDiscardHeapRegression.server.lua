@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.1.1")
+assert(NetStream.GetVersion() == "4.2.3")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false, MaxIncomingMessagesPerSecond = 1})
 local T = NetStream.Types
 local Dynamic = NetStream.Event("__NSRejectedDynamicHeap", {Id = 36111, Compression = false})
@@ -16,7 +16,7 @@ Dynamic:Connect(function(player, first, second)
         assert(stats.BitFrameRejectedDynamicArgsAvoided >= 1, "Dynamic reject path still allocated an argument array")
         assert(stats.DecodeErrors == 0, "Valid rejected dynamic packet failed framing")
         assert(Ack:FireClientNow(player, 1), "Dynamic reject ACK failed")
-        print("NetStream 4.1.1 dynamic discard PASS", stats.BitFrameRejectedDynamicArgsAvoided)
+        print("NetStream 4.2.3 dynamic discard PASS", stats.BitFrameRejectedDynamicArgsAvoided)
     end)
 end)
-print("NetStream 4.1.1 dynamic reject server ready")
+print("NetStream 4.2.3 dynamic reject server ready")

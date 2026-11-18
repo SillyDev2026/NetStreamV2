@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.1.1";
+const version = "4.2.3";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 76, "Regression suite unexpectedly missing");
+assert(tests.length >= 82, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -104,6 +104,51 @@ for (const state of [false, true, 0, 1, -1, 255, "same"]) {
 }
 
 
+for (const file of ["DeltaCodecRegression.server.lua", "DeltaCodecRegression.client.lua", "InterestGroupRegression.server.lua", "InterestGroupRegression.client.lua"]) {
+    assert(tests.includes(file), "Missing v4.2.3 paired Studio regression: " + file);
+}
+for (const fragment of [
+    "BitFrameFixedSchemaRunWrites = 0,",
+    "BitFrameFixedSchemaRunReads = 0,",
+    "writer:ensureBits(schema.discardBits * item.runCount)",
+    "reader:needBits(schema.discardBits * count)",
+    "function NetStream.CreateDeltaCodec(fieldNames)",
+    "function codec:Full(state, revision)",
+    "function codec:Diff(before, after, baseRevision)",
+    "function codec:Apply(previous, previousRevision, frame)",
+    "frame.Revision ~= previousRevision + 1",
+    "bit32.band(nilMask, bit32.bnot(mask)) ~= 0",
+    "function NetStream.CreateInterestGroup()",
+    "function group:Fire(route, ...)",
+    "function group:FireUnreliable(route, ...)",
+    "function group:SetState(route, value, unreliable)",
+    "player.Parent == Players",
+    "InterestRecipientsQueued",
+]) assert(source.includes(fragment), "Three-option feature guard missing: " + fragment);
+function deltaModel(fields, prev, next) {
+    let mask = 0, nilMask = 0, changes = [];
+    for (let i = 0; i < fields.length; i++) {
+        if (prev[fields[i]] !== next[fields[i]]) {
+            mask += 2 ** i;
+            if (next[fields[i]] === undefined) nilMask += 2 ** i;
+            else changes.push(next[fields[i]]);
+        }
+    }
+    return {mask, nilMask, changes};
+}
+for (let n = 1; n <= 32; n++) {
+    const fields = Array.from({length:n},(_,i)=>"f"+i);
+    const prev = Object.fromEntries(fields.map(x=>[x,0]));
+    const next = {...prev, [fields[n-1]]:null};
+    const model = deltaModel(fields,prev,next);
+    assert.equal(model.mask,2 ** (n-1),"Delta bit mask at high field is incorrect");
+    assert.equal(model.changes.length,1,"Delta changed field lost");
+    const deleted = {...prev};
+    delete deleted[fields[n-1]];
+    const remove = deltaModel(fields,prev,deleted);
+    assert.equal(remove.nilMask,remove.mask,"Delta explicit deletion mask is incorrect");
+}
+assert(tests.includes("MixedFixedSchemaRegression.server.lua") && tests.includes("MixedFixedSchemaRegression.client.lua"), "Paired mixed fixed-schema Studio regression missing");
 assert(tests.includes("PacketSizeAuditRegression.server.lua") && tests.includes("PacketSizeAuditRegression.client.lua"), "Paired packet byte-audit Studio regression missing");
 for (const fragment of [
     "PacketSizeAuditEnabled = false,",
@@ -504,6 +549,36 @@ for (let run = 0; run < 2000; run++) {
     const afterSplit = random() % (limit + 1);
     assert(highWater > limit && afterSplit <= limit, "Invalid high-water test");
     assert(!(highWater <= limit && afterSplit <= limit), "Oversized backing storage must be discarded regardless of live split count");
+}
+for (const fragment of [
+    "PackedSchemaRunMaxFields = 16,",
+    "bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,",
+    "writer:ensureBits(schema.discardBits)",
+    "reader:needBits(schema.discardBits)",
+    "Stats.BitFrameFixedSchemaFastWrites += 1",
+    "Stats.BitFrameFixedSchemaFastReads += 1",
+    "BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads",
+]) assert(source.includes(fragment), "Mixed fixed-schema fast path missing: " + fragment);
+const mixedWidths = [1, 8, 16, 16, 32, 32, 1, 8, 16, 16, 32, 32];
+const mixedSigned = new Set([3, 5, 9, 11]);
+for (let iteration = 1; iteration <= 2048; iteration++) {
+    const values = [iteration % 2, 0, 65535, -32768, 4294967295, -2147483648, (iteration + 1) % 2, 255, iteration % 65536, -iteration, 2147483648, 2147483647];
+    const offset = iteration % 8;
+    const bits = new Uint8Array(offset + mixedWidths.reduce((a, b) => a + b, 0));
+    let pos = offset;
+    for (let i = 0; i < mixedWidths.length; i++) {
+        let value = values[i] < 0 ? values[i] + 2 ** mixedWidths[i] : values[i];
+        for (let bit = 0; bit < mixedWidths[i]; bit++) { bits[pos++] = value % 2; value = Math.floor(value / 2); }
+    }
+    pos = offset;
+    const decoded = [];
+    for (let i = 0; i < mixedWidths.length; i++) {
+        let value = 0;
+        for (let bit = 0; bit < mixedWidths[i]; bit++) value += bits[pos++] * 2 ** bit;
+        if (mixedSigned.has(i) && value >= 2 ** (mixedWidths[i] - 1)) value -= 2 ** mixedWidths[i];
+        decoded.push(value);
+    }
+    assert.deepEqual(decoded, values, "Mixed schema signed/unsigned bit layout parity failed");
 }
 assert(read("README.md").includes(`v${version}`));
 console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + packed scalar allowance models, fixed-discard, writer fast path and packed high-water GC guards, ${tests.length} Studio-script static scans`);

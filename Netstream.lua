@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.1.1"
+local VERSION = "4.2.3"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -363,7 +363,7 @@ local DEFAULTS = {
 	FastSchemaMaxBytes = 512,
 	FastSchemaAllowHeaderExpansion = false,
 	PackedSchemaRunEnabled = true,
-	PackedSchemaRunMaxFields = 8,
+	PackedSchemaRunMaxFields = 16,
 	BitPacketEnabled = true,
 	BitPacketCompressedCalls = true,
 	HybridCodecEnabled = true,
@@ -593,6 +593,12 @@ local Stats = {
 	BooleanBitPackReads = 0,
 	U8SchemaFastWrites = 0,
 	U8SchemaFastReads = 0,
+	BitFrameFixedSchemaFastWrites = 0,
+	BitFrameFixedSchemaFastReads = 0,
+	BitFrameFixedSchemaRunWrites = 0,
+	BitFrameFixedSchemaRunReads = 0,
+	InterestGroupFanouts = 0,
+	InterestRecipientsQueued = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -1971,12 +1977,17 @@ function Internal.compileSchema(spec, label)
 	local discardFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	local byteRunU8 = #fields > 1 and #fields <= 32
+	local bitFrameWidths = if #fields > 1 and #fields <= 32 then table.create(#fields) else nil
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
 		local kind = field.Kind
+		if bitFrameWidths then
+			local width = if kind == SCHEMA_BOOL then 1 elseif kind == SCHEMA_U8 then 8 elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then 16 elseif kind == SCHEMA_U32 or kind == SCHEMA_I32 then 32 else nil
+			if width then bitFrameWidths[i] = width else bitFrameWidths = nil end
+		end
 		if kind == SCHEMA_BOOL then discardBits += 1
 		elseif kind == SCHEMA_U8 then discardBits += 8
 		elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then discardBits += 16
@@ -2005,6 +2016,7 @@ function Internal.compileSchema(spec, label)
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
 		byteRunU8 = byteRunU8,
+		bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,
 		discardBits = if discardFixed then discardBits else nil,
 		scalarKind = scalarKind,
 	}
@@ -2587,6 +2599,24 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		Stats.U8SchemaFastWrites += 1
 		return
 	end
+	if schema.bitFrameWidths then
+		local bitPosition = writer.bitPosition
+		writer:ensureBits(schema.discardBits)
+		local data = writer.buffer
+		local widths = schema.bitFrameWidths
+		for i = 1, schema.count do
+			local kind = schema.fields[i].Kind
+			local value = args[offset + i]
+			if kind == SCHEMA_BOOL then value = if value then 1 else 0
+			elseif kind == SCHEMA_I16 and value < 0 then value += 65536
+			elseif kind == SCHEMA_I32 and value < 0 then value += 4294967296 end
+			buffer.writebits(data, bitPosition, widths[i], value)
+			bitPosition += widths[i]
+		end
+		writer.bitPosition = bitPosition
+		Stats.BitFrameFixedSchemaFastWrites += 1
+		return
+	end
 	for i = 1, schema.count do
 		local field = schema.fields[i]
 		local value = args[offset + i]
@@ -2624,6 +2654,26 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 		end
 		reader.bitPosition = bitPosition
 		Stats.U8SchemaFastReads += 1
+		return args
+	end
+	if schema.bitFrameWidths then
+		reader:needBits(schema.discardBits)
+		local args = acquireArgsCount(schema.count)
+		local bitPosition = reader.bitPosition
+		local data = reader.buffer
+		local widths = schema.bitFrameWidths
+		for i = 1, schema.count do
+			local kind = schema.fields[i].Kind
+			local value = buffer.readbits(data, bitPosition, widths[i])
+			bitPosition += widths[i]
+			if kind == SCHEMA_BOOL then value = value ~= 0
+			elseif kind == SCHEMA_I16 and value >= 32768 then value -= 65536
+			elseif kind == SCHEMA_I32 and value >= 2147483648 then value -= 4294967296 end
+			args[i] = value
+		end
+		reader.bitPosition = bitPosition
+		args.n = schema.count
+		Stats.BitFrameFixedSchemaFastReads += 1
 		return args
 	end
 	local args = acquireArgsCount(schema.count)
@@ -4631,6 +4681,29 @@ function Internal.bitFrameWriteOne(writer, item, audit)
 					end
 					writer.bitPosition = position
 					Stats.BitFramePackedScalarRunWrites += item.runCount
+				elseif item.schema.bitFrameWidths then
+					local schema = item.schema
+					local widths = schema.bitFrameWidths
+					local values = item.packedValues
+					local fieldCount = schema.count
+					local position = writer.bitPosition
+					writer:ensureBits(schema.discardBits * item.runCount)
+					local data = writer.buffer
+					for index = 0, item.runCount - 1 do
+						local offset = index * fieldCount
+						for fieldIndex = 1, fieldCount do
+							local kind = schema.fields[fieldIndex].Kind
+							local value = values[offset + fieldIndex]
+							if kind == SCHEMA_BOOL then value = if value then 1 else 0
+							elseif kind == SCHEMA_I16 and value < 0 then value += 65536
+							elseif kind == SCHEMA_I32 and value < 0 then value += 4294967296 end
+							buffer.writebits(data, position, widths[fieldIndex], value)
+							position += widths[fieldIndex]
+						end
+					end
+					writer.bitPosition = position
+					Stats.BitFrameFixedSchemaFastWrites += item.runCount
+					Stats.BitFrameFixedSchemaRunWrites += item.runCount
 				else
 					for index = 0, item.runCount - 1 do
 						Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.packedValues, index * item.fieldCount)
@@ -6504,6 +6577,28 @@ function Internal.parseBitFrame(player, reader, stage)
 					else
 						for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
 					end
+				elseif count > 1 and schema.bitFrameWidths then
+					reader:needBits(schema.discardBits * count)
+					local data = reader.buffer
+					local position = reader.bitPosition
+					local widths = schema.bitFrameWidths
+					for index = 1, count do
+						local args = acquireArgsCount(schema.count)
+						for fieldIndex = 1, schema.count do
+							local fieldKind = schema.fields[fieldIndex].Kind
+							local value = buffer.readbits(data, position, widths[fieldIndex])
+							position += widths[fieldIndex]
+							if fieldKind == SCHEMA_BOOL then value = value ~= 0
+							elseif fieldKind == SCHEMA_I16 and value >= 32768 then value -= 65536
+							elseif fieldKind == SCHEMA_I32 and value >= 2147483648 then value -= 4294967296 end
+							args[fieldIndex] = value
+						end
+						args.n = schema.count
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
+					end
+					reader.bitPosition = position
+					Stats.BitFrameFixedSchemaFastReads += count
+					Stats.BitFrameFixedSchemaRunReads += count
 				else
 					for index = 1, count do
 						local args = Internal.bitFrameReadSchemaArgs(reader, schema)
@@ -8156,6 +8251,205 @@ function NetStream.State(nameOrId, options, colonOptions)
 end
 
 
+-- Revision-checked, field-level deltas for reliable, explicitly managed state streams.
+-- This codec produces ordinary NetStream-compatible tables and does not alter BitFrame v1.
+-- Server-managed recipient groups. Membership stays private to the server.
+function NetStream.CreateInterestGroup()
+	assert(IS_SERVER, "Interest groups can only be created on the server")
+	local members = setmetatable({}, {__mode = "k"})
+	local group = {}
+	local destroyedGroup = false
+	local function active()
+		assert(not destroyedGroup, "Interest group has been destroyed")
+	end
+	local function isPlayer(player)
+		return typeof(player) == "Instance" and player:IsA("Player")
+	end
+	function group:Add(player)
+		active()
+		assert(isPlayer(player) and player.Parent == Players, "Interest group Add requires a connected Player")
+		if members[player] then return false end
+		members[player] = true
+		return true
+	end
+	function group:Remove(player)
+		active()
+		assert(isPlayer(player), "Interest group Remove expects a Player")
+		local had = members[player] == true
+		members[player] = nil
+		return had
+	end
+	function group:Contains(player)
+		active()
+		return isPlayer(player) and player.Parent == Players and members[player] == true
+	end
+	function group:Count()
+		active()
+		local count = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then count += 1 end
+		end
+		return count
+	end
+	function group:Clear()
+		active()
+		table.clear(members)
+	end
+	function group:Destroy()
+		if destroyedGroup then return end
+		destroyedGroup = true
+		table.clear(members)
+	end
+	function group:Fire(route, ...)
+		active()
+		assert(type(route) == "table" and getmetatable(route) == EventRoute, "Interest group Fire expects a NetStream Event route")
+		local args = table.pack(...)
+		if route._schema then validateSchemaArgs(route._schema, args, false) else validateArgs(args) end
+		local allAccepted = true
+		local recipients = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then
+				local ok = route:FireClient(player, table.unpack(args, 1, args.n))
+				if ok then recipients += 1 else allAccepted = false end
+			end
+		end
+		Stats.InterestGroupFanouts += 1
+		Stats.InterestRecipientsQueued += recipients
+		return allAccepted, recipients
+	end
+	function group:FireUnreliable(route, ...)
+		active()
+		assert(type(route) == "table" and getmetatable(route) == EventRoute, "Interest group FireUnreliable expects a NetStream Event route")
+		local args = table.pack(...)
+		if route._schema then validateSchemaArgs(route._schema, args, false) else validateArgs(args) end
+		local allAccepted = true
+		local recipients = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then
+				local ok = route:FireUnreliableClient(player, table.unpack(args, 1, args.n))
+				if ok then recipients += 1 else allAccepted = false end
+			end
+		end
+		Stats.InterestGroupFanouts += 1
+		Stats.InterestRecipientsQueued += recipients
+		return allAccepted, recipients
+	end
+	function group:SetState(route, value, unreliable)
+		active()
+		assert(type(route) == "table" and getmetatable(route) == StateRoute, "Interest group SetState expects a NetStream State route")
+		if route._schema then validateSchemaArgs(route._schema, table.pack(value), false) else validateValue(value, 0, nil) end
+		local allAccepted = true
+		local recipients = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then
+				local ok = route:SetClient(player, value, unreliable == true)
+				if ok then recipients += 1 else allAccepted = false end
+			end
+		end
+		Stats.InterestGroupFanouts += 1
+		Stats.InterestRecipientsQueued += recipients
+		return allAccepted, recipients
+	end
+	return group
+end
+
+function NetStream.CreateDeltaCodec(fieldNames)
+	assert(type(fieldNames) == "table" and #fieldNames >= 1 and #fieldNames <= 32, "Delta codec expects 1..32 named fields")
+	local count = #fieldNames
+	local names = table.create(count)
+	local seen = {}
+	for i = 1, count do
+		local name = fieldNames[i]
+		assert(type(name) == "string" and #name >= 1 and #name <= 128 and not seen[name], "Delta codec fields must be unique nonempty strings of at most 128 bytes")
+		seen[name] = true
+		names[i] = name
+	end
+	local fullMask = 2 ^ count - 1
+	local codec = {}
+	local function validValue(value)
+		if value == nil or type(value) == "boolean" then return true end
+		if type(value) == "number" then return isFiniteNumber(value) end
+		if type(value) == "string" then return #value <= Config.MaxStringBytes end
+		return false
+	end
+	local function validRevision(value)
+		return type(value) == "number" and isInteger(value) and value >= 1 and value <= MAX_SAFE_INTEGER
+	end
+	function codec:Full(state, revision)
+		assert(self == codec and type(state) == "table" and validRevision(revision), "Delta Full expects state and a positive integer revision")
+		local values = {}
+		local nilMask = 0
+		for i = 1, count do
+			local value = state[names[i]]
+			assert(validValue(value), "Delta Full contains an invalid field value")
+			if value == nil then nilMask = bit32.bor(nilMask, bit32.lshift(1, i - 1)) else values[#values + 1] = value end
+		end
+		return {Full = true, Base = 0, Revision = revision, Mask = fullMask, NilMask = nilMask, Values = values}
+	end
+	function codec:Diff(before, after, baseRevision)
+		assert(self == codec and type(before) == "table" and type(after) == "table" and validRevision(baseRevision) and baseRevision < MAX_SAFE_INTEGER, "Delta Diff expects two states and a valid base revision")
+		local mask = 0
+		local nilMask = 0
+		local values = {}
+		for i = 1, count do
+			local previous = before[names[i]]
+			local current = after[names[i]]
+			assert(validValue(previous) and validValue(current), "Delta Diff contains an invalid field value")
+			if previous ~= current then
+				local bit = bit32.lshift(1, i - 1)
+				mask = bit32.bor(mask, bit)
+				if current == nil then nilMask = bit32.bor(nilMask, bit) else values[#values + 1] = current end
+			end
+		end
+		if mask == 0 then return nil end
+		return {Full = false, Base = baseRevision, Revision = baseRevision + 1, Mask = mask, NilMask = nilMask, Values = values}
+	end
+	function codec:Apply(previous, previousRevision, frame)
+		if self ~= codec or type(frame) ~= "table" then return nil, previousRevision, "Invalid delta frame" end
+		local full = frame.Full
+		local mask = frame.Mask
+		local nilMask = frame.NilMask
+		local values = frame.Values
+		if type(full) ~= "boolean" or type(mask) ~= "number" or not isInteger(mask) or mask < 0 or mask > fullMask
+			or type(nilMask) ~= "number" or not isInteger(nilMask) or nilMask < 0 or bit32.band(nilMask, bit32.bnot(mask)) ~= 0
+			or type(values) ~= "table" or not validRevision(frame.Revision) then
+			return nil, previousRevision, "Malformed delta frame"
+		end
+		if full then
+			if frame.Base ~= 0 or mask ~= fullMask then return nil, previousRevision, "Invalid full snapshot" end
+			if type(previousRevision) == "number" and frame.Revision <= previousRevision then return nil, previousRevision, "Stale snapshot" end
+		elseif type(previous) ~= "table" or not validRevision(previousRevision) or frame.Base ~= previousRevision
+			or frame.Revision ~= previousRevision + 1 or mask == 0 then
+			return nil, previousRevision, "Delta revision mismatch; request a full snapshot"
+		end
+		local nextState = {}
+		if not full then
+			for i = 1, count do
+				local value = previous[names[i]]
+				if not validValue(value) then return nil, previousRevision, "Invalid previous state" end
+				nextState[names[i]] = value
+			end
+		end
+		local readIndex = 1
+		for i = 1, count do
+			local bit = bit32.lshift(1, i - 1)
+			if bit32.band(mask, bit) ~= 0 then
+				if bit32.band(nilMask, bit) ~= 0 then
+					nextState[names[i]] = nil
+				else
+					local value = values[readIndex]
+					if value == nil or not validValue(value) then return nil, previousRevision, "Invalid delta field" end
+					nextState[names[i]] = value
+					readIndex += 1
+				end
+			end
+		end
+		if #values ~= readIndex - 1 then return nil, previousRevision, "Delta value count mismatch" end
+		return nextState, frame.Revision, nil
+	end
+	return table.freeze(codec)
+end
+
 function NetStream.Define(schema, colonSchema)
 	if schema == NetStream then
 		schema = colonSchema
@@ -8547,6 +8841,10 @@ function NetStream.GetPerformanceStats()
 		BooleanBitPackReads = stats.BooleanBitPackReads,
 		U8SchemaFastWrites = stats.U8SchemaFastWrites,
 		U8SchemaFastReads = stats.U8SchemaFastReads,
+		BitFrameFixedSchemaFastWrites = stats.BitFrameFixedSchemaFastWrites,
+		BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads,
+		BitFrameFixedSchemaRunWrites = stats.BitFrameFixedSchemaRunWrites,
+		BitFrameFixedSchemaRunReads = stats.BitFrameFixedSchemaRunReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,

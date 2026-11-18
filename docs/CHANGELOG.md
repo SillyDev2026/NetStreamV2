@@ -1,6 +1,27 @@
 # NetStreamV2 Changelog
 
-The current release is **v4.1.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release candidate is **v4.2.3**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.2.3 — Server-controlled interest groups
+- Server-created groups restrict reliable/unreliable event and state fanout to connected subscribers. Member add/remove/clear/destroy are explicit and server-owned.
+- Prevalidate fanout payloads before the first enqueue to prevent partial sends on malformed input; provide acceptance count (not confirmed delivery).
+- Add interest-route counters and paired membership/no-leak Studio regression. No automatic spatial interest computation.
+
+## v4.2.2 — Explicit field-delta codec
+- `CreateDeltaCodec` supports 1–32 named primitive fields, changed/deleted bit masks, no-change suppression and revision-checked full/delta application.
+- Reject malformed/stale/gap frames without altering previous state. Requires reliable ordered Event and app-managed per-target resync; no implicit StateRoute transport.
+- Paired full→delta Studio regression tests scalar changes, nil deletion, malformed masks and wrong base revisions.
+
+## v4.2.1 — Whole-run mixed-schema preflight
+- Mixed fixed-width Bool/U8/U16/I16/U32/I32 packed runs use a single aggregate encoder/decoder bounds preflight, preserving signed integer two's-complement layout.
+- Adds packed-run usage counters, does not alter BitFrame v1 or Compression codec 230.
+
+## v4.2.0 — Mixed integer schema packing and wider packed runs
+
+- Compiles bit widths for 2–32-field Bool/U8/U16/I16/U32/I32 schemas. The BitFrame writer preflights the whole payload once and writes each field directly to the buffer; the reader preflights once and reconstructs signed integers. Existing all-Boolean/all-U8 paths are retained.
+- Raises default `PackedSchemaRunMaxFields` from 8 to 16 so 9–16-field fixed-schema event runs can share one header. Larger temporary packed arrays may cost memory; profile and override to 8 if necessary.
+- Adds `BitFrameFixedSchemaFastWrites` and `BitFrameFixedSchemaFastReads` counters, deterministic bit-layout checks, and paired Studio regression testing boundary values, FIFO, and two-way traffic.
+- BitFrame v1 and bundled Compression v2.4.2 codec 230 remain unchanged. Runtime performance gains are unverified until matched Studio benchmarks.
 
 ## v4.1.1 — Exact BitFrame packet-size audit
 

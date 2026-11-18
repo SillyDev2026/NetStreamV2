@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v4.0.2. **Candidate:** v4.1.1. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.1.1/v4.2.0. **Candidate:** v4.2.3. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,9 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `DeltaCodecRegression` | Paired full-to-delta apply, field deletion, wrong base and malformed mask rejection |
+| `InterestGroupRegression` | Paired interest membership filtering, state fanout and no excluded events |
+| `MixedFixedSchemaRegression` | 40 mixed 12-field Bool/U8/U16/I16/U32/I32 round trips, boundary/FIFO checks and fast-path counters |
 | `PackedScalarRunRegression` | Single-field U16 and Bool runs, FIFO, signed group continuation rate-limit semantics |
 | `PackedHighWaterRegression` | Correct packed-run FIFO and discarding oversized backing tables despite later small run slices |
 | `ScalarThrottleHeapRegression` | Scalar route-level rejection, no argument-table cleanup error, accepted value preserved |
@@ -49,6 +52,14 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing sample returns `nil`; do not substitute 0 ms. Since measurements are sampled and retained in a bounded ring, results only reflect **retained observations**, not all lifetime traffic.
 
 `RoundTripMs` must be explicitly recorded by a client-side ping/pong benchmark using `RecordRoundTripSample`. Handshake RTT is a different metric. `JitterMs` represents the absolute difference between sequential recorded RTTs (not network packet-delay variation per RFC 3550).
+
+## v4.2.1–v4.2.3 acceptance benchmarks
+
+Execute each new server/client regression in a separate Roblox Studio Play session. Compare 12-field mixed schema packet bytes, encode/decode p95/p99 and Luau heap on v4.2.0 vs v4.2.3; compare total wire bytes for full snapshots and 1/2-field deltas vs complete state sends, including reconnect and out-of-order rejection. For interest groups, compare 1/10/25-player fanouts with different active subscriptions, ensuring zero excluded-client deliveries. Record actual CPU, queue, RT and byte metrics before claiming improvements; source CI alone is not a Roblox Studio benchmark.
+
+## v4.2.0 mixed-schema performance checks
+
+Compare v4.1.1 against v4.2.0 using the same 12-field mixed Bool/U8/U16/I16/U32/I32 event route with 1/10/25 clients. Repeat with `PackedSchemaRunMaxFields` at 8 and 16. Measure encoded bytes per logical message, packet counts, encode/decode p95/p99, Luau heap after GC, packet deferrals/drops and application RTT. A higher packed-field limit can reduce repeated headers but increase temporary allocations. Run the paired Studio `MixedFixedSchemaRegression` before production use; static source-audit does not execute Roblox networking.
 
 ## Suggested performance matrix
 
