@@ -1,6 +1,13 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.1.1. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.2.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.2.0 — mixed fixed-field specialization
+
+- Implemented: whole-schema BitFrame preflight, direct fixed Bool/U8/U16/I16/U32/I32 bit-buffer loops and fast-path telemetry.
+- Implemented: configurable packed event-run field default increased to 16, without changing per-field bit widths.
+- Verify: 12-field paired Studio regression, p95 CPU/heap and bandwidth under 1/10/25 clients, transient allocations, and FIFO under splitting.
+- Still open: fully generated serializers, field-level delta replication, interest management and controlled Studio performance proof.
 
 ## v4.1.0 — bandwidth-conscious scheduling and state suppression
 

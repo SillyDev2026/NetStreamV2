@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.1.1, BitFrame v1, Compression v2.4.2 (codec 230).**
+**Applies to NetStream v4.2.0, BitFrame v1, Compression v2.4.2 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -26,6 +26,10 @@ flowchart TB
     N["Statistics + opt-in sample buffers"] -.-> F
     N -.-> J
 ```
+
+### v4.2.0 mixed fixed-width schema specialization
+
+At route registration, a 2–32-field Bool/U8/U16/I16/U32/I32 schema caches its per-field bit widths. BitFrame v1 keeps the same packing order but does one whole-payload preflight and direct bit-buffer reads/writes, with two's-complement reconstruction for I16/I32. All-Bool and all-U8 specializations take precedence. The default packed-run eligibility limit grows from 8 to 16 fields, with potentially greater temporary allocation. This is not a new wire codec.
 
 ## 2. Startup and remote setup
 

@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.1.1-2563eb)
+![Release](https://img.shields.io/badge/release-v4.2.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current `main` release: NetStream v4.1.1.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
+> **Current release candidate: NetStream v4.2.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -167,6 +167,13 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## v4.2.0: mixed fixed-width BitFrame fast path
+
+- **Precompiled field widths:** Schemas with 2–32 Bool/U8/U16/I16/U32/I32 fields use one packet-capacity check and direct bit-buffer reads/writes, including signed integer reconstruction. Existing all-Bool/all-U8 paths remain.
+- **Wider event run batching:** `PackedSchemaRunMaxFields` now defaults to 16 (previously 8), enabling successive 9–16-field fixed-schema events to share one route/run header. This can save repeated headers but may increase temporary packed-value allocations; use smaller limits if profiling warrants it.
+- **Observability:** `GetStats()` and `GetPerformanceStats()` expose `BitFrameFixedSchemaFastWrites` and `BitFrameFixedSchemaFastReads`.
+- **Compatibility:** BitFrame v1 and Compression codec 230 remain unchanged. No packet-size or CPU win is claimed until equal-workload Studio benchmarks complete. Use the paired `MixedFixedSchemaRegression` tests.
+
 ## Serialization and compression
 
 **Default BitFrame v1** packs a one-bit message-presence marker, a two-bit message kind, adaptive route/request IDs as needed, and the encoded payload. A zero presence marker terminates the frame; at most seven zero tail bits pad the final byte.
@@ -281,6 +288,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **4.2.0** | Mixed fixed-width schema preflight/read/write, 16-field packed runs and paired boundary/FIFO regression |
 | **4.1.1** | Optional exact BitFrame packet-size instrumentation, sent-only bit breakdown, 76 paired/runtime scripts |
 | **4.1.0** | Opt-in low-traffic batching preset and reliable coalesced state duplicate suppression (with cache invalidation) |
 | **4.0.2** | Repair isolated retry data-loss and sparse deferred queue indices; reduce Compression no-dictionary allocations and reject invalid composite map keys early |

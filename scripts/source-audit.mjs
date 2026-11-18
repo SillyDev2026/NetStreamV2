@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.1.1";
+const version = "4.2.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 76, "Regression suite unexpectedly missing");
+assert(tests.length >= 78, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -104,6 +104,7 @@ for (const state of [false, true, 0, 1, -1, 255, "same"]) {
 }
 
 
+assert(tests.includes("MixedFixedSchemaRegression.server.lua") && tests.includes("MixedFixedSchemaRegression.client.lua"), "Paired mixed fixed-schema Studio regression missing");
 assert(tests.includes("PacketSizeAuditRegression.server.lua") && tests.includes("PacketSizeAuditRegression.client.lua"), "Paired packet byte-audit Studio regression missing");
 for (const fragment of [
     "PacketSizeAuditEnabled = false,",
@@ -504,6 +505,36 @@ for (let run = 0; run < 2000; run++) {
     const afterSplit = random() % (limit + 1);
     assert(highWater > limit && afterSplit <= limit, "Invalid high-water test");
     assert(!(highWater <= limit && afterSplit <= limit), "Oversized backing storage must be discarded regardless of live split count");
+}
+for (const fragment of [
+    "PackedSchemaRunMaxFields = 16,",
+    "bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,",
+    "writer:ensureBits(schema.discardBits)",
+    "reader:needBits(schema.discardBits)",
+    "Stats.BitFrameFixedSchemaFastWrites += 1",
+    "Stats.BitFrameFixedSchemaFastReads += 1",
+    "BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads",
+]) assert(source.includes(fragment), "Mixed fixed-schema fast path missing: " + fragment);
+const mixedWidths = [1, 8, 16, 16, 32, 32, 1, 8, 16, 16, 32, 32];
+const mixedSigned = new Set([3, 5, 9, 11]);
+for (let iteration = 1; iteration <= 2048; iteration++) {
+    const values = [iteration % 2, 0, 65535, -32768, 4294967295, -2147483648, (iteration + 1) % 2, 255, iteration % 65536, -iteration, 2147483648, 2147483647];
+    const offset = iteration % 8;
+    const bits = new Uint8Array(offset + mixedWidths.reduce((a, b) => a + b, 0));
+    let pos = offset;
+    for (let i = 0; i < mixedWidths.length; i++) {
+        let value = values[i] < 0 ? values[i] + 2 ** mixedWidths[i] : values[i];
+        for (let bit = 0; bit < mixedWidths[i]; bit++) { bits[pos++] = value % 2; value = Math.floor(value / 2); }
+    }
+    pos = offset;
+    const decoded = [];
+    for (let i = 0; i < mixedWidths.length; i++) {
+        let value = 0;
+        for (let bit = 0; bit < mixedWidths[i]; bit++) value += bits[pos++] * 2 ** bit;
+        if (mixedSigned.has(i) && value >= 2 ** (mixedWidths[i] - 1)) value -= 2 ** mixedWidths[i];
+        decoded.push(value);
+    }
+    assert.deepEqual(decoded, values, "Mixed schema signed/unsigned bit layout parity failed");
 }
 assert(read("README.md").includes(`v${version}`));
 console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + packed scalar allowance models, fixed-discard, writer fast path and packed high-water GC guards, ${tests.length} Studio-script static scans`);
