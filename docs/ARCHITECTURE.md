@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.2.3, BitFrame v1, Compression v2.4.2 (codec 230).**
+**Applies to NetStream v4.3.0, BitFrame v1, Compression v2.4.2 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -26,6 +26,12 @@ flowchart TB
     N["Statistics + opt-in sample buffers"] -.-> F
     N -.-> J
 ```
+
+### v4.3.0 dispatch and flush fairness
+
+A weak-key map counts pending server event callbacks by Player. The admission check applies both global and per-player limits before queueing a table or scalar callback. Dequeue returns the per-player quota before invoking callbacks. If the sender has disconnected, its queued callback is discarded without firing and any owned argument array is released. This controls callback backlog, **not** transport-level packet receipt or RPC scheduling.
+
+Periodic outbound flushes share a single time budget. When both broadcast and individual target queues are active, broadcasts receive a configured fraction, leaving processing time for existing round-robin per-target queues. No new wire headers or physical priority lanes are introduced.
 
 ### v4.2.1–v4.2.3 packet efficiency and state boundaries
 

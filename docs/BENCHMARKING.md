@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v4.1.1/v4.2.0. **Candidate:** v4.2.3. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.2.3. **Candidate:** v4.3.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,8 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `DispatchFairnessRegression` | 160-message client burst; validates per-player queue cap and dropped work stats |
+| `BroadcastBudgetRegression` | Competing broadcast and per-player traffic; validates budget slicing and send path |
 | `DeltaCodecRegression` | Paired full-to-delta apply, field deletion, wrong base and malformed mask rejection |
 | `InterestGroupRegression` | Paired interest membership filtering, state fanout and no excluded events |
 | `MixedFixedSchemaRegression` | 40 mixed 12-field Bool/U8/U16/I16/U32/I32 round trips, boundary/FIFO checks and fast-path counters |
@@ -52,6 +54,10 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing sample returns `nil`; do not substitute 0 ms. Since measurements are sampled and retained in a bounded ring, results only reflect **retained observations**, not all lifetime traffic.
 
 `RoundTripMs` must be explicitly recorded by a client-side ping/pong benchmark using `RecordRoundTripSample`. Handshake RTT is a different metric. `JitterMs` represents the absolute difference between sequential recorded RTTs (not network packet-delay variation per RFC 3550).
+
+## v4.3.0 server processing comparison
+
+Compare v4.2.3 and v4.3.0 under identical 1/10/25-player Studio sessions. Mix a noisy sender (160–5,000 queued messages) with quiet players and high broadcast volume. Record per-player callback delivery, global/per-player dispatch drops, queue peak, p95/p99 dispatch CPU and queue time, GC pauses, RTT and Roblox-reported bandwidth. Repeat with `DispatchPerPlayerBacklogLimit=0` and `BroadcastFlushBudgetFraction=1` to isolate scheduling effects. Verify surviving reliable FIFO and disconnect cleanup. Callback queue admission can drop work under pressure; critical gameplay requests need application-level acknowledgment/retry if this behavior is unacceptable.
 
 ## v4.2.1–v4.2.3 acceptance benchmarks
 

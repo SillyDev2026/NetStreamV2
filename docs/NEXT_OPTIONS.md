@@ -1,6 +1,13 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.2.3. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.3.0 — message-processing audit and changes
+
+- Implemented: per-player callback backlog quotas, disconnected callback cleanup, configurable dispatch time checks, and broadcast budget reservation.
+- Verify: same-load Studio CPU/p95/p99, queue fairness, client disconnect races, multi-player traffic and heap.
+- Candidate follow-ups: route-specific callback quotas, generator-derived typed serializers, route-level pipeline timing histograms and automatic interest management. Avoid trying to process reliable purchases by silently dropping work.
+- [Compared library patterns and decision record](MESSAGE_PROCESSING_REVIEW.md).
 
 ## v4.2.1–v4.2.3 — three option patches
 

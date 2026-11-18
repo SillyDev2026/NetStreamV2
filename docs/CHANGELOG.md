@@ -1,6 +1,15 @@
 # NetStreamV2 Changelog
 
-The current release candidate is **v4.2.3**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.3.0 — Dispatch overload protection and fair outbound processing
+
+- Protect the global bounded dispatch queue with a separate per-Player pending callback limit (default 2048, 0 disables), covering both scalar and argument-table callbacks. Dequeue releases that quota before callback invocation; Destroy clears accounting.
+- Drop already-queued event callbacks after the Player disconnects, releasing argument arrays and recording `DispatchDisconnectedDrops`.
+- Configurable elapsed-time check every 8 callbacks, previously 32; callers may tune 1–128.
+- When broadcasts compete with queued player-specific traffic, split the periodic flush CPU budget using `BroadcastFlushBudgetFraction` (default 0.5, 1 = previous scheduling). Existing per-target FIFO and bandwidth governor remain unchanged.
+- Expose `GetDispatchStats(player?)` and queue peak/per-player drop counters. Add 2 paired Studio test scripts (4 files) and deterministic source audit checks; Studio runtime and CPU/network improvements are unverified.
+- Preserve BitFrame v1 and bundled Compression v2.4.2, codec 230.
 
 ## v4.2.3 — Server-controlled interest groups
 - Server-created groups restrict reliable/unreliable event and state fanout to connected subscribers. Member add/remove/clear/destroy are explicit and server-owned.
