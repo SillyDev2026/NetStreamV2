@@ -340,7 +340,7 @@ assert(batchDrainStart > 0 && batchDrainEnd > batchDrainStart, "Missing burst ba
 const batchDrain = source.slice(batchDrainStart, batchDrainEnd);
 assert(batchDrain.includes("local slots = queue.items") && batchDrain.includes("queue.logicalCount = math.max(0, queue.logicalCount - consumed)"), "Amortized burst queue accounting missing");
 assert(!batchDrain.includes("local item = queuePop(queue)"), "Batch collection regressed to per-message queuePop");
-assert(source.includes("local budgetCheck = 32") && source.includes("if processed == budgetCheck then"), "Dispatch should avoid modulo in burst loop");
+assert(source.includes("local budgetCheck = Config.DispatchBudgetCheckInterval") && source.includes("if processed >= budgetCheck then"), "Configurable dispatch budget checks missing");
 assert(source.includes("local function fillPackedValues(values, base, count, ...)"), "Small fixed-schema vararg packer missing");
 assert(source.includes("Stats.BitFramePackedScalarRunWrites += item.runCount"), "Packed scalar bulk writer counter missing");
 assert(source.includes("writer:ensureBits(item.runCount * width)"), "Packed scalar writer must preflight whole run");
