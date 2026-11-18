@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 90, "Regression suite unexpectedly missing");
+assert(tests.length >= 92, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -40,6 +40,66 @@ for (const name of tests) {
     for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
 }
 
+
+for (const name of ["MemoryRetentionRegression.client.lua", "MemoryRetentionRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing paired memory high-water regression: " + name);
+}
+for (const fragment of [
+    "MaxPooledDictionaryEntries = 128,",
+    "QueueRetainMaxSlots = 512,",
+    "MaxPooledDictionaryEntries must be an integer from 0 to 8192",
+    "QueueRetainMaxSlots must be an integer from 0 to 65536",
+    "local function compactQueue(queue)",
+    "local function clearDrainedQueue(queue)",
+    "local items = table.create(pending)",
+    "queue.items = items",
+    "queue.items = {}",
+    "Stats.QueueCompactions += 1",
+    "Stats.QueueStorageRebuilds += 1",
+    "Stats.DictionaryPoolRebuilds += 1",
+    "Stats.NativeMeasureDictionaryRebuilds += 1",
+    "state.stringEntries += 1",
+    "state.strings = {}",
+    "Stats.PooledWriterResets += 1",
+]) assert(source.includes(fragment), "Missing memory retention protection: " + fragment);
+const scratchRelease = source.slice(source.indexOf("function Internal.releaseScratchWriter"),source.indexOf("local Reader = {}"));
+assert(scratchRelease.includes("writer:reset()"), "Idle scratch writer retains dynamic dictionaries");
+const regularRelease = source.slice(source.indexOf("local function releaseWriter(writer)"),source.indexOf("local function batchLogicalCount"));
+assert(regularRelease.includes("writer:reset()"), "Idle legacy writer retains dynamic dictionaries");
+const bitWriterRelease = source.slice(source.indexOf("function Internal.releaseBitFrameWriter(writer)"),source.indexOf("function Internal.BitFrameWriter:ensureBits"));
+assert(bitWriterRelease.includes("writer.stringToIndex = {}"), "BitFrame dictionary hash capacity not discarded at high-water");
+const bitReaderRelease = source.slice(source.indexOf("function Internal.releaseBitFrameReader(reader)"),source.indexOf("function Internal.BitFrameReader:needBits"));
+assert(bitReaderRelease.includes("reader.strings = {}"), "BitFrame reader dictionary high-water must be discarded");
+const queueCompaction = source.slice(source.indexOf("local function compactQueue(queue)"),source.indexOf("function Internal.newBucket()"));
+assert(queueCompaction.includes("compactQueue(queue)") && queueCompaction.includes("clearDrainedQueue(queue)"), "Per-item queue dequeue must release large sparse storage");
+const batchCompaction = source.slice(source.indexOf("local function collectBatch(queue, latest, limit)"),source.indexOf("function Internal.packetByteBudget(",source.indexOf("local function collectBatch(queue, latest, limit)")));
+assert(batchCompaction.includes("compactQueue(queue)") && batchCompaction.includes("clearDrainedQueue(queue)"), "Bulk dequeue must release large sparse storage");
+for (const count of [32, 64, 128, 256, 512, 1057, 1328, 2049, 4097]) {
+    let queue = {items:[],head:1,tail:0,rebuilds:0,compactions:0,logicalCount:0};
+    for (let i = 1; i <= count; i++) { queue.items[++queue.tail] = i; queue.logicalCount++; }
+    const delivered = [];
+    while (queue.head <= queue.tail) {
+        const batchLimit = 1 + count % 33;
+        const take = Math.min(batchLimit,queue.tail - queue.head + 1);
+        for (let i = 0; i < take; i++) {
+            delivered.push(queue.items[queue.head]);
+            queue.items[queue.head++] = undefined;
+            queue.logicalCount--;
+        }
+        if (queue.head > queue.tail) {
+            if (queue.tail > 16) { queue.items = []; queue.rebuilds++; }
+            queue.head = 1;queue.tail = 0;queue.logicalCount = 0;
+        } else if (queue.head > 1024 && queue.head > Math.floor(queue.tail / 2)) {
+            const remaining = queue.tail - queue.head + 1;
+            const next = Array.from({length:remaining},(_,index)=>queue.items[queue.head+index]);
+            queue.items = [undefined,...next];queue.head = 1;queue.tail = remaining;queue.compactions++;
+        }
+    }
+    assert.deepEqual(delivered,Array.from({length:count},(_,i)=>i+1),"Queue compaction changed FIFO or discarded messages");
+    assert.equal(queue.logicalCount,0,"Queue logical count incorrect after draining");
+    assert.equal(queue.tail,0,"Queue slots not reset after draining");
+    assert(count <= 16 || queue.compactions + queue.rebuilds >= 1,"Queue must eventually release high-water storage");
+}
 
 for (const name of ["TypedTupleABBenchmark.client.lua", "TypedTupleABBenchmark.server.lua"]) {
     assert(tests.includes(name), "Missing paired Roblox Studio typed-tuple A/B benchmark: " + name);
