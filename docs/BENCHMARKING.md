@@ -1,6 +1,6 @@
 # NetStreamV2 Benchmarks and Release Verification
 
-**Baseline:** v4.1.1/v4.2.0. **Candidate:** v4.2.3. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+**Baseline:** v4.2.3. **Candidate:** v4.3.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
 
 ## Test environment
 
@@ -8,6 +8,12 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `RPCConcurrencyRegression` | 16 simultaneous RPC calls, two-in-flight player cap, application-error and recovery validation |
+| `MemoryRetentionRegression` | 1,200 ordered U16 packets + 128 unique strings; verify sparse queue compaction, dictionary trim, drain and FIFO |
+| `TypedTupleABBenchmark` | Two-sided A/B probe, 512 U16 + 512 U32 12-field events; encoded bytes and encode/decode p95 |
+| `HomogeneousIntegerRunRegression` | 12-field U16/U32 packed runs, boundary values, FIFO, paired echoes, fast path counters |
+| `DispatchFairnessRegression` | 160-message client burst; validates per-player queue cap and dropped work stats |
+| `BroadcastBudgetRegression` | Competing broadcast and per-player traffic; validates budget slicing and send path |
 | `DeltaCodecRegression` | Paired full-to-delta apply, field deletion, wrong base and malformed mask rejection |
 | `InterestGroupRegression` | Paired interest membership filtering, state fanout and no excluded events |
 | `MixedFixedSchemaRegression` | 40 mixed 12-field Bool/U8/U16/I16/U32/I32 round trips, boundary/FIFO checks and fast-path counters |
@@ -52,6 +58,30 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing sample returns `nil`; do not substitute 0 ms. Since measurements are sampled and retained in a bounded ring, results only reflect **retained observations**, not all lifetime traffic.
 
 `RoundTripMs` must be explicitly recorded by a client-side ping/pong benchmark using `RecordRoundTripSample`. Handshake RTT is a different metric. `JitterMs` represents the absolute difference between sequential recorded RTTs (not network packet-delay variation per RFC 3550).
+
+## RPC concurrency and argument-copy performance
+
+Run `RPCConcurrencyRegression.server.lua` and `RPCConcurrencyRegression.client.lua` in isolation. It tests a two-callback-per-player cap under a 16-call burst and a post-exception recovery. For benchmarks compare capped and uncapped configurations at 1/10/25 players with identical yielding callback duration, call rates and hardware. Record live/peak active callbacks, rejected/timed-out calls, `GetHealth().RPCUtilization`, server heap after GC, CPU scheduling, and callback turnaround p95/p99. This cap protects outstanding tasks, not per-second CPU work; use both controls together.
+
+Compare the 4–8 and 12-field direct vararg copier against the earlier v4.3.0 commit under identical payloads and message rates. Encoding/decoding p95, allocations and GC must be measured in Roblox Studio; the code change alone does not prove speed. See [RPC concurrency](RPC_CONCURRENCY.md).
+
+## v4.3.0 idle-memory and sparse queue measurements
+
+Run `MemoryRetentionRegression.server.lua` and `MemoryRetentionRegression.client.lua` in an isolated Studio session. Use the intentionally tight dictionary/queue retention caps from the scripts only for testing, and observe `QueueCompactions`, `QueueStorageRebuilds`, `DictionaryPoolRebuilds` and `PooledWriterResets` through `GetMemoryDiagnostics()`. Then compare old and new commit under identical sustained traffic and post-burst idle periods. Record stabilized Luau heap (via `gcinfo()` / Studio memory profiler), allocation spikes, GC duration, encode/decode/flush p95 and throughput. Trimming capacity lowers expected idle retention but can increase allocation churn. Source audit and parser compilation are not equivalent to a measured memory reduction. See [memory retention audit](MEMORY_EFFICIENCY.md).
+
+## Running the built-in typed tuple A/B probe
+
+Place `tests/TypedTupleABBenchmark.server.lua` in `ServerScriptService` and its paired client script in `StarterPlayerScripts`. Create a `BoolValue` named `NSTypedTupleFastPath` under `ReplicatedStorage` with `Value=false`. Run the session, capture the printed `fast=false` server/client lines, then change the value to `true` and start a **fresh** session with the exact same player count and conditions. Repeat each profile multiple times with a warmup. The probe enqueues 512 contiguous U16 and 512 contiguous U32 12-field events, prints encoded bytes per message and p95 encode/decode samples, and asserts correct receipt. This is a traffic/CPU probe, **not** a normalized cross-library leaderboard; the elapsed wall clock includes scheduling, startup and remote latency.
+
+## v4.3.0 controlled serializer A/B protocol
+
+Use identical Studio server/client settings for separate trials with `NetStream.Configure({TypedTupleFastPathEnabled=false})` (previous codec) and `NetStream.Configure({TypedTupleFastPathEnabled=true})` (new codec). Keep schema (2, 12, 32 U16 or U32 fields), identical values, players (1/10/25), 30/60/120 messages per second, batching, compression, and test duration fixed. Warm up first and repeat each trial at least three times. Record encoded buffer bytes/message, encoded packets/sec, encode/decode p50/p95/p99 CPU, Luau heap/GC, dropped/queued messages, and client-observed RTT. Check that homogeneous fast-path counters stay at zero with the toggle false and rise with it true.
+
+Compare BlinkBlox, Zap, Satset and ByteNet only with the *same schemas, validation settings, reliability, message rate, batching, player count, hardware and runtime*. Use a shared place file and retain the actual benchmark scripts/results. Raw buffer lengths are not equivalent to Roblox transport bytes. No best-in-class performance claim before matched results.
+
+## v4.3.0 server processing comparison
+
+Compare v4.2.3 and v4.3.0 under identical 1/10/25-player Studio sessions. Mix a noisy sender (160–5,000 queued messages) with quiet players and high broadcast volume. Record per-player callback delivery, global/per-player dispatch drops, queue peak, p95/p99 dispatch CPU and queue time, GC pauses, RTT and Roblox-reported bandwidth. Repeat with `DispatchPerPlayerBacklogLimit=0` and `BroadcastFlushBudgetFraction=1` to isolate scheduling effects. Verify surviving reliable FIFO and disconnect cleanup. Callback queue admission can drop work under pressure; critical gameplay requests need application-level acknowledgment/retry if this behavior is unacceptable.
 
 ## v4.2.1–v4.2.3 acceptance benchmarks
 

@@ -1,6 +1,34 @@
 # NetStreamV2 — Prioritized Upgrade Options
 
-**Current:** v4.2.3. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+**Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+
+## v4.3.0 — RPC concurrency and common vararg hot paths
+
+- Implemented server-side in-flight RPC callback caps and live per-player/global counts, with guaranteed post-run reclamation and diagnostics.
+- Implemented direct 4–8/12-field array population without repeated `select(i, ...)`, preserving nil and schema behavior.
+- Added paired `RPCConcurrencyRegression` scripts, source-level bounded concurrency models, and a documented Studio performance/overload plan.
+- Remaining: run the Studio suite and multi-client load tests, check callback yielding, error recovery, and timeouts before describing the library as production-verified.
+
+## v4.3.0 — memory-retention improvements
+
+- Implemented: clear idle pooled legacy/scratch writer references on release, cap pooled packet dictionary capacity and trim large native-size-estimator hash tables.
+- Implemented: periodic compaction of sustained sparse reliable/unreliable outbound queues and high-water slot cleanup on drain while preserving FIFO.
+- Implemented: `MaxPooledDictionaryEntries`, `QueueRetainMaxSlots`, memory diagnostics and paired 1,328-message regression.
+- Next: repeatable Studio heap-after-GC and CPU/microprofiler comparisons, tune retained table thresholds for each game's traffic shape; benchmark memory vs allocator churn before narrowing caps.
+
+## v4.3.0 — U16/U32 serialization improvements
+
+- Implemented: homogeneous U16/U32 tuple and packed-run fast paths with one aggregate bounds preflight and direct buffer access.
+- Implemented: runtime A/B flag `TypedTupleFastPathEnabled`, preserving wire bytes and providing a reliable generic fallback.
+- Added paired Studio boundary/FIFO regression, counter projection and deterministic bit parity models. Run actual Luau CPU/heap benchmarks before claiming speed improvements.
+- Full static/generated serializers for arbitrary types remain an open project, as do competitor-parity benchmarks.
+
+## v4.3.0 — message-processing audit and changes
+
+- Implemented: per-player callback backlog quotas, disconnected callback cleanup, configurable dispatch time checks, and broadcast budget reservation.
+- Verify: same-load Studio CPU/p95/p99, queue fairness, client disconnect races, multi-player traffic and heap.
+- Candidate follow-ups: route-specific callback quotas, generator-derived typed serializers, route-level pipeline timing histograms and automatic interest management. Avoid trying to process reliable purchases by silently dropping work.
+- [Compared library patterns and decision record](MESSAGE_PROCESSING_REVIEW.md).
 
 ## v4.2.1–v4.2.3 — three option patches
 

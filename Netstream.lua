@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.2.3"
+local VERSION = "4.3.0"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -269,8 +269,11 @@ local DEFAULTS = {
 	MaxBatchesPerFlush = 8,
 	MaxDispatchPerCycle = 2048,
 	MaxDispatchBacklog = 16384,
+	DispatchPerPlayerBacklogLimit = 2048,
+	DispatchBudgetCheckInterval = 8,
 	DispatchBudgetSeconds = 0.0025,
 	FlushBudgetSeconds = 0.003,
+	BroadcastFlushBudgetFraction = 0.5,
 	ImmediateFlushBudgetSeconds = 0.004,
 	TimeoutSweepInterval = 0.25,
 	MaxPoolSize = 2048,
@@ -279,6 +282,8 @@ local DEFAULTS = {
 	MaxPooledArgs = 32,
 	MaxPooledWriterBytes = 128 * 1024,
 	MaxPooledStrings = 2048,
+	MaxPooledDictionaryEntries = 128,
+	QueueRetainMaxSlots = 512,
 	MaxBatchPoolSize = 64,
 	MaxPooledBatchItems = 512,
 	MaxPooledPackedValues = 64,
@@ -303,6 +308,8 @@ local DEFAULTS = {
 	MaxGlobalIncomingBatchesPerSecond = 8192,
 	MaxIncomingCallsPerSecond = 240,
 	MaxGlobalIncomingCallsPerSecond = 4096,
+	MaxConcurrentIncomingCalls = 512,
+	MaxConcurrentIncomingCallsPerPlayer = 64,
 	MaxReliableQueue = 8192,
 	MaxUnreliableQueue = 2048,
 	UnreliableMaxBytes = 900,
@@ -363,6 +370,7 @@ local DEFAULTS = {
 	FastSchemaMaxBytes = 512,
 	FastSchemaAllowHeaderExpansion = false,
 	PackedSchemaRunEnabled = true,
+	TypedTupleFastPathEnabled = true,
 	PackedSchemaRunMaxFields = 16,
 	BitPacketEnabled = true,
 	BitPacketCompressedCalls = true,
@@ -400,6 +408,8 @@ local activeTargets = {}
 local activeTargetHead = 1
 local activeTargetTail = 0
 local incomingRates = {}
+local activeIncomingCalls = 0
+local activeIncomingCallsByPlayer = setmetatable({}, {__mode = "k"})
 local clientBucket = nil
 local broadcastBucket = nil
 local CLIENT_STATE_CACHE_KEY = {}
@@ -418,6 +428,7 @@ local dispatchArgs = {}
 local dispatchScalarFlags = {}
 local dispatchCount = 0
 local dispatchHead = 1
+local dispatchPendingByPlayer = setmetatable({}, {__mode = "k"})
 local lastPacketBytes = 0
 local overflowWarned = false
 local writerPool = {}
@@ -506,6 +517,9 @@ local Stats = {
 	GlobalRateLimitedBatches = 0,
 	RateLimitedCalls = 0,
 	GlobalRateLimitedCalls = 0,
+	IncomingCallConcurrencyDrops = 0,
+	IncomingCallPeak = 0,
+	IncomingCallExecutionErrors = 0,
 	RejectedMessages = 0,
 	RejectedMalformedPackets = 0,
 	RejectedOversizedPackets = 0,
@@ -593,6 +607,12 @@ local Stats = {
 	BooleanBitPackReads = 0,
 	U8SchemaFastWrites = 0,
 	U8SchemaFastReads = 0,
+	U16SchemaFastWrites = 0,
+	U16SchemaFastReads = 0,
+	U32SchemaFastWrites = 0,
+	U32SchemaFastReads = 0,
+	BitFrameHomogeneousRunFastWrites = 0,
+	BitFrameHomogeneousRunFastReads = 0,
 	BitFrameFixedSchemaFastWrites = 0,
 	BitFrameFixedSchemaFastReads = 0,
 	BitFrameFixedSchemaRunWrites = 0,
@@ -608,6 +628,10 @@ local Stats = {
 	PackedValuePoolOversizeDrops = 0,
 	PackedValueHighWaterDrops = 0,
 	ScalarDispatches = 0,
+	DispatchPerPlayerDrops = 0,
+	DispatchDisconnectedDrops = 0,
+	DispatchPeakBacklog = 0,
+	BroadcastBudgetSlices = 0,
 	BitFrameScalarSchemaReads = 0,
 	BitFramePackedScalarRunItems = 0,
 	BitFramePackedScalarRunWrites = 0,
@@ -640,6 +664,11 @@ local Stats = {
 	BatchPoolOversizeDrops = 0,
 	ArgsPoolLimitDrops = 0,
 	MessagePoolLimitDrops = 0,
+	QueueStorageRebuilds = 0,
+	QueueCompactions = 0,
+	PooledWriterResets = 0,
+	DictionaryPoolRebuilds = 0,
+	NativeMeasureDictionaryRebuilds = 0,
 	BitFrameReadersCreated = 0,
 	TransportPredictedBatchCaps = 0,
 	TransportDeferredRestoreCalls = 0,
@@ -1234,9 +1263,10 @@ end
 
 function Writer:reset()
 	self.position = 0
-	if #self.strings > Config.MaxPooledStrings then
+	if #self.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
 		self.strings = {}
 		self.stringToIndex = {}
+		Stats.DictionaryPoolRebuilds += 1
 	else
 		table.clear(self.strings)
 		table.clear(self.stringToIndex)
@@ -1388,6 +1418,8 @@ end
 
 function Internal.releaseScratchWriter(writer)
 	if writer and writer.capacity <= Config.MaxPooledWriterBytes and #scratchWriterPool < Config.MaxScratchWriterPoolSize then
+		writer:reset()
+		Stats.PooledWriterResets += 1
 		scratchWriterPool[#scratchWriterPool + 1] = writer
 	end
 end
@@ -1567,8 +1599,14 @@ end
 
 function Internal.releaseBitFrameWriter(writer)
 	-- Pooled writers must not retain per-packet dictionary keys or values.
-	if #writer.strings > Config.MaxPooledStrings then writer.strings = {} else table.clear(writer.strings) end
-	table.clear(writer.stringToIndex)
+	if #writer.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
+		writer.strings = {}
+		writer.stringToIndex = {}
+		Stats.DictionaryPoolRebuilds += 1
+	else
+		table.clear(writer.strings)
+		table.clear(writer.stringToIndex)
+	end
 	writer.bitPosition = 0
 	if writer.capacity <= math.min(Config.MaxPooledWriterBytes, Config.BitFrameRetainWriterMaxBytes) and #Internal.BitFrameWriterPool < Config.MaxWriterPoolSize then
 		Internal.BitFrameWriterPool[#Internal.BitFrameWriterPool + 1] = writer
@@ -1718,7 +1756,12 @@ function Internal.releaseBitFrameReader(reader)
 	reader.buffer = nil
 	reader.bitPosition = 0
 	reader.bitLength = 0
-	if #reader.strings > Config.MaxPooledStrings then reader.strings = {} else table.clear(reader.strings) end
+	if #reader.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
+		reader.strings = {}
+		Stats.DictionaryPoolRebuilds += 1
+	else
+		table.clear(reader.strings)
+	end
 	local pool = Internal.BitFrameReaderPool
 	if #pool < Config.MaxBitFrameReaderPoolSize then pool[#pool + 1] = reader end
 end
@@ -1977,12 +2020,16 @@ function Internal.compileSchema(spec, label)
 	local discardFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	local byteRunU8 = #fields > 1 and #fields <= 32
+	local wordRunU16 = #fields > 1 and #fields <= 32
+	local dwordRunU32 = #fields > 1 and #fields <= 32
 	local bitFrameWidths = if #fields > 1 and #fields <= 32 then table.create(#fields) else nil
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
+		if field.Kind ~= SCHEMA_U16 then wordRunU16 = false end
+		if field.Kind ~= SCHEMA_U32 then dwordRunU32 = false end
 		local kind = field.Kind
 		if bitFrameWidths then
 			local width = if kind == SCHEMA_BOOL then 1 elseif kind == SCHEMA_U8 then 8 elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then 16 elseif kind == SCHEMA_U32 or kind == SCHEMA_I32 then 32 else nil
@@ -2016,6 +2063,8 @@ function Internal.compileSchema(spec, label)
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
 		byteRunU8 = byteRunU8,
+		wordRunU16 = wordRunU16,
+		dwordRunU32 = dwordRunU32,
 		bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,
 		discardBits = if discardFixed then discardBits else nil,
 		scalarKind = scalarKind,
@@ -2599,6 +2648,20 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		Stats.U8SchemaFastWrites += 1
 		return
 	end
+
+	if Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32) then
+		local width = if schema.wordRunU16 then 16 else 32
+		local bitPosition = writer.bitPosition
+		writer:ensureBits(schema.count * width)
+		local data = writer.buffer
+		for i = 1, schema.count do
+			buffer.writebits(data, bitPosition, width, args[offset + i])
+			bitPosition += width
+		end
+		writer.bitPosition = bitPosition
+		if schema.wordRunU16 then Stats.U16SchemaFastWrites += 1 else Stats.U32SchemaFastWrites += 1 end
+		return
+	end
 	if schema.bitFrameWidths then
 		local bitPosition = writer.bitPosition
 		writer:ensureBits(schema.discardBits)
@@ -2654,6 +2717,22 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 		end
 		reader.bitPosition = bitPosition
 		Stats.U8SchemaFastReads += 1
+		return args
+	end
+
+	if Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32) then
+		local width = if schema.wordRunU16 then 16 else 32
+		reader:needBits(schema.count * width)
+		local args = acquireArgsCount(schema.count)
+		local position = reader.bitPosition
+		local data = reader.buffer
+		for i = 1, schema.count do
+			args[i] = buffer.readbits(data, position, width)
+			position += width
+		end
+		reader.bitPosition = position
+		args.n = schema.count
+		if schema.wordRunU16 then Stats.U16SchemaFastReads += 1 else Stats.U32SchemaFastReads += 1 end
 		return args
 	end
 	if schema.bitFrameWidths then
@@ -2985,11 +3064,12 @@ function Internal.acquireNativeMeasureState(writer)
 	if state then
 		pool[#pool] = nil
 	else
-		state = { strings = {}, seen = {}, nextStringIndex = 0 }
+		state = { strings = {}, seen = {}, nextStringIndex = 0, stringEntries = 0 }
 	end
 	table.clear(state.strings)
 	table.clear(state.seen)
 	state.nextStringIndex = writer and #writer.strings or 0
+	state.stringEntries = 0
 	return state
 end
 
@@ -2997,9 +3077,15 @@ function Internal.releaseNativeMeasureState(state)
 	if not state then
 		return
 	end
-	table.clear(state.strings)
+	if state.stringEntries > Config.MaxPooledDictionaryEntries then
+		state.strings = {}
+		Stats.NativeMeasureDictionaryRebuilds += 1
+	else
+		table.clear(state.strings)
+	end
 	table.clear(state.seen)
 	state.nextStringIndex = 0
+	state.stringEntries = 0
 	local pool = Internal._nativeMeasurePool
 	if #pool < Config.MaxScratchWriterPoolSize then
 		pool[#pool + 1] = state
@@ -3043,6 +3129,7 @@ function Internal.nativeValueByteLength(writer, value, state)
 		local length = #value
 		state.strings[value] = state.nextStringIndex
 		state.nextStringIndex += 1
+		state.stringEntries += 1
 		return Internal.nativeMetaByteLength(length) + length
 	elseif robloxType == "Vector3" then
 		local precision = Config.VectorPrecision
@@ -3290,6 +3377,29 @@ local function queueLogicalCount(queue)
 	return queue.logicalCount or queueCount(queue)
 end
 
+local function compactQueue(queue)
+	if queue.head <= 1024 or queue.head <= math.floor(queue.tail / 2) then return end
+	local pending = queue.tail - queue.head + 1
+	if pending <= 0 then return end
+	local old = queue.items
+	local items = table.create(pending)
+	for index = 1, pending do items[index] = old[queue.head + index - 1] end
+	queue.items = items
+	queue.head = 1
+	queue.tail = pending
+	Stats.QueueCompactions += 1
+end
+
+local function clearDrainedQueue(queue)
+	if queue.tail > Config.QueueRetainMaxSlots then
+		queue.items = {}
+		Stats.QueueStorageRebuilds += 1
+	end
+	queue.head = 1
+	queue.tail = 0
+	queue.logicalCount = 0
+end
+
 local function queuePush(queue, item)
 	queue.tail += 1
 	queue.items[queue.tail] = item
@@ -3305,9 +3415,9 @@ local function queuePop(queue)
 	queue.head += 1
 	queue.logicalCount = math.max(0, queue.logicalCount - messageLogicalCount(item))
 	if queue.head > queue.tail then
-		queue.head = 1
-		queue.tail = 0
-		queue.logicalCount = 0
+		clearDrainedQueue(queue)
+	else
+		compactQueue(queue)
 	end
 	return item
 end
@@ -3375,10 +3485,10 @@ function Internal.queueRemoveRoute(queue, routeId, kind)
 	end
 	queue.logicalCount = remainingLogical
 	if writeIndex == queue.head then
-		queue.head = 1
-		queue.tail = 0
+		clearDrainedQueue(queue)
 	else
 		queue.tail = writeIndex - 1
+		compactQueue(queue)
 	end
 	return removed
 end
@@ -3473,6 +3583,18 @@ local function makeArgs(...)
 		args[1] = a
 		args[2] = b
 		args[3] = c
+	elseif n >= 4 and n <= 8 then
+		local a, b, c, d, e, f, g, h = ...
+		args[1] = a; args[2] = b; args[3] = c; args[4] = d
+		if n >= 5 then args[5] = e end
+		if n >= 6 then args[6] = f end
+		if n >= 7 then args[7] = g end
+		if n >= 8 then args[8] = h end
+	elseif n == 12 then
+		local a, b, c, d, e, f, g, h, j, k, l, m = ...
+		args[1] = a; args[2] = b; args[3] = c; args[4] = d
+		args[5] = e; args[6] = f; args[7] = g; args[8] = h
+		args[9] = j; args[10] = k; args[11] = l; args[12] = m
 	else
 		for i = 1, n do args[i] = select(i, ...) end
 	end
@@ -3573,6 +3695,18 @@ local function fillPackedValues(values, base, count, ...)
 		values[base + 1] = a
 		values[base + 2] = b
 		values[base + 3] = c
+	elseif count >= 4 and count <= 8 then
+		local a, b, c, d, e, f, g, h = ...
+		values[base + 1] = a; values[base + 2] = b; values[base + 3] = c; values[base + 4] = d
+		if count >= 5 then values[base + 5] = e end
+		if count >= 6 then values[base + 6] = f end
+		if count >= 7 then values[base + 7] = g end
+		if count >= 8 then values[base + 8] = h end
+	elseif count == 12 then
+		local a, b, c, d, e, f, g, h, j, k, l, m = ...
+		values[base + 1] = a; values[base + 2] = b; values[base + 3] = c; values[base + 4] = d
+		values[base + 5] = e; values[base + 6] = f; values[base + 7] = g; values[base + 8] = h
+		values[base + 9] = j; values[base + 10] = k; values[base + 11] = l; values[base + 12] = m
 	else
 		for i = 1, count do values[base + i] = select(i, ...) end
 	end
@@ -4589,6 +4723,8 @@ end
 
 local function releaseWriter(writer)
 	if writer.capacity <= Config.MaxPooledWriterBytes and #writerPool < Config.MaxWriterPoolSize then
+		writer:reset()
+		Stats.PooledWriterResets += 1
 		writerPool[#writerPool + 1] = writer
 	end
 end
@@ -4681,6 +4817,22 @@ function Internal.bitFrameWriteOne(writer, item, audit)
 					end
 					writer.bitPosition = position
 					Stats.BitFramePackedScalarRunWrites += item.runCount
+
+				elseif Config.TypedTupleFastPathEnabled and (item.schema.wordRunU16 or item.schema.dwordRunU32) then
+					local schema = item.schema
+					local width = if schema.wordRunU16 then 16 else 32
+					local totalFields = schema.count * item.runCount
+					writer:ensureBits(totalFields * width)
+					local data = writer.buffer
+					local position = writer.bitPosition
+					local values = item.packedValues
+					for index = 1, totalFields do
+						buffer.writebits(data, position, width, values[index])
+						position += width
+					end
+					writer.bitPosition = position
+					if schema.wordRunU16 then Stats.U16SchemaFastWrites += item.runCount else Stats.U32SchemaFastWrites += item.runCount end
+					Stats.BitFrameHomogeneousRunFastWrites += item.runCount
 				elseif item.schema.bitFrameWidths then
 					local schema = item.schema
 					local widths = schema.bitFrameWidths
@@ -5133,12 +5285,11 @@ local function collectBatch(queue, latest, limit)
 		consumed += count
 	end
 	if head > tail then
-		queue.head = 1
-		queue.tail = 0
-		queue.logicalCount = 0
+		clearDrainedQueue(queue)
 	else
 		queue.head = head
 		queue.logicalCount = math.max(0, queue.logicalCount - consumed)
+		compactQueue(queue)
 	end
 	if logical < limit and next(latest) ~= nil then
 		for key, item in pairs(latest) do
@@ -5691,10 +5842,38 @@ local function dispatchRouteScalar(route, player, value)
 	end
 end
 
+local function dispatchCanEnqueue(player)
+	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
+	if backlog >= Config.MaxDispatchBacklog then
+		Stats.DroppedDispatch += 1
+		return false
+	end
+	if IS_SERVER and player and Config.DispatchPerPlayerBacklogLimit > 0 and (dispatchPendingByPlayer[player] or 0) >= Config.DispatchPerPlayerBacklogLimit then
+		Stats.DroppedDispatch += 1
+		Stats.DispatchPerPlayerDrops += 1
+		return false
+	end
+	return true
+end
+
+local function dispatchRecordEnqueue(player)
+	if IS_SERVER and player then
+		dispatchPendingByPlayer[player] = (dispatchPendingByPlayer[player] or 0) + 1
+	end
+	local backlog = dispatchCount - dispatchHead + 1
+	if backlog > Stats.DispatchPeakBacklog then Stats.DispatchPeakBacklog = backlog end
+end
+
+local function dispatchRecordDequeue(player)
+	if not IS_SERVER or not player then return end
+	local remaining = (dispatchPendingByPlayer[player] or 1) - 1
+	if remaining > 0 then dispatchPendingByPlayer[player] = remaining else dispatchPendingByPlayer[player] = nil end
+end
+
 local function runDispatch()
 	local processed = 0
 	local startedAt = os.clock()
-	local budgetCheck = 32
+	local budgetCheck = Config.DispatchBudgetCheckInterval
 	while dispatchHead <= dispatchCount and processed < Config.MaxDispatchPerCycle do
 		local index = dispatchHead
 		local route = dispatchRoutes[index]
@@ -5707,15 +5886,19 @@ local function runDispatch()
 		dispatchScalarFlags[index] = nil
 		dispatchHead += 1
 		processed += 1
-		if scalar then
+		dispatchRecordDequeue(player)
+		if IS_SERVER and player and player.Parent ~= Players then
+			Stats.DispatchDisconnectedDrops += 1
+			if not scalar then releaseArgs(args) end
+		elseif scalar then
 			dispatchRouteScalar(route, player, args)
 		else
 			dispatchRoute(route, player, args)
 			releaseArgs(args)
 		end
-		if processed == budgetCheck then
+		if processed >= budgetCheck then
 			if os.clock() - startedAt >= Config.DispatchBudgetSeconds then break end
-			budgetCheck += 32
+			budgetCheck += Config.DispatchBudgetCheckInterval
 		end
 	end
 	if dispatchHead > dispatchCount then
@@ -5748,9 +5931,7 @@ local function enqueueDispatch(route, player, args)
 		releaseArgs(args)
 		return false
 	end
-	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
-	if backlog >= Config.MaxDispatchBacklog then
-		Stats.DroppedDispatch += 1
+	if not dispatchCanEnqueue(player) then
 		releaseArgs(args)
 		return false
 	end
@@ -5758,6 +5939,7 @@ local function enqueueDispatch(route, player, args)
 	dispatchRoutes[dispatchCount] = route
 	dispatchPlayers[dispatchCount] = player
 	dispatchArgs[dispatchCount] = args
+	dispatchRecordEnqueue(player)
 	return true
 end
 
@@ -5765,16 +5947,13 @@ local function enqueueDispatchScalar(route, player, value)
 	if not route or route._listenerCount == 0 then
 		return false
 	end
-	local backlog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
-	if backlog >= Config.MaxDispatchBacklog then
-		Stats.DroppedDispatch += 1
-		return false
-	end
+	if not dispatchCanEnqueue(player) then return false end
 	dispatchCount += 1
 	dispatchRoutes[dispatchCount] = route
 	dispatchPlayers[dispatchCount] = player
 	dispatchArgs[dispatchCount] = value
 	dispatchScalarFlags[dispatchCount] = true
+	dispatchRecordEnqueue(player)
 	Stats.ScalarDispatches += 1
 	return true
 end
@@ -5833,6 +6012,20 @@ function Internal.handleCall(player, routeId, id, args)
 	end
 end
 
+-- Wrap every RPC callback so in-flight capacity is returned even when a handler fails.
+function Internal.runIncomingCall(player, routeId, id, args)
+	local ok, err = xpcall(Internal.handleCall, debug.traceback, player, routeId, id, args)
+	if IS_SERVER and player then
+		activeIncomingCalls = math.max(0, activeIncomingCalls - 1)
+		local remaining = (activeIncomingCallsByPlayer[player] or 1) - 1
+		if remaining > 0 then activeIncomingCallsByPlayer[player] = remaining else activeIncomingCallsByPlayer[player] = nil end
+	end
+	if not ok then
+		Stats.IncomingCallExecutionErrors += 1
+		Internal.debugWarn("RPC handler failed:", err)
+	end
+end
+
 function Internal.processReturn(player, id, args)
 	local entry = pending[id]
 	if not entry then
@@ -5869,8 +6062,9 @@ local function releaseReader(reader)
 	reader.buffer = nil
 	reader.position = 0
 	reader.length = 0
-	if #reader.strings > Config.MaxPooledStrings then
+	if #reader.strings > math.min(Config.MaxPooledStrings, Config.MaxPooledDictionaryEntries) then
 		reader.strings = {}
+		Stats.DictionaryPoolRebuilds += 1
 	else
 		table.clear(reader.strings)
 	end
@@ -5959,9 +6153,7 @@ local function commitIncomingMessages(player, messages)
 end
 
 function Internal.chargeIncomingCall(player)
-	if not IS_SERVER or not player then
-		return true
-	end
+	if not IS_SERVER or not player then return true end
 	local now = os.clock()
 	local rate = getIncomingRate(player, now)
 	if rate.calls >= Config.MaxIncomingCallsPerSecond then
@@ -5973,8 +6165,17 @@ function Internal.chargeIncomingCall(player)
 		Stats.GlobalRateLimitedCalls += 1
 		return false
 	end
+	local perPlayer = activeIncomingCallsByPlayer[player] or 0
+	if (Config.MaxConcurrentIncomingCalls > 0 and activeIncomingCalls >= Config.MaxConcurrentIncomingCalls)
+		or (Config.MaxConcurrentIncomingCallsPerPlayer > 0 and perPlayer >= Config.MaxConcurrentIncomingCallsPerPlayer) then
+		Stats.IncomingCallConcurrencyDrops += 1
+		return false
+	end
 	rate.calls += 1
 	globalRate.calls += 1
+	activeIncomingCalls += 1
+	activeIncomingCallsByPlayer[player] = perPlayer + 1
+	if activeIncomingCalls > Stats.IncomingCallPeak then Stats.IncomingCallPeak = activeIncomingCalls end
 	return true
 end
 
@@ -6252,7 +6453,7 @@ function Internal.decodeHybridSmallSingle(player, data, markerValue)
 		local route = functionRoutes[routeId]
 		if not route or route._schema then error("NetStream invalid hybrid call route", 0) end
 		local args = acquireArgsCount(1); args[1] = value
-		if Internal.chargeIncomingCall(player) then task.spawn(Internal.handleCall, player, routeId, requestId, args) else releaseArgs(args) end
+		if Internal.chargeIncomingCall(player) then task.spawn(Internal.runIncomingCall, player, routeId, requestId, args) else releaseArgs(args) end
 	elseif markerValue == Internal.HYBRID_RETURN_MARKER then
 		local requestId; requestId, bitPosition = Internal.packetReadAdaptiveUInt(data, bitPosition)
 		local okBit; okBit, bitPosition = Internal.packetReadBits(data, bitPosition, 1)
@@ -6319,7 +6520,7 @@ function Internal.decodeBitCallSingle(player, data)
 	Stats.BitPacketCallsReceived += 1
 
 	if Internal.chargeIncomingCall(player) then
-		task.spawn(Internal.handleCall, player, routeId, callId, args)
+		task.spawn(Internal.runIncomingCall, player, routeId, callId, args)
 	else
 		releaseArgs(args)
 	end
@@ -6425,7 +6626,7 @@ function Internal.commitBitFrameStage(player, stage)
 			end
 		elseif kind == KIND_CALL then
 			if Internal.chargeIncomingCall(player) then
-				task.spawn(Internal.handleCall, player, routeId, requestId, args)
+				task.spawn(Internal.runIncomingCall, player, routeId, requestId, args)
 			else
 				releaseArgs(args)
 			end
@@ -6577,6 +6778,24 @@ function Internal.parseBitFrame(player, reader, stage)
 					else
 						for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
 					end
+
+				elseif count > 1 and Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32) then
+					local width = if schema.wordRunU16 then 16 else 32
+					reader:needBits(schema.count * count * width)
+					local data = reader.buffer
+					local position = reader.bitPosition
+					for index = 1, count do
+						local args = acquireArgsCount(schema.count)
+						for i = 1, schema.count do
+							args[i] = buffer.readbits(data, position, width)
+							position += width
+						end
+						args.n = schema.count
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
+					end
+					reader.bitPosition = position
+					if schema.wordRunU16 then Stats.U16SchemaFastReads += count else Stats.U32SchemaFastReads += count end
+					Stats.BitFrameHomogeneousRunFastReads += count
 				elseif count > 1 and schema.bitFrameWidths then
 					reader:needBits(schema.discardBits * count)
 					local data = reader.buffer
@@ -6841,7 +7060,7 @@ local function decodeBatch(player, data, reader)
 				end
 			elseif kind == KIND_CALL then
 				if Internal.chargeIncomingCall(player) then
-					task.spawn(Internal.handleCall, player, routeId, id, args)
+					task.spawn(Internal.runIncomingCall, player, routeId, id, args)
 				else
 					releaseArgs(args)
 				end
@@ -7189,7 +7408,12 @@ local function flushAll()
 	local deadline = os.clock() + Config.FlushBudgetSeconds
 	if IS_SERVER then
 		if broadcastBucket and not bucketEmpty(broadcastBucket) and os.clock() < deadline then
-			flushBucket(ALL, broadcastBucket, deadline)
+			local broadcastDeadline = deadline
+			if activeTargetHead <= activeTargetTail and Config.BroadcastFlushBudgetFraction < 1 then
+				broadcastDeadline = math.min(deadline, os.clock() + Config.FlushBudgetSeconds * Config.BroadcastFlushBudgetFraction)
+				Stats.BroadcastBudgetSlices += 1
+			end
+			flushBucket(ALL, broadcastBucket, broadcastDeadline)
 		end
 		local processedTargets = 0
 		while activeTargetHead <= activeTargetTail and processedTargets < Config.MaxTargetsPerFlush do
@@ -7845,8 +8069,11 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxBatchesPerFlush) == "number" and config.MaxBatchesPerFlush >= 1, "MaxBatchesPerFlush must be >= 1")
 	assert(type(config.MaxDispatchPerCycle) == "number" and config.MaxDispatchPerCycle >= 1, "MaxDispatchPerCycle must be >= 1")
 	assert(type(config.MaxDispatchBacklog) == "number" and config.MaxDispatchBacklog >= config.MaxDispatchPerCycle, "MaxDispatchBacklog must be >= MaxDispatchPerCycle")
+	assert(type(config.DispatchPerPlayerBacklogLimit) == "number" and isInteger(config.DispatchPerPlayerBacklogLimit) and config.DispatchPerPlayerBacklogLimit >= 0 and config.DispatchPerPlayerBacklogLimit <= 1048576, "DispatchPerPlayerBacklogLimit must be an integer from 0 to 1048576")
+	assert(type(config.DispatchBudgetCheckInterval) == "number" and isInteger(config.DispatchBudgetCheckInterval) and config.DispatchBudgetCheckInterval >= 1 and config.DispatchBudgetCheckInterval <= 128, "DispatchBudgetCheckInterval must be an integer from 1 to 128")
 	assert(type(config.DispatchBudgetSeconds) == "number" and isFiniteNumber(config.DispatchBudgetSeconds) and config.DispatchBudgetSeconds > 0, "DispatchBudgetSeconds must be a finite number > 0")
 	assert(type(config.FlushBudgetSeconds) == "number" and isFiniteNumber(config.FlushBudgetSeconds) and config.FlushBudgetSeconds > 0, "FlushBudgetSeconds must be a finite number > 0")
+	assert(type(config.BroadcastFlushBudgetFraction) == "number" and isFiniteNumber(config.BroadcastFlushBudgetFraction) and config.BroadcastFlushBudgetFraction >= 0.1 and config.BroadcastFlushBudgetFraction <= 1, "BroadcastFlushBudgetFraction must be between 0.1 and 1")
 	assert(type(config.ImmediateFlushBudgetSeconds) == "number" and isFiniteNumber(config.ImmediateFlushBudgetSeconds) and config.ImmediateFlushBudgetSeconds > 0, "ImmediateFlushBudgetSeconds must be a finite number > 0")
 	assert(type(config.TimeoutSweepInterval) == "number" and config.TimeoutSweepInterval > 0, "TimeoutSweepInterval must be > 0")
 	assert(type(config.MaxPoolSize) == "number" and config.MaxPoolSize >= 0, "MaxPoolSize must be >= 0")
@@ -7855,6 +8082,8 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxPooledArgs) == "number" and config.MaxPooledArgs >= 0, "MaxPooledArgs must be >= 0")
 	assert(type(config.MaxPooledWriterBytes) == "number" and config.MaxPooledWriterBytes >= 512, "MaxPooledWriterBytes must be >= 512")
 	assert(type(config.MaxPooledStrings) == "number" and config.MaxPooledStrings >= 0, "MaxPooledStrings must be >= 0")
+	assert(type(config.MaxPooledDictionaryEntries) == "number" and isInteger(config.MaxPooledDictionaryEntries) and config.MaxPooledDictionaryEntries >= 0 and config.MaxPooledDictionaryEntries <= 8192, "MaxPooledDictionaryEntries must be an integer from 0 to 8192")
+	assert(type(config.QueueRetainMaxSlots) == "number" and isInteger(config.QueueRetainMaxSlots) and config.QueueRetainMaxSlots >= 0 and config.QueueRetainMaxSlots <= 65536, "QueueRetainMaxSlots must be an integer from 0 to 65536")
 	assert(type(config.MaxBatchPoolSize) == "number" and config.MaxBatchPoolSize >= 0, "MaxBatchPoolSize must be >= 0")
 	assert(type(config.MaxPooledBatchItems) == "number" and isInteger(config.MaxPooledBatchItems) and config.MaxPooledBatchItems >= 0 and config.MaxPooledBatchItems <= 65535, "MaxPooledBatchItems must be an integer from 0 to 65535")
 	assert(type(config.MaxPooledPackedValues) == "number" and isInteger(config.MaxPooledPackedValues) and config.MaxPooledPackedValues >= 0 and config.MaxPooledPackedValues <= 8192, "MaxPooledPackedValues must be between 0 and 8192")
@@ -7869,6 +8098,8 @@ function Internal.validateConfig(config)
 	assert(type(config.MaxGlobalIncomingBatchesPerSecond) == "number" and config.MaxGlobalIncomingBatchesPerSecond >= 1, "MaxGlobalIncomingBatchesPerSecond must be >= 1")
 	assert(type(config.MaxIncomingCallsPerSecond) == "number" and config.MaxIncomingCallsPerSecond >= 1, "MaxIncomingCallsPerSecond must be >= 1")
 	assert(type(config.MaxGlobalIncomingCallsPerSecond) == "number" and config.MaxGlobalIncomingCallsPerSecond >= 1, "MaxGlobalIncomingCallsPerSecond must be >= 1")
+	assert(type(config.MaxConcurrentIncomingCalls) == "number" and isInteger(config.MaxConcurrentIncomingCalls) and config.MaxConcurrentIncomingCalls >= 0 and config.MaxConcurrentIncomingCalls <= 65536, "MaxConcurrentIncomingCalls must be an integer from 0 to 65536")
+	assert(type(config.MaxConcurrentIncomingCallsPerPlayer) == "number" and isInteger(config.MaxConcurrentIncomingCallsPerPlayer) and config.MaxConcurrentIncomingCallsPerPlayer >= 0 and config.MaxConcurrentIncomingCallsPerPlayer <= 65536, "MaxConcurrentIncomingCallsPerPlayer must be an integer from 0 to 65536")
 	assert(type(config.MaxReliableQueue) == "number" and config.MaxReliableQueue >= 1, "MaxReliableQueue must be >= 1")
 	assert(type(config.MaxUnreliableQueue) == "number" and config.MaxUnreliableQueue >= 1, "MaxUnreliableQueue must be >= 1")
 	assert(type(config.UnreliableMaxBytes) == "number" and config.UnreliableMaxBytes >= 1, "UnreliableMaxBytes must be >= 1")
@@ -7952,6 +8183,7 @@ function Internal.validateConfig(config)
 	assert(type(config.FastSchemaMaxBytes) == "number" and isInteger(config.FastSchemaMaxBytes) and config.FastSchemaMaxBytes >= 0, "FastSchemaMaxBytes must be a non-negative integer")
 	assert(type(config.FastSchemaAllowHeaderExpansion) == "boolean", "FastSchemaAllowHeaderExpansion must be a boolean")
 	assert(type(config.PackedSchemaRunEnabled) == "boolean", "PackedSchemaRunEnabled must be a boolean")
+	assert(type(config.TypedTupleFastPathEnabled) == "boolean", "TypedTupleFastPathEnabled must be a boolean")
 	assert(type(config.PackedSchemaRunMaxFields) == "number" and isInteger(config.PackedSchemaRunMaxFields) and config.PackedSchemaRunMaxFields >= 1 and config.PackedSchemaRunMaxFields <= 32, "PackedSchemaRunMaxFields must be an integer from 1 to 32")
 	assert(type(config.BitPacketEnabled) == "boolean", "BitPacketEnabled must be boolean")
 	assert(type(config.BitPacketCompressedCalls) == "boolean", "BitPacketCompressedCalls must be boolean")
@@ -8662,6 +8894,8 @@ function NetStream.ResetStats()
 	for key in pairs(Stats) do
 		Stats[key] = 0
 	end
+	-- Peak after reset must include handlers which are still running.
+	Stats.IncomingCallPeak = activeIncomingCalls
 	for _, field in ipairs(PACKET_AUDIT_FIELDS) do
 		Internal.PacketAuditTotals[field] = 0
 		Internal.LastPacketAudit[field] = 0
@@ -8706,12 +8940,19 @@ function NetStream.GetStats()
 		queuedUnreliable = math.max(0, queueLogicalCount(clientBucket.unreliable)) + Internal.mapCount(clientBucket.latestUnreliable)
 	end
 	copy.QueuedReliable = queuedReliable
+	copy.ActiveIncomingCalls = activeIncomingCalls
 	copy.QueuedUnreliable = queuedUnreliable
 	copy.PendingCalls = 0
 	for _ in pairs(pending) do
 		copy.PendingCalls += 1
 	end
 	copy.DispatchBacklog = if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1)
+	copy.DispatchMaxPlayerBacklog = 0
+	if IS_SERVER then
+		for _, count in pairs(dispatchPendingByPlayer) do
+			if count > copy.DispatchMaxPlayerBacklog then copy.DispatchMaxPlayerBacklog = count end
+		end
+	end
 	copy.ActiveTargetBacklog = if IS_SERVER then math.max(0, activeTargetTail - activeTargetHead + 1) else 0
 	copy.AverageBatchBytes = if copy.SentBatches > 0 then copy.SentBytes / copy.SentBatches else 0
 	copy.AverageMessagesPerBatch = if copy.SentBatches > 0 then copy.SentMessages / copy.SentBatches else 0
@@ -8783,6 +9024,17 @@ function NetStream.GetMemoryDiagnostics()
 		BitFrameInitialWriterBytes = Config.BitFrameInitialWriterBytes,
 		BitFrameRetainWriterMaxBytes = Config.BitFrameRetainWriterMaxBytes,
 		PackedValuePoolSize = #packedValuePool,
+		MaxPooledDictionaryEntries = Config.MaxPooledDictionaryEntries,
+		QueueRetainMaxSlots = Config.QueueRetainMaxSlots,
+		ActiveIncomingCalls = activeIncomingCalls,
+		IncomingCallPeak = Stats.IncomingCallPeak,
+		IncomingCallConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
+		IncomingCallExecutionErrors = Stats.IncomingCallExecutionErrors,
+		QueueStorageRebuilds = Stats.QueueStorageRebuilds,
+		QueueCompactions = Stats.QueueCompactions,
+		PooledWriterResets = Stats.PooledWriterResets,
+		DictionaryPoolRebuilds = Stats.DictionaryPoolRebuilds,
+		NativeMeasureDictionaryRebuilds = Stats.NativeMeasureDictionaryRebuilds,
 		MaxPooledBatchItems = Config.MaxPooledBatchItems,
 		BatchPoolOversizeDrops = Stats.BatchPoolOversizeDrops,
 		MaxArgsPoolSize = Config.MaxArgsPoolSize,
@@ -8841,6 +9093,12 @@ function NetStream.GetPerformanceStats()
 		BooleanBitPackReads = stats.BooleanBitPackReads,
 		U8SchemaFastWrites = stats.U8SchemaFastWrites,
 		U8SchemaFastReads = stats.U8SchemaFastReads,
+		U16SchemaFastWrites = stats.U16SchemaFastWrites,
+		U16SchemaFastReads = stats.U16SchemaFastReads,
+		U32SchemaFastWrites = stats.U32SchemaFastWrites,
+		U32SchemaFastReads = stats.U32SchemaFastReads,
+		BitFrameHomogeneousRunFastWrites = stats.BitFrameHomogeneousRunFastWrites,
+		BitFrameHomogeneousRunFastReads = stats.BitFrameHomogeneousRunFastReads,
 		BitFrameFixedSchemaFastWrites = stats.BitFrameFixedSchemaFastWrites,
 		BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads,
 		BitFrameFixedSchemaRunWrites = stats.BitFrameFixedSchemaRunWrites,
@@ -8940,17 +9198,48 @@ function NetStream.GetTransportStats()
 	}
 end
 
+function NetStream.GetRPCStats(player)
+	if player ~= nil then
+		assert(IS_SERVER and typeof(player) == "Instance" and player:IsA("Player"), "GetRPCStats(player) requires a Player on the server")
+	end
+	return {
+		Active = if player then activeIncomingCallsByPlayer[player] or 0 else activeIncomingCalls,
+		GlobalLimit = Config.MaxConcurrentIncomingCalls,
+		PerPlayerLimit = Config.MaxConcurrentIncomingCallsPerPlayer,
+		PeakActive = Stats.IncomingCallPeak,
+		ConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
+		ExecutionErrors = Stats.IncomingCallExecutionErrors,
+	}
+end
+
+function NetStream.GetDispatchStats(player)
+	if player ~= nil then
+		assert(IS_SERVER and typeof(player) == "Instance" and player:IsA("Player"), "GetDispatchStats(player) requires a Player on the server")
+	end
+	local current = if player then dispatchPendingByPlayer[player] or 0 else (if dispatchCount == 0 then 0 else math.max(0, dispatchCount - dispatchHead + 1))
+	return {
+		Backlog = current,
+		GlobalLimit = Config.MaxDispatchBacklog,
+		PerPlayerLimit = Config.DispatchPerPlayerBacklogLimit,
+		BudgetCheckInterval = Config.DispatchBudgetCheckInterval,
+		PeakBacklog = Stats.DispatchPeakBacklog,
+		PerPlayerDrops = Stats.DispatchPerPlayerDrops,
+		DisconnectedDrops = Stats.DispatchDisconnectedDrops,
+	}
+end
+
 function NetStream.GetHealth()
 	local stats = NetStream.GetStats()
 	local queued = stats.QueuedReliable + stats.QueuedUnreliable
 	local backlog = stats.DispatchBacklog
 	local status = "Healthy"
 	local queueLimit = if Config.BandwidthGovernorEnabled then Config.BandwidthMaxReliableQueue + Config.BandwidthMaxUnreliableQueue else Config.MaxReliableQueue + Config.MaxUnreliableQueue
-	if backlog >= Config.MaxDispatchBacklog * 0.8 or queued >= queueLimit * 0.8 then
+	local rpcUtilization = if Config.MaxConcurrentIncomingCalls > 0 then activeIncomingCalls / Config.MaxConcurrentIncomingCalls else 0
+	if backlog >= Config.MaxDispatchBacklog * 0.8 or queued >= queueLimit * 0.8 or rpcUtilization >= 0.8 then
 		status = "Overloaded"
-	elseif backlog >= Config.MaxDispatchBacklog * 0.4 or queued >= queueLimit * 0.4 then
+	elseif backlog >= Config.MaxDispatchBacklog * 0.4 or queued >= queueLimit * 0.4 or rpcUtilization >= 0.4 then
 		status = "Congested"
-	elseif backlog > 0 or queued > Config.MaxBatchMessages then
+	elseif backlog > 0 or queued > Config.MaxBatchMessages or activeIncomingCalls > 0 then
 		status = "Busy"
 	end
 	local rates = NetStream.GetRateStats()
@@ -8961,6 +9250,10 @@ function NetStream.GetHealth()
 		Status = status,
 		QueuedMessages = queued,
 		DispatchBacklog = backlog,
+		RPCActive = activeIncomingCalls,
+		RPCCapacity = Config.MaxConcurrentIncomingCalls,
+		RPCUtilization = rpcUtilization,
+		RPCConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
 		ActiveTargetBacklog = stats.ActiveTargetBacklog,
 		SentBytesPerSecond = rates.SentBytesPerSecond,
 		ReceivedBytesPerSecond = rates.ReceivedBytesPerSecond,
@@ -9206,6 +9499,7 @@ function NetStream.Destroy()
 	table.clear(dispatchPlayers)
 	table.clear(dispatchArgs)
 	table.clear(dispatchScalarFlags)
+	table.clear(dispatchPendingByPlayer)
 	dispatchCount = 0
 	dispatchHead = 1
 

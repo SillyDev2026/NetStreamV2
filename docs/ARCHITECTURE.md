@@ -1,6 +1,6 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.2.3, BitFrame v1, Compression v2.4.2 (codec 230).**
+**Applies to NetStream v4.3.0, BitFrame v1, Compression v2.4.2 (codec 230).**
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
@@ -26,6 +26,12 @@ flowchart TB
     N["Statistics + opt-in sample buffers"] -.-> F
     N -.-> J
 ```
+
+### v4.3.0 dispatch and flush fairness
+
+A weak-key map counts pending server event callbacks by Player. The admission check applies both global and per-player limits before queueing a table or scalar callback. Dequeue returns the per-player quota before invoking callbacks. If the sender has disconnected, its queued callback is discarded without firing and any owned argument array is released. This controls callback backlog, **not** transport-level packet receipt or RPC scheduling.
+
+Periodic outbound flushes share a single time budget. When both broadcast and individual target queues are active, broadcasts receive a configured fraction, leaving processing time for existing round-robin per-target queues. No new wire headers or physical priority lanes are introduced.
 
 ### v4.2.1–v4.2.3 packet efficiency and state boundaries
 
@@ -148,6 +154,14 @@ By default `HandshakeEnabled = true` but `HandshakeRequireReady = false`. With s
 
 ## 7. Incoming checks and dispatch
 
+### Concurrent server RPC callback management (v4.3.0)
+
+All four inbound RPC formats use an active-handler admission limit after per-second rate checks, then execute callbacks with a guarded wrapper that releases per-player and global in-flight slots after normal completion or exceptions. `NetStream.GetRPCStats(player?)` exposes current and peak concurrency, configured caps, overload drops and unexpected execution errors. These limits are server-only, add no wire bytes, and do not forcibly cancel already-yielding game callbacks. `GetHealth()` includes RPC in-flight saturation even when outbound queues are idle.
+
+Vararg-copy fast paths for 4–8/12 fields avoid repeated positional `select` scans in argument arrays and packed event runs without introducing temporary tables. See [RPC concurrency & callback lifecycle](RPC_CONCURRENCY.md) for limits, overload semantics and the test protocol.
+
+
+
 Incoming traffic passes these checks in broad order:
 1. Envelope rate limits on byte count and batch frequency (per-player and global).
 2. Optional session readiness gate.
@@ -159,6 +173,16 @@ Incoming traffic passes these checks in broad order:
 The dispatch queue has bounded backlog and processes messages in Heartbeat work slices. Callback errors are caught and logged. RPC handlers are spawned and their responses routed back to the original pending request. This enables normal Roblox gameplay handlers but **does not** turn untrusted client values into trusted facts.
 
 ## 8. Memory and telemetry
+
+### New v4.3.0 pool capacity controls
+
+Idle pooled legacy/scratch writers are reset on **release** rather than waiting until the next acquire, avoiding holding packet strings while inactive. BitFrame and legacy reader/writer dictionaries are cleared normally for small packets, but dictionaries exceeding `MaxPooledDictionaryEntries` are replaced with fresh tables on release. The native byte-cost estimator counts distinct new strings per packet and likewise replaces oversized pooled hash tables. Small bursts reuse existing table capacity; large bursts do not permanently inflate idle pools.
+
+Outgoing reliable/unreliable FIFOs can otherwise retain sparse arrays during sustained traffic. `compactQueue` allocates an exact-size table for the active suffix once the consumed prefix grows beyond 1,024 and half the slot range. Upon a complete drain, `clearDrainedQueue` releases an oversized table if the old tail exceeds `QueueRetainMaxSlots`. The operations preserve FIFO and logical message counts, cost occasional CPU/GC, and **do not** change packet codecs or delivery guarantees.
+
+[Memory retention guide](MEMORY_EFFICIENCY.md).
+
+
 
 The module pools BitFrame writers/readers, legacy readers/writers, message objects, argument arrays and batch buffers. Pooled buffer capacity is retained by design, so a high pool hit count is not equivalent to a net memory saving under every workload.
 

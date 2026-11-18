@@ -1,6 +1,40 @@
 # NetStreamV2 Changelog
 
-The current release candidate is **v4.2.3**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.3.0 — RPC in-flight limits, callback cleanup and vararg optimization
+
+- Add global/per-player server in-flight RPC caps (default 512/64; 0 disables), complementary to per-second rate budgets, to bound yielding callbacks and callback-owned memory.
+- Funnel all four inbound RPC formats through exception-safe active-count accounting. `ResetStats()` retains the current active-count peak baseline. Add `GetRPCStats(player?)`, stats and memory diagnostics; no packet format change.
+- `GetHealth()` now considers RPC in-flight utilization when diagnosing congestion and includes live RPC capacity/drops.
+- Rejected RPCs follow the existing no-response rate-rejection convention, so a remote invoker may time out; no automatic cancellation of already-running callbacks.
+- Directly unpack 4–8 and 12-field varargs to arguments/packed values without repeated `select(i, ...)` calls or an intermediate array.
+- Add `RPCConcurrencyRegression` paired Studio scripts, deterministic source/model checks and benchmarking notes; **94 authored Studio test/benchmark scripts** total. Runtime correctness and speed still require Studio execution.
+
+## v4.3.0 — Bounded idle memory and sparse queue storage
+
+- Clean up eligible legacy/scratch packet writers **upon pooling**, so retained writers cannot hold the last packet's string dictionaries or route caches during idle periods.
+- Bound idle dictionary storage with `MaxPooledDictionaryEntries=128`; release oversized Luau string dictionary arrays/maps in BitFrame and legacy writer/reader pools. Rebuild large native dynamic-size measurement dictionaries instead of retaining cleared hash capacity.
+- Compact sustained sparse outbound queues by copying live entries into a new array after a sufficient head advance; release oversized array storage on drain using `QueueRetainMaxSlots=512`. Surviving message order, logical queue count and packet format are preserved.
+- Extend `GetMemoryDiagnostics()` with pool rebuild, writer-release reset, and FIFO compaction counters/caps.
+- Add 2 paired `MemoryRetentionRegression` scripts and source-level deterministic FIFO + cleanup models (94 Studio script sources total). Measurements of GC/heap savings in Roblox Studio remain pending; table rebuilds may add allocation overhead.
+
+## v4.3.0 — Homogeneous integer codec specialization
+
+- Specialized 2–32-field U16/U32 tuples and packed runs with single bounds preflight and direct bit reads/writes, avoiding per-field type dispatch.
+- Added `TypedTupleFastPathEnabled=true` by default; false uses the previous wire-identical generic mixed fixed-width path. Both settings are interoperable between peers.
+- Exposed six scalar and batched tuple fast-path counters in `GetStats()` / `GetPerformanceStats()`.
+- Added paired 12-field U16/U32 test cases and deterministic bit-parity models at unaligned offsets. The full suite now contains 92 Studio-script sources, including a paired on/off A/B performance probe and memory retention regression.
+- No benchmark-derived performance claim; BitFrame v1 and Compression codec 230 unchanged.
+
+## v4.3.0 — Dispatch overload protection and fair outbound processing
+
+- Protect the global bounded dispatch queue with a separate per-Player pending callback limit (default 2048, 0 disables), covering both scalar and argument-table callbacks. Dequeue releases that quota before callback invocation; Destroy clears accounting.
+- Drop already-queued event callbacks after the Player disconnects, releasing argument arrays and recording `DispatchDisconnectedDrops`.
+- Configurable elapsed-time check every 8 callbacks, previously 32; callers may tune 1–128.
+- When broadcasts compete with queued player-specific traffic, split the periodic flush CPU budget using `BroadcastFlushBudgetFraction` (default 0.5, 1 = previous scheduling). Existing per-target FIFO and bandwidth governor remain unchanged.
+- Expose `GetDispatchStats(player?)` and queue peak/per-player drop counters. Add 2 paired Studio test scripts (4 files) and deterministic source audit checks; Studio runtime and CPU/network improvements are unverified.
+- Preserve BitFrame v1 and bundled Compression v2.4.2, codec 230.
 
 ## v4.2.3 — Server-controlled interest groups
 - Server-created groups restrict reliable/unreliable event and state fanout to connected subscribers. Member add/remove/clear/destroy are explicit and server-owned.

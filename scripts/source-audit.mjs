@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.2.3";
+const version = "4.3.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 82, "Regression suite unexpectedly missing");
+assert(tests.length >= 94, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -40,6 +40,215 @@ for (const name of tests) {
     for (const [, reported] of guards) assert.equal(reported, version, `Outdated version guard in ${name}`);
 }
 
+
+
+for (const name of ["RPCConcurrencyRegression.client.lua", "RPCConcurrencyRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing paired in-flight RPC overload and recovery regression: " + name);
+}
+for (const fragment of [
+    "MaxConcurrentIncomingCalls = 512,",
+    "MaxConcurrentIncomingCallsPerPlayer = 64,",
+    "MaxConcurrentIncomingCalls must be an integer from 0 to 65536",
+    "MaxConcurrentIncomingCallsPerPlayer must be an integer from 0 to 65536",
+    "local activeIncomingCalls = 0",
+    "local activeIncomingCallsByPlayer = setmetatable({}, {__mode = \"k\"})",
+    "Stats.IncomingCallConcurrencyDrops += 1",
+    "activeIncomingCalls += 1",
+    "activeIncomingCallsByPlayer[player] = perPlayer + 1",
+    "activeIncomingCalls = math.max(0, activeIncomingCalls - 1)",
+    "function Internal.runIncomingCall(player, routeId, id, args)",
+    "xpcall(Internal.handleCall, debug.traceback, player, routeId, id, args)",
+    "function NetStream.GetRPCStats(player)",
+    "copy.ActiveIncomingCalls = activeIncomingCalls",
+    "Stats.IncomingCallPeak = activeIncomingCalls",
+    "RPCActive = activeIncomingCalls",
+    "RPCCapacity = Config.MaxConcurrentIncomingCalls",
+    "RPCUtilization = rpcUtilization",
+    "RPCConcurrencyDrops = Stats.IncomingCallConcurrencyDrops",
+]) assert(source.includes(fragment), "Missing bounded RPC concurrency guard: " + fragment);
+assert.equal((source.match(/task\.spawn\(Internal\.runIncomingCall/g) || []).length,4,"Every incoming RPC codec path must use safe in-flight wrapper");
+assert(!source.includes("task.spawn(Internal.handleCall"),"Unhandled raw RPC spawn bypasses concurrency slot cleanup");
+for (const pCap of [1, 2, 4, 16, 64]) {
+    const globalCap = pCap * 3;
+    let active = 0, peak = 0, rejected = 0;
+    const players = [0, 0, 0, 0, 0];
+    for (let i = 0; i < globalCap * 40; i++) {
+        const p = i % players.length;
+        if (active >= globalCap || players[p] >= pCap) { rejected++; continue; }
+        active++;players[p]++;peak = Math.max(peak,active);
+    }
+    assert(peak <= globalCap && players.every(n=>n <= pCap),"RPC concurrency model exceeded a cap");
+    assert(rejected > 0,"RPC concurrency test did not pressure caps");
+    for (let p = 0; p < players.length; p++) while (players[p] > 0) { players[p]--;active--; }
+    assert.equal(active,0,"Finished callback did not release RPC slot");
+    assert.equal(players.reduce((a,b)=>a+b,0),0,"RPC per-player count leaked");
+}
+for (const fragment of [
+    "elseif n >= 4 and n <= 8 then",
+    "elseif n == 12 then",
+    "elseif count >= 4 and count <= 8 then",
+    "elseif count == 12 then",
+]) assert(source.includes(fragment),"Missing vararg copy fast path: " + fragment);
+for (const count of [4,5,6,7,8,12]) {
+    const args = Array.from({length:count},(_,i)=>i % 3 === 0 ? null : i * 17);
+    const copied = Array.from({length:count},(_,i)=>args[i]);
+    assert.deepEqual(copied,args,"Vararg bulk copy semantics for n=4..8/12 changed");
+}
+for (const name of ["MemoryRetentionRegression.client.lua", "MemoryRetentionRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing paired memory high-water regression: " + name);
+}
+for (const fragment of [
+    "MaxPooledDictionaryEntries = 128,",
+    "QueueRetainMaxSlots = 512,",
+    "MaxPooledDictionaryEntries must be an integer from 0 to 8192",
+    "QueueRetainMaxSlots must be an integer from 0 to 65536",
+    "local function compactQueue(queue)",
+    "local function clearDrainedQueue(queue)",
+    "local items = table.create(pending)",
+    "queue.items = items",
+    "queue.items = {}",
+    "Stats.QueueCompactions += 1",
+    "Stats.QueueStorageRebuilds += 1",
+    "Stats.DictionaryPoolRebuilds += 1",
+    "Stats.NativeMeasureDictionaryRebuilds += 1",
+    "state.stringEntries += 1",
+    "state.strings = {}",
+    "Stats.PooledWriterResets += 1",
+]) assert(source.includes(fragment), "Missing memory retention protection: " + fragment);
+const scratchRelease = source.slice(source.indexOf("function Internal.releaseScratchWriter"),source.indexOf("local Reader = {}"));
+assert(scratchRelease.includes("writer:reset()"), "Idle scratch writer retains dynamic dictionaries");
+const regularRelease = source.slice(source.indexOf("local function releaseWriter(writer)"),source.indexOf("local function batchLogicalCount"));
+assert(regularRelease.includes("writer:reset()"), "Idle legacy writer retains dynamic dictionaries");
+const bitWriterRelease = source.slice(source.indexOf("function Internal.releaseBitFrameWriter(writer)"),source.indexOf("function Internal.BitFrameWriter:ensureBits"));
+assert(bitWriterRelease.includes("writer.stringToIndex = {}"), "BitFrame dictionary hash capacity not discarded at high-water");
+const bitReaderRelease = source.slice(source.indexOf("function Internal.releaseBitFrameReader(reader)"),source.indexOf("function Internal.BitFrameReader:needBits"));
+assert(bitReaderRelease.includes("reader.strings = {}"), "BitFrame reader dictionary high-water must be discarded");
+const queueCompaction = source.slice(source.indexOf("local function compactQueue(queue)"),source.indexOf("function Internal.newBucket()"));
+assert(queueCompaction.includes("compactQueue(queue)") && queueCompaction.includes("clearDrainedQueue(queue)"), "Per-item queue dequeue must release large sparse storage");
+const batchCompaction = source.slice(source.indexOf("local function collectBatch(queue, latest, limit)"),source.indexOf("function Internal.packetByteBudget(",source.indexOf("local function collectBatch(queue, latest, limit)")));
+assert(batchCompaction.includes("compactQueue(queue)") && batchCompaction.includes("clearDrainedQueue(queue)"), "Bulk dequeue must release large sparse storage");
+for (const count of [32, 64, 128, 256, 512, 1057, 1328, 2049, 4097]) {
+    let queue = {items:[],head:1,tail:0,rebuilds:0,compactions:0,logicalCount:0};
+    for (let i = 1; i <= count; i++) { queue.items[++queue.tail] = i; queue.logicalCount++; }
+    const delivered = [];
+    while (queue.head <= queue.tail) {
+        const batchLimit = 1 + count % 33;
+        const take = Math.min(batchLimit,queue.tail - queue.head + 1);
+        for (let i = 0; i < take; i++) {
+            delivered.push(queue.items[queue.head]);
+            queue.items[queue.head++] = undefined;
+            queue.logicalCount--;
+        }
+        if (queue.head > queue.tail) {
+            if (queue.tail > 16) { queue.items = []; queue.rebuilds++; }
+            queue.head = 1;queue.tail = 0;queue.logicalCount = 0;
+        } else if (queue.head > 1024 && queue.head > Math.floor(queue.tail / 2)) {
+            const remaining = queue.tail - queue.head + 1;
+            const next = Array.from({length:remaining},(_,index)=>queue.items[queue.head+index]);
+            queue.items = [undefined,...next];queue.head = 1;queue.tail = remaining;queue.compactions++;
+        }
+    }
+    assert.deepEqual(delivered,Array.from({length:count},(_,i)=>i+1),"Queue compaction changed FIFO or discarded messages");
+    assert.equal(queue.logicalCount,0,"Queue logical count incorrect after draining");
+    assert.equal(queue.tail,0,"Queue slots not reset after draining");
+    assert(count <= 16 || queue.compactions + queue.rebuilds >= 1,"Queue must eventually release high-water storage");
+}
+
+for (const name of ["TypedTupleABBenchmark.client.lua", "TypedTupleABBenchmark.server.lua"]) {
+    assert(tests.includes(name), "Missing paired Roblox Studio typed-tuple A/B benchmark: " + name);
+}
+for (const name of ["HomogeneousIntegerRunRegression.client.lua", "HomogeneousIntegerRunRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing paired U16/U32 packed-run regression: " + name);
+}
+for (const fragment of [
+    "TypedTupleFastPathEnabled = true,",
+    "TypedTupleFastPathEnabled must be a boolean",
+    "wordRunU16 = wordRunU16,",
+    "dwordRunU32 = dwordRunU32,",
+    "Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32)",
+    "Config.TypedTupleFastPathEnabled and (item.schema.wordRunU16 or item.schema.dwordRunU32)",
+    "count > 1 and Config.TypedTupleFastPathEnabled",
+    "Stats.U16SchemaFastWrites += 1",
+    "Stats.U32SchemaFastReads += 1",
+    "Stats.BitFrameHomogeneousRunFastWrites += item.runCount",
+    "Stats.BitFrameHomogeneousRunFastReads += count",
+]) assert(source.includes(fragment), "U16/U32 serializer optimization missing: " + fragment);
+assert.equal((source.match(/Config\.TypedTupleFastPathEnabled and \(schema\.wordRunU16 or schema\.dwordRunU32\)/g) || []).length, 3, "U16/U32 A/B guard must cover both single-message paths and run reads");
+for (const width of [16, 32]) {
+    for (const offset of [0, 1, 3, 7]) {
+        for (let sample = 0; sample < 256; sample++) {
+            const count = 1 + sample % 16;
+            const max = 2 ** width - 1;
+            const values = Array.from({length:count}, (_,index) => {
+                if (index === 0) return sample % 256;
+                if (index === 1) return 0;
+                if (index === 2) return max;
+                return Math.floor(((sample + 1) * 7919 + index * 104729) % (max + 1));
+            });
+            const bits = new Uint8Array(offset + count * width);
+            let position = offset;
+            for (const initial of values) {
+                let value = initial;
+                for (let i = 0; i < width; i++) { bits[position++] = value % 2; value = Math.floor(value / 2); }
+            }
+            position = offset;
+            for (const expected of values) {
+                let decoded = 0;
+                for (let i = 0; i < width; i++) decoded += bits[position++] * 2 ** i;
+                assert.equal(decoded,expected,"Homogeneous U16/U32 byte-unaligned bit layout changed");
+            }
+        }
+    }
+}
+for (const name of ["DispatchFairnessRegression.client.lua", "DispatchFairnessRegression.server.lua", "BroadcastBudgetRegression.client.lua", "BroadcastBudgetRegression.server.lua"]) {
+    assert(tests.includes(name), "Missing message-processing Studio regression: " + name);
+}
+for (const fragment of [
+    "DispatchPerPlayerBacklogLimit = 2048,",
+    "DispatchBudgetCheckInterval = 8,",
+    "BroadcastFlushBudgetFraction = 0.5,",
+    "local dispatchPendingByPlayer = setmetatable({}, {__mode = \"k\"})",
+    "function NetStream.GetDispatchStats(player)",
+    "local function dispatchCanEnqueue(player)",
+    "local function dispatchRecordEnqueue(player)",
+    "local function dispatchRecordDequeue(player)",
+    "dispatchRecordDequeue(player)",
+    "dispatchRecordEnqueue(player)",
+    "player.Parent ~= Players",
+    "Stats.DispatchPerPlayerDrops += 1",
+    "Stats.DispatchDisconnectedDrops += 1",
+    "budgetCheck += Config.DispatchBudgetCheckInterval",
+    "Config.FlushBudgetSeconds * Config.BroadcastFlushBudgetFraction",
+    "Stats.BroadcastBudgetSlices += 1",
+    "table.clear(dispatchPendingByPlayer)",
+]) assert(source.includes(fragment), "Message processing safety fragment missing: " + fragment);
+for (let iteration = 1; iteration <= 1024; iteration++) {
+    const cap = 1 + iteration % 40;
+    const total = cap * 5;
+    const queued = [];
+    let aPending = 0, bPending = 0, aDrops = 0;
+    for (let i = 0; i < total; i++) {
+        if (aPending >= cap) aDrops++;
+        else { queued.push("A"); aPending++; }
+    }
+    queued.push("B");
+    bPending++;
+    assert.equal(aPending,cap, "Noisy player exceeded per-player pending cap");
+    assert.equal(aDrops,total-cap, "Per-player overflow accounting incorrect");
+    assert.equal(bPending,1, "Quiet player must retain dispatch capacity");
+    while (queued.length) {
+        const next = queued.shift();
+        if (next === "A") aPending--;
+        else bPending--;
+        assert(aPending >= 0 && bPending >= 0, "Dispatch pending counter underflow");
+    }
+    assert.equal(aPending,0,"Dispatch counter leaked on drain");
+    assert.equal(bPending,0,"Quiet-player dispatch counter leaked");
+    const fullDeadline = 1.5;
+    const flushFraction = 0.1 + 0.9 * ((iteration % 100) / 100);
+    const broadcastDeadline = Math.min(fullDeadline,1 + 0.5 * flushFraction);
+    assert(broadcastDeadline <= fullDeadline && broadcastDeadline >= 1, "Broadcast budget does not reserve player processing time");
+}
 
 const compression = read("Compression.lua");
 assert(compression.includes('return "2.4.2"'), "Bundled compression API version was not advanced");
@@ -290,7 +499,7 @@ assert(batchDrainStart > 0 && batchDrainEnd > batchDrainStart, "Missing burst ba
 const batchDrain = source.slice(batchDrainStart, batchDrainEnd);
 assert(batchDrain.includes("local slots = queue.items") && batchDrain.includes("queue.logicalCount = math.max(0, queue.logicalCount - consumed)"), "Amortized burst queue accounting missing");
 assert(!batchDrain.includes("local item = queuePop(queue)"), "Batch collection regressed to per-message queuePop");
-assert(source.includes("local budgetCheck = 32") && source.includes("if processed == budgetCheck then"), "Dispatch should avoid modulo in burst loop");
+assert(source.includes("local budgetCheck = Config.DispatchBudgetCheckInterval") && source.includes("if processed >= budgetCheck then"), "Configurable dispatch budget checks missing");
 assert(source.includes("local function fillPackedValues(values, base, count, ...)"), "Small fixed-schema vararg packer missing");
 assert(source.includes("Stats.BitFramePackedScalarRunWrites += item.runCount"), "Packed scalar bulk writer counter missing");
 assert(source.includes("writer:ensureBits(item.runCount * width)"), "Packed scalar writer must preflight whole run");

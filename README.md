@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.2.3-2563eb)
+![Release](https://img.shields.io/badge/release-v4.3.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current release candidate: NetStream v4.2.3.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
+> **Current release candidate: NetStream v4.3.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -167,6 +167,73 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## v4.3.0: RPC overload protection and lower-cost argument copies
+
+Server RPCs now have in-flight limits **in addition to** existing per-second rate limits: `MaxConcurrentIncomingCalls=512` globally and `MaxConcurrentIncomingCallsPerPlayer=64` by default. Set either to `0` to disable that concurrency cap. A guarded runner across all four RPC packet formats returns capacity after completion or errors; it does not cancel existing callbacks. Rejected RPCs follow existing silent rate-rejection behavior, so the caller may hit `CallTimeout`. Configure application-level retries and idempotency for critical requests.
+
+`GetRPCStats(player?)` reports active/peak handlers, concurrency rejections, execution errors and limits. `GetHealth()` also reports `RPCActive`, `RPCCapacity`, `RPCUtilization`, and `RPCConcurrencyDrops`, and considers saturated RPC capacity in congestion classification. `GetStats().ActiveIncomingCalls` and `GetMemoryDiagnostics()` expose the same global gauge.
+
+4–8 and 12-field argument/packed-run values now use direct vararg-to-array assignments rather than repeated `select(i, ...)` scans, preserving nil positions and packet bytes without temporary arrays. A performance benefit is **not yet measured in Roblox Studio**.
+
+New paired `RPCConcurrencyRegression` scripts cover a 16-request burst, throttling, app callback errors and recovery. The suite now has **94 authored Studio test/benchmark scripts**, not verified live runs. See [RPC concurrency guide](docs/RPC_CONCURRENCY.md).
+
+```luau
+NetStream.Configure({
+    MaxConcurrentIncomingCalls = 512,
+    MaxConcurrentIncomingCallsPerPlayer = 64,
+})
+print(NetStream.GetRPCStats().Active)
+```
+
+## v4.3.0: Lower idle memory and bounded queue storage
+
+- **Idle writer cleanup:** The legacy packet writer and scratch writer now clear packet dictionaries and route caches **when released**, not only on their next acquisition. This prevents idle pools retaining completed packet strings.
+- **High-water dictionary trimming:** `MaxPooledDictionaryEntries=128` bounds retained string-dictionary capacity for BitFrame and legacy writers/readers, as well as the native size estimator. Larger unique-string packets still work; their oversized tables are dropped on release.
+- **Long-running FIFO storage:** Sparse outbound queue arrays periodically compact into new tables, preserving original message order and logical counts. Drained queues discard an oversized array when the old tail exceeds `QueueRetainMaxSlots=512`. No wire changes.
+- **Memory diagnostics:** `GetMemoryDiagnostics()` now reports `QueueCompactions`, `QueueStorageRebuilds`, `DictionaryPoolRebuilds`, `NativeMeasureDictionaryRebuilds`, `PooledWriterResets`, and cap values.
+- **Regressions:** Added `MemoryRetentionRegression` paired Studio scripts (1,200 ordered U16 events + 128 unique strings), and source-audit queue FIFO and retention models. There are now **92 Studio test/benchmark scripts**.
+- **Caveat:** Reduced retained capacity is an **engineering expectation**, not a measured percentage. Rebuilding large tables increases occasional allocations/GC work. Validate retained heap and CPU p95 in Studio before deploying.
+
+[Memory retention audit and tuning guide](docs/MEMORY_EFFICIENCY.md).
+
+```luau
+NetStream.Configure({
+    MaxPooledDictionaryEntries = 128,
+    QueueRetainMaxSlots = 512,
+})
+local memory = NetStream.GetMemoryDiagnostics()
+print(memory.QueueCompactions, memory.QueueStorageRebuilds)
+```
+
+## v4.3.0: Dedicated U16/U32 tuple fast paths
+
+Homogeneous 2–32-field `U16` and `U32` schemas now use dedicated BitFrame buffer loops in both directions, including packed event runs. Unlike the existing mixed-field path, these specialize the field width at the route level and avoid per-field kind dispatch. They still perform a whole-payload bounds preflight.
+
+The new `TypedTupleFastPathEnabled` configuration defaults to `true`. Set it to `false` for a wire-identical fallback to the original mixed-field decoder and encoder. This enables a fair, per-experience A/B performance test without changing packet formats. Counters: `U16SchemaFastWrites`, `U16SchemaFastReads`, `U32SchemaFastWrites`, `U32SchemaFastReads`, `BitFrameHomogeneousRunFastWrites`, and `BitFrameHomogeneousRunFastReads`.
+
+The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32 U32 packets of 12 fields with boundary values, FIFO ordering, server echoes, and fast-path counters. Static checks model unaligned bit positions. A separate `TypedTupleABBenchmark` client/server pair logs real Studio encode/decode timing and bytes with `TypedTupleFastPathEnabled` on/off. **Actual speed wins over any competitor are unverified.** Benchmark instructions: [BENCHMARKING.md](docs/BENCHMARKING.md). BitFrame v1 and Compression codec 230 remain unchanged.
+
+## v4.3.0: Fair message processing
+
+- **Per-client protection:** `DispatchPerPlayerBacklogLimit=2048` caps one server-side player's pending event callbacks independently of the global limit (set `0` to disable). The limit covers scalar and table event payloads; queue credits return before callbacks execute.
+- **Disconnect fix:** Queued event callbacks from players who left are dropped and pooled argument arrays are released instead of running stale callbacks.
+- **Tighter time slices:** `DispatchBudgetCheckInterval=8` replaces the fixed 32-callback time-check cadence; choose 1–128. A single expensive or yielding listener may still overrun.
+- **Broadcast fairness:** `BroadcastFlushBudgetFraction=0.5` reserves the remaining periodic flush time for player-specific traffic when both queues are active; 1 restores the original behavior.
+- **Diagnostics:** `GetDispatchStats(player?)`, `DispatchPerPlayerDrops`, `DispatchDisconnectedDrops`, `DispatchPeakBacklog`, `DispatchMaxPlayerBacklog` and `BroadcastBudgetSlices`.
+- **Tests:** 94 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
+
+```luau
+NetStream.Configure({
+    DispatchPerPlayerBacklogLimit = 2048,
+    DispatchBudgetCheckInterval = 8,
+    BroadcastFlushBudgetFraction = 0.5,
+})
+local summary = NetStream.GetDispatchStats()
+print(summary.Backlog, summary.PerPlayerDrops, summary.DisconnectedDrops)
+```
+
+[See the comparative networking review](docs/MESSAGE_PROCESSING_REVIEW.md).
+
 ## v4.2.1–v4.2.3: Three option updates
 
 **v4.2.1 — Packed-run fast path.** Mixed fixed-width Bool/U8/U16/I16/U32/I32 event runs now encode and decode with one aggregate bit-capacity check for the whole run instead of per-message checks. The wire layout stays identical; `BitFrameFixedSchemaRunWrites` and `BitFrameFixedSchemaRunReads` expose usage.
@@ -298,7 +365,7 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
-| **4.2.3** | Interest-group recipient routing, lifecycle and paired regression |
+| **4.3.0** | Per-player dispatch backpressure, disconnected-player cleanup, tighter dispatch checks and broadcast fairness |\n| **4.2.3** | Interest-group recipient routing, lifecycle and paired regression |
 | **4.2.2** | Revisioned field-delta codec with null deletion, gap detection and paired regression |
 | **4.2.1** | Mixed fixed-schema packed-run batch preflight and counters |
 | **4.2.0** | Mixed fixed-width schema preflight/read/write, 16-field packed runs and paired boundary/FIFO regression |
