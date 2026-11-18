@@ -32,7 +32,7 @@ assert.equal((fixed.match(/readFiniteFixedF64\(data, /g) || []).length, 10, "Leg
 assert(source.includes('error("NetStream incoming fixed-schema F64 is not finite", 0)'), "Fixed-schema finite rejection missing");
 
 const tests = readdirSync(resolve(root, "tests")).filter((name) => name.endsWith(".lua"));
-assert(tests.length >= 88, "Regression suite unexpectedly missing");
+assert(tests.length >= 90, "Regression suite unexpectedly missing");
 for (const name of tests) {
     const content = read("tests/" + name);
     assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(content), `Broken local assignment in ${name}`);
@@ -41,6 +41,9 @@ for (const name of tests) {
 }
 
 
+for (const name of ["TypedTupleABBenchmark.client.lua", "TypedTupleABBenchmark.server.lua"]) {
+    assert(tests.includes(name), "Missing paired Roblox Studio typed-tuple A/B benchmark: " + name);
+}
 for (const name of ["HomogeneousIntegerRunRegression.client.lua", "HomogeneousIntegerRunRegression.server.lua"]) {
     assert(tests.includes(name), "Missing paired U16/U32 packed-run regression: " + name);
 }
