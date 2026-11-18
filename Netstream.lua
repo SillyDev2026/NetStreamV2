@@ -366,6 +366,7 @@ local DEFAULTS = {
 	FastSchemaMaxBytes = 512,
 	FastSchemaAllowHeaderExpansion = false,
 	PackedSchemaRunEnabled = true,
+	TypedTupleFastPathEnabled = true,
 	PackedSchemaRunMaxFields = 16,
 	BitPacketEnabled = true,
 	BitPacketCompressedCalls = true,
@@ -2036,7 +2037,7 @@ function Internal.compileSchema(spec, label)
 		byteRunU8 = byteRunU8,
 		wordRunU16 = wordRunU16,
 		dwordRunU32 = dwordRunU32,
-		bitFrameWidths = if bitPackedBooleans or byteRunU8 or wordRunU16 or dwordRunU32 then nil else bitFrameWidths,
+		bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,
 		discardBits = if discardFixed then discardBits else nil,
 		scalarKind = scalarKind,
 	}
@@ -2620,7 +2621,7 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		return
 	end
 
-	if schema.wordRunU16 or schema.dwordRunU32 then
+	if Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32) then
 		local width = if schema.wordRunU16 then 16 else 32
 		local bitPosition = writer.bitPosition
 		writer:ensureBits(schema.count * width)
@@ -2691,7 +2692,7 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 		return args
 	end
 
-	if schema.wordRunU16 or schema.dwordRunU32 then
+	if Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32) then
 		local width = if schema.wordRunU16 then 16 else 32
 		reader:needBits(schema.count * width)
 		local args = acquireArgsCount(schema.count)
@@ -4732,7 +4733,7 @@ function Internal.bitFrameWriteOne(writer, item, audit)
 					writer.bitPosition = position
 					Stats.BitFramePackedScalarRunWrites += item.runCount
 
-				elseif item.schema.wordRunU16 or item.schema.dwordRunU32 then
+				elseif Config.TypedTupleFastPathEnabled and (item.schema.wordRunU16 or item.schema.dwordRunU32) then
 					local schema = item.schema
 					local width = if schema.wordRunU16 then 16 else 32
 					local totalFields = schema.count * item.runCount
@@ -6672,7 +6673,7 @@ function Internal.parseBitFrame(player, reader, stage)
 						for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
 					end
 
-				elseif count > 1 and (schema.wordRunU16 or schema.dwordRunU32) then
+				elseif count > 1 and Config.TypedTupleFastPathEnabled and (schema.wordRunU16 or schema.dwordRunU32) then
 					local width = if schema.wordRunU16 then 16 else 32
 					reader:needBits(schema.count * count * width)
 					local data = reader.buffer
@@ -8072,6 +8073,7 @@ function Internal.validateConfig(config)
 	assert(type(config.FastSchemaMaxBytes) == "number" and isInteger(config.FastSchemaMaxBytes) and config.FastSchemaMaxBytes >= 0, "FastSchemaMaxBytes must be a non-negative integer")
 	assert(type(config.FastSchemaAllowHeaderExpansion) == "boolean", "FastSchemaAllowHeaderExpansion must be a boolean")
 	assert(type(config.PackedSchemaRunEnabled) == "boolean", "PackedSchemaRunEnabled must be a boolean")
+	assert(type(config.TypedTupleFastPathEnabled) == "boolean", "TypedTupleFastPathEnabled must be a boolean")
 	assert(type(config.PackedSchemaRunMaxFields) == "number" and isInteger(config.PackedSchemaRunMaxFields) and config.PackedSchemaRunMaxFields >= 1 and config.PackedSchemaRunMaxFields <= 32, "PackedSchemaRunMaxFields must be an integer from 1 to 32")
 	assert(type(config.BitPacketEnabled) == "boolean", "BitPacketEnabled must be boolean")
 	assert(type(config.BitPacketCompressedCalls) == "boolean", "BitPacketCompressedCalls must be boolean")
