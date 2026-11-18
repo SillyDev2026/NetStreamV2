@@ -36,6 +36,8 @@ Ack:Connect(function(n16, n32)
 end)
 for i = 1, 32 do
     assert(Word:FireServer(i, 0, 65535, 8, 32768, 65535, 1, 2, 3, 4, 5, 65535), "U16 tuple enqueue failed")
+end
+for i = 1, 32 do
     assert(Dword:FireServer(i, 0, 4294967295, 8, 2147483648, 4294967295, 1, 2, 3, 4, 5, 4294967295), "U32 tuple enqueue failed")
 end
 task.delay(40, function() assert(acked, "Homogeneous integer run regression timed out") end)
