@@ -12,6 +12,8 @@ local finished = false
 Ack:Connect(function(ack)
     assert(ack == true, "RPC concurrency acknowledgement malformed")
     task.spawn(function()
+        local failure = pcall(function() return Busy:InvokeServerNow(65001) end)
+        assert(not failure, "Faulty callback should return an RPC error")
         local ok, value = pcall(function() return Busy:InvokeServerNow(65000) end)
         assert(ok and value == 65000, "RPC did not recover after sustained in-flight rejection")
         finished = true
