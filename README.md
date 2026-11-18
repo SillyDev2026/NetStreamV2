@@ -173,7 +173,7 @@ Homogeneous 2–32-field `U16` and `U32` schemas now use dedicated BitFrame buff
 
 The new `TypedTupleFastPathEnabled` configuration defaults to `true`. Set it to `false` for a wire-identical fallback to the original mixed-field decoder and encoder. This enables a fair, per-experience A/B performance test without changing packet formats. Counters: `U16SchemaFastWrites`, `U16SchemaFastReads`, `U32SchemaFastWrites`, `U32SchemaFastReads`, `BitFrameHomogeneousRunFastWrites`, and `BitFrameHomogeneousRunFastReads`.
 
-The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32 U32 packets of 12 fields with boundary values, FIFO ordering, server echoes, and fast-path counters. Static checks model unaligned bit positions. **Actual speed wins over any competitor are unverified.** Benchmark instructions: [BENCHMARKING.md](docs/BENCHMARKING.md). BitFrame v1 and Compression codec 230 remain unchanged.
+The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32 U32 packets of 12 fields with boundary values, FIFO ordering, server echoes, and fast-path counters. Static checks model unaligned bit positions. A separate `TypedTupleABBenchmark` client/server pair logs real Studio encode/decode timing and bytes with `TypedTupleFastPathEnabled` on/off. **Actual speed wins over any competitor are unverified.** Benchmark instructions: [BENCHMARKING.md](docs/BENCHMARKING.md). BitFrame v1 and Compression codec 230 remain unchanged.
 
 ## v4.3.0: Fair message processing
 
@@ -182,7 +182,7 @@ The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32
 - **Tighter time slices:** `DispatchBudgetCheckInterval=8` replaces the fixed 32-callback time-check cadence; choose 1–128. A single expensive or yielding listener may still overrun.
 - **Broadcast fairness:** `BroadcastFlushBudgetFraction=0.5` reserves the remaining periodic flush time for player-specific traffic when both queues are active; 1 restores the original behavior.
 - **Diagnostics:** `GetDispatchStats(player?)`, `DispatchPerPlayerDrops`, `DispatchDisconnectedDrops`, `DispatchPeakBacklog`, `DispatchMaxPlayerBacklog` and `BroadcastBudgetSlices`.
-- **Tests:** 88 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
+- **Tests:** 90 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
 
 ```luau
 NetStream.Configure({

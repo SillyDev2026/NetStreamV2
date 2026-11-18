@@ -8,6 +8,7 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `TypedTupleABBenchmark` | Two-sided A/B probe, 512 U16 + 512 U32 12-field events; encoded bytes and encode/decode p95 |
 | `HomogeneousIntegerRunRegression` | 12-field U16/U32 packed runs, boundary values, FIFO, paired echoes, fast path counters |
 | `DispatchFairnessRegression` | 160-message client burst; validates per-player queue cap and dropped work stats |
 | `BroadcastBudgetRegression` | Competing broadcast and per-player traffic; validates budget slicing and send path |
@@ -55,6 +56,10 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing sample returns `nil`; do not substitute 0 ms. Since measurements are sampled and retained in a bounded ring, results only reflect **retained observations**, not all lifetime traffic.
 
 `RoundTripMs` must be explicitly recorded by a client-side ping/pong benchmark using `RecordRoundTripSample`. Handshake RTT is a different metric. `JitterMs` represents the absolute difference between sequential recorded RTTs (not network packet-delay variation per RFC 3550).
+
+## Running the built-in typed tuple A/B probe
+
+Place `tests/TypedTupleABBenchmark.server.lua` in `ServerScriptService` and its paired client script in `StarterPlayerScripts`. Create a `BoolValue` named `NSTypedTupleFastPath` under `ReplicatedStorage` with `Value=false`. Run the session, capture the printed `fast=false` server/client lines, then change the value to `true` and start a **fresh** session with the exact same player count and conditions. Repeat each profile multiple times with a warmup. The probe enqueues 512 contiguous U16 and 512 contiguous U32 12-field events, prints encoded bytes per message and p95 encode/decode samples, and asserts correct receipt. This is a traffic/CPU probe, **not** a normalized cross-library leaderboard; the elapsed wall clock includes scheduling, startup and remote latency.
 
 ## v4.3.0 controlled serializer A/B protocol
 
