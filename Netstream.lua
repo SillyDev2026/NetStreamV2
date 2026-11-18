@@ -597,6 +597,12 @@ local Stats = {
 	BooleanBitPackReads = 0,
 	U8SchemaFastWrites = 0,
 	U8SchemaFastReads = 0,
+	U16SchemaFastWrites = 0,
+	U16SchemaFastReads = 0,
+	U32SchemaFastWrites = 0,
+	U32SchemaFastReads = 0,
+	BitFrameHomogeneousRunFastWrites = 0,
+	BitFrameHomogeneousRunFastReads = 0,
 	BitFrameFixedSchemaFastWrites = 0,
 	BitFrameFixedSchemaFastReads = 0,
 	BitFrameFixedSchemaRunWrites = 0,
@@ -1985,12 +1991,16 @@ function Internal.compileSchema(spec, label)
 	local discardFixed = true
 	local bitPackedBooleans = #fields > 1 and #fields <= 32
 	local byteRunU8 = #fields > 1 and #fields <= 32
+	local wordRunU16 = #fields > 1 and #fields <= 32
+	local dwordRunU32 = #fields > 1 and #fields <= 32
 	local bitFrameWidths = if #fields > 1 and #fields <= 32 then table.create(#fields) else nil
 	for i = 1, #fields do
 		local field = fields[i]
 		assert(type(field) == "table" and field._netstreamSchemaType == true, string.format("%s field %d is not a NetStream.Types value", label or "Schema", i))
 		if field.Kind ~= SCHEMA_BOOL then bitPackedBooleans = false end
 		if field.Kind ~= SCHEMA_U8 then byteRunU8 = false end
+		if field.Kind ~= SCHEMA_U16 then wordRunU16 = false end
+		if field.Kind ~= SCHEMA_U32 then dwordRunU32 = false end
 		local kind = field.Kind
 		if bitFrameWidths then
 			local width = if kind == SCHEMA_BOOL then 1 elseif kind == SCHEMA_U8 then 8 elseif kind == SCHEMA_U16 or kind == SCHEMA_I16 then 16 elseif kind == SCHEMA_U32 or kind == SCHEMA_I32 then 32 else nil
@@ -2024,7 +2034,9 @@ function Internal.compileSchema(spec, label)
 		isFixed = isFixed,
 		bitPackedBooleans = bitPackedBooleans,
 		byteRunU8 = byteRunU8,
-		bitFrameWidths = if bitPackedBooleans or byteRunU8 then nil else bitFrameWidths,
+		wordRunU16 = wordRunU16,
+		dwordRunU32 = dwordRunU32,
+		bitFrameWidths = if bitPackedBooleans or byteRunU8 or wordRunU16 or dwordRunU32 then nil else bitFrameWidths,
 		discardBits = if discardFixed then discardBits else nil,
 		scalarKind = scalarKind,
 	}
@@ -2607,6 +2619,20 @@ function Internal.bitFrameWriteSchemaArgs(writer, schema, args, base)
 		Stats.U8SchemaFastWrites += 1
 		return
 	end
+
+	if schema.wordRunU16 or schema.dwordRunU32 then
+		local width = if schema.wordRunU16 then 16 else 32
+		local bitPosition = writer.bitPosition
+		writer:ensureBits(schema.count * width)
+		local data = writer.buffer
+		for i = 1, schema.count do
+			buffer.writebits(data, bitPosition, width, args[offset + i])
+			bitPosition += width
+		end
+		writer.bitPosition = bitPosition
+		if schema.wordRunU16 then Stats.U16SchemaFastWrites += 1 else Stats.U32SchemaFastWrites += 1 end
+		return
+	end
 	if schema.bitFrameWidths then
 		local bitPosition = writer.bitPosition
 		writer:ensureBits(schema.discardBits)
@@ -2662,6 +2688,22 @@ function Internal.bitFrameReadSchemaArgs(reader, schema)
 		end
 		reader.bitPosition = bitPosition
 		Stats.U8SchemaFastReads += 1
+		return args
+	end
+
+	if schema.wordRunU16 or schema.dwordRunU32 then
+		local width = if schema.wordRunU16 then 16 else 32
+		reader:needBits(schema.count * width)
+		local args = acquireArgsCount(schema.count)
+		local position = reader.bitPosition
+		local data = reader.buffer
+		for i = 1, schema.count do
+			args[i] = buffer.readbits(data, position, width)
+			position += width
+		end
+		reader.bitPosition = position
+		args.n = schema.count
+		if schema.wordRunU16 then Stats.U16SchemaFastReads += 1 else Stats.U32SchemaFastReads += 1 end
 		return args
 	end
 	if schema.bitFrameWidths then
@@ -4689,6 +4731,22 @@ function Internal.bitFrameWriteOne(writer, item, audit)
 					end
 					writer.bitPosition = position
 					Stats.BitFramePackedScalarRunWrites += item.runCount
+
+				elseif item.schema.wordRunU16 or item.schema.dwordRunU32 then
+					local schema = item.schema
+					local width = if schema.wordRunU16 then 16 else 32
+					local totalFields = schema.count * item.runCount
+					writer:ensureBits(totalFields * width)
+					local data = writer.buffer
+					local position = writer.bitPosition
+					local values = item.packedValues
+					for index = 1, totalFields do
+						buffer.writebits(data, position, width, values[index])
+						position += width
+					end
+					writer.bitPosition = position
+					if schema.wordRunU16 then Stats.U16SchemaFastWrites += item.runCount else Stats.U32SchemaFastWrites += item.runCount end
+					Stats.BitFrameHomogeneousRunFastWrites += item.runCount
 				elseif item.schema.bitFrameWidths then
 					local schema = item.schema
 					local widths = schema.bitFrameWidths
@@ -6613,6 +6671,24 @@ function Internal.parseBitFrame(player, reader, stage)
 					else
 						for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
 					end
+
+				elseif count > 1 and (schema.wordRunU16 or schema.dwordRunU32) then
+					local width = if schema.wordRunU16 then 16 else 32
+					reader:needBits(schema.count * count * width)
+					local data = reader.buffer
+					local position = reader.bitPosition
+					for index = 1, count do
+						local args = acquireArgsCount(schema.count)
+						for i = 1, schema.count do
+							args[i] = buffer.readbits(data, position, width)
+							position += width
+						end
+						args.n = schema.count
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
+					end
+					reader.bitPosition = position
+					if schema.wordRunU16 then Stats.U16SchemaFastReads += count else Stats.U32SchemaFastReads += count end
+					Stats.BitFrameHomogeneousRunFastReads += count
 				elseif count > 1 and schema.bitFrameWidths then
 					reader:needBits(schema.discardBits * count)
 					local data = reader.buffer
@@ -8891,6 +8967,12 @@ function NetStream.GetPerformanceStats()
 		BooleanBitPackReads = stats.BooleanBitPackReads,
 		U8SchemaFastWrites = stats.U8SchemaFastWrites,
 		U8SchemaFastReads = stats.U8SchemaFastReads,
+		U16SchemaFastWrites = stats.U16SchemaFastWrites,
+		U16SchemaFastReads = stats.U16SchemaFastReads,
+		U32SchemaFastWrites = stats.U32SchemaFastWrites,
+		U32SchemaFastReads = stats.U32SchemaFastReads,
+		BitFrameHomogeneousRunFastWrites = stats.BitFrameHomogeneousRunFastWrites,
+		BitFrameHomogeneousRunFastReads = stats.BitFrameHomogeneousRunFastReads,
 		BitFrameFixedSchemaFastWrites = stats.BitFrameFixedSchemaFastWrites,
 		BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads,
 		BitFrameFixedSchemaRunWrites = stats.BitFrameFixedSchemaRunWrites,
