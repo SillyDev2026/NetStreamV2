@@ -9234,11 +9234,12 @@ function NetStream.GetHealth()
 	local backlog = stats.DispatchBacklog
 	local status = "Healthy"
 	local queueLimit = if Config.BandwidthGovernorEnabled then Config.BandwidthMaxReliableQueue + Config.BandwidthMaxUnreliableQueue else Config.MaxReliableQueue + Config.MaxUnreliableQueue
-	if backlog >= Config.MaxDispatchBacklog * 0.8 or queued >= queueLimit * 0.8 then
+	local rpcUtilization = if Config.MaxConcurrentIncomingCalls > 0 then activeIncomingCalls / Config.MaxConcurrentIncomingCalls else 0
+	if backlog >= Config.MaxDispatchBacklog * 0.8 or queued >= queueLimit * 0.8 or rpcUtilization >= 0.8 then
 		status = "Overloaded"
-	elseif backlog >= Config.MaxDispatchBacklog * 0.4 or queued >= queueLimit * 0.4 then
+	elseif backlog >= Config.MaxDispatchBacklog * 0.4 or queued >= queueLimit * 0.4 or rpcUtilization >= 0.4 then
 		status = "Congested"
-	elseif backlog > 0 or queued > Config.MaxBatchMessages then
+	elseif backlog > 0 or queued > Config.MaxBatchMessages or activeIncomingCalls > 0 then
 		status = "Busy"
 	end
 	local rates = NetStream.GetRateStats()
@@ -9249,6 +9250,10 @@ function NetStream.GetHealth()
 		Status = status,
 		QueuedMessages = queued,
 		DispatchBacklog = backlog,
+		RPCActive = activeIncomingCalls,
+		RPCCapacity = Config.MaxConcurrentIncomingCalls,
+		RPCUtilization = rpcUtilization,
+		RPCConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
 		ActiveTargetBacklog = stats.ActiveTargetBacklog,
 		SentBytesPerSecond = rates.SentBytesPerSecond,
 		ReceivedBytesPerSecond = rates.ReceivedBytesPerSecond,
