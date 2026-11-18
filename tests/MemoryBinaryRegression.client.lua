@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.2.0")
+assert(NetStream.GetVersion() == "4.2.3")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false})
 local T = NetStream.Types
 local Packed = NetStream.Event("__NSMemoryPacked", {Id = 35601, Schema = {T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8}, Compression = false})
@@ -21,7 +21,7 @@ Ack:Connect(function(marker)
     local after = NetStream.GetMemoryDiagnostics()
     assert(after.BitFrameWriterPoolSize == 0 and after.PackedValuePoolSize == 0 and after.PooledWriterBytes == 0, "Idle pools retained writer or packed values")
     completed = true
-    print("NetStream v4.2.0 memory/binary regression PASS", before.BitFrameWriterPooledBytes, after.BitFrameWriterPooledBytes, before.LuaHeapKB, after.LuaHeapKB)
+    print("NetStream v4.2.3 memory/binary regression PASS", before.BitFrameWriterPooledBytes, after.BitFrameWriterPooledBytes, before.LuaHeapKB, after.LuaHeapKB)
 end)
 for i = 1, 96 do assert(Packed:FireServer(i, 0, 255, 128, 7, 19, 31, 63), "Packed event enqueue rejected") end
 for _, value in ipairs({string.rep("q", 16), string.rep("w", 32), string.rep("z", 63)}) do
