@@ -4,7 +4,7 @@ local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
 local T = NetStream.Types
 
 NetStream.ConfigureLowTraffic({HandshakeEnabled = false, BandwidthGovernorEnabled = false, PacketSizeAuditEnabled = true, TransportFastFlushEnabled = false})
-assert(NetStream.GetVersion() == "4.2.3")
+assert(NetStream.GetVersion() == "4.3.0")
 
 local Ping32 = NetStream.Event("__PacketAuditU32", {Id = 1001, Schema = {T.U32}, Priority = "Normal", Compression = false})
 local Ping16 = NetStream.Event("__PacketAuditU16", {Id = 1002, Schema = {T.U16}, Priority = "Normal", Compression = false})
@@ -25,5 +25,5 @@ PingShort:Connect(function(player, value)
 end)
 
 game:GetService("Players").PlayerRemoving:Connect(function(player)
-	print("NetStream 4.2.3 Packet Audit server observed", received, "logical messages", player.UserId)
+	print("NetStream 4.3.0 Packet Audit server observed", received, "logical messages", player.UserId)
 end)
