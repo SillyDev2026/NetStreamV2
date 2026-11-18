@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.2.2"
+local VERSION = "4.2.3"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -597,6 +597,8 @@ local Stats = {
 	BitFrameFixedSchemaFastReads = 0,
 	BitFrameFixedSchemaRunWrites = 0,
 	BitFrameFixedSchemaRunReads = 0,
+	InterestGroupFanouts = 0,
+	InterestRecipientsQueued = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -8251,6 +8253,106 @@ end
 
 -- Revision-checked, field-level deltas for reliable, explicitly managed state streams.
 -- This codec produces ordinary NetStream-compatible tables and does not alter BitFrame v1.
+-- Server-managed recipient groups. Membership stays private to the server.
+function NetStream.CreateInterestGroup()
+	assert(IS_SERVER, "Interest groups can only be created on the server")
+	local members = setmetatable({}, {__mode = "k"})
+	local group = {}
+	local destroyedGroup = false
+	local function active()
+		assert(not destroyedGroup, "Interest group has been destroyed")
+	end
+	local function isPlayer(player)
+		return typeof(player) == "Instance" and player:IsA("Player")
+	end
+	function group:Add(player)
+		active()
+		assert(isPlayer(player) and player.Parent == Players, "Interest group Add requires a connected Player")
+		if members[player] then return false end
+		members[player] = true
+		return true
+	end
+	function group:Remove(player)
+		active()
+		assert(isPlayer(player), "Interest group Remove expects a Player")
+		local had = members[player] == true
+		members[player] = nil
+		return had
+	end
+	function group:Contains(player)
+		active()
+		return isPlayer(player) and player.Parent == Players and members[player] == true
+	end
+	function group:Count()
+		active()
+		local count = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then count += 1 end
+		end
+		return count
+	end
+	function group:Clear()
+		active()
+		table.clear(members)
+	end
+	function group:Destroy()
+		if destroyedGroup then return end
+		destroyedGroup = true
+		table.clear(members)
+	end
+	function group:Fire(route, ...)
+		active()
+		assert(type(route) == "table" and getmetatable(route) == EventRoute, "Interest group Fire expects a NetStream Event route")
+		local args = table.pack(...)
+		if route._schema then validateSchemaArgs(route._schema, args, false) else validateArgs(args) end
+		local allAccepted = true
+		local recipients = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then
+				local ok = route:FireClient(player, table.unpack(args, 1, args.n))
+				if ok then recipients += 1 else allAccepted = false end
+			end
+		end
+		Stats.InterestGroupFanouts += 1
+		Stats.InterestRecipientsQueued += recipients
+		return allAccepted, recipients
+	end
+	function group:FireUnreliable(route, ...)
+		active()
+		assert(type(route) == "table" and getmetatable(route) == EventRoute, "Interest group FireUnreliable expects a NetStream Event route")
+		local args = table.pack(...)
+		if route._schema then validateSchemaArgs(route._schema, args, false) else validateArgs(args) end
+		local allAccepted = true
+		local recipients = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then
+				local ok = route:FireUnreliableClient(player, table.unpack(args, 1, args.n))
+				if ok then recipients += 1 else allAccepted = false end
+			end
+		end
+		Stats.InterestGroupFanouts += 1
+		Stats.InterestRecipientsQueued += recipients
+		return allAccepted, recipients
+	end
+	function group:SetState(route, value, unreliable)
+		active()
+		assert(type(route) == "table" and getmetatable(route) == StateRoute, "Interest group SetState expects a NetStream State route")
+		if route._schema then validateSchemaArgs(route._schema, table.pack(value), false) else validateValue(value, 0, nil) end
+		local allAccepted = true
+		local recipients = 0
+		for _, player in ipairs(Players:GetPlayers()) do
+			if members[player] then
+				local ok = route:SetClient(player, value, unreliable == true)
+				if ok then recipients += 1 else allAccepted = false end
+			end
+		end
+		Stats.InterestGroupFanouts += 1
+		Stats.InterestRecipientsQueued += recipients
+		return allAccepted, recipients
+	end
+	return group
+end
+
 function NetStream.CreateDeltaCodec(fieldNames)
 	assert(type(fieldNames) == "table" and #fieldNames >= 1 and #fieldNames <= 32, "Delta codec expects 1..32 named fields")
 	local count = #fieldNames
