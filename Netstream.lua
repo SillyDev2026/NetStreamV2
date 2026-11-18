@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.2.0"
+local VERSION = "4.2.1"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -595,6 +595,8 @@ local Stats = {
 	U8SchemaFastReads = 0,
 	BitFrameFixedSchemaFastWrites = 0,
 	BitFrameFixedSchemaFastReads = 0,
+	BitFrameFixedSchemaRunWrites = 0,
+	BitFrameFixedSchemaRunReads = 0,
 	ScratchWriterPoolHits = 0,
 	PackedSchemaRunItems = 0,
 	PackedSchemaRunMessages = 0,
@@ -4677,6 +4679,29 @@ function Internal.bitFrameWriteOne(writer, item, audit)
 					end
 					writer.bitPosition = position
 					Stats.BitFramePackedScalarRunWrites += item.runCount
+				elseif item.schema.bitFrameWidths then
+					local schema = item.schema
+					local widths = schema.bitFrameWidths
+					local values = item.packedValues
+					local fieldCount = schema.count
+					local position = writer.bitPosition
+					writer:ensureBits(schema.discardBits * item.runCount)
+					local data = writer.buffer
+					for index = 0, item.runCount - 1 do
+						local offset = index * fieldCount
+						for fieldIndex = 1, fieldCount do
+							local kind = schema.fields[fieldIndex].Kind
+							local value = values[offset + fieldIndex]
+							if kind == SCHEMA_BOOL then value = if value then 1 else 0
+							elseif kind == SCHEMA_I16 and value < 0 then value += 65536
+							elseif kind == SCHEMA_I32 and value < 0 then value += 4294967296 end
+							buffer.writebits(data, position, widths[fieldIndex], value)
+							position += widths[fieldIndex]
+						end
+					end
+					writer.bitPosition = position
+					Stats.BitFrameFixedSchemaFastWrites += item.runCount
+					Stats.BitFrameFixedSchemaRunWrites += item.runCount
 				else
 					for index = 0, item.runCount - 1 do
 						Internal.bitFrameWriteSchemaArgs(writer, item.schema, item.packedValues, index * item.fieldCount)
@@ -6550,6 +6575,28 @@ function Internal.parseBitFrame(player, reader, stage)
 					else
 						for _ = 1, count do Internal.bitFrameDiscardSchemaArgs(reader, schema) end
 					end
+				elseif count > 1 and schema.bitFrameWidths then
+					reader:needBits(schema.discardBits * count)
+					local data = reader.buffer
+					local position = reader.bitPosition
+					local widths = schema.bitFrameWidths
+					for index = 1, count do
+						local args = acquireArgsCount(schema.count)
+						for fieldIndex = 1, schema.count do
+							local fieldKind = schema.fields[fieldIndex].Kind
+							local value = buffer.readbits(data, position, widths[fieldIndex])
+							position += widths[fieldIndex]
+							if fieldKind == SCHEMA_BOOL then value = value ~= 0
+							elseif fieldKind == SCHEMA_I16 and value >= 32768 then value -= 65536
+							elseif fieldKind == SCHEMA_I32 and value >= 2147483648 then value -= 4294967296 end
+							args[fieldIndex] = value
+						end
+						args.n = schema.count
+						Internal.stageBitFrameAction(stage, kind, route, routeId, requestId, args, if index == 1 then count else 0)
+					end
+					reader.bitPosition = position
+					Stats.BitFrameFixedSchemaFastReads += count
+					Stats.BitFrameFixedSchemaRunReads += count
 				else
 					for index = 1, count do
 						local args = Internal.bitFrameReadSchemaArgs(reader, schema)
@@ -8595,6 +8642,8 @@ function NetStream.GetPerformanceStats()
 		U8SchemaFastReads = stats.U8SchemaFastReads,
 		BitFrameFixedSchemaFastWrites = stats.BitFrameFixedSchemaFastWrites,
 		BitFrameFixedSchemaFastReads = stats.BitFrameFixedSchemaFastReads,
+		BitFrameFixedSchemaRunWrites = stats.BitFrameFixedSchemaRunWrites,
+		BitFrameFixedSchemaRunReads = stats.BitFrameFixedSchemaRunReads,
 		WriterPoolHits = stats.WriterPoolHits,
 		ScratchWriterPoolHits = stats.ScratchWriterPoolHits,
 		CompressionNativeSizeEstimates = stats.CompressionNativeSizeEstimates,
