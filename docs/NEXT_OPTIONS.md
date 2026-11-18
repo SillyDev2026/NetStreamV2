@@ -2,6 +2,13 @@
 
 **Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
 
+## v4.3.0 — memory-retention improvements
+
+- Implemented: clear idle pooled legacy/scratch writer references on release, cap pooled packet dictionary capacity and trim large native-size-estimator hash tables.
+- Implemented: periodic compaction of sustained sparse reliable/unreliable outbound queues and high-water slot cleanup on drain while preserving FIFO.
+- Implemented: `MaxPooledDictionaryEntries`, `QueueRetainMaxSlots`, memory diagnostics and paired 1,328-message regression.
+- Next: repeatable Studio heap-after-GC and CPU/microprofiler comparisons, tune retained table thresholds for each game's traffic shape; benchmark memory vs allocator churn before narrowing caps.
+
 ## v4.3.0 — U16/U32 serialization improvements
 
 - Implemented: homogeneous U16/U32 tuple and packed-run fast paths with one aggregate bounds preflight and direct buffer access.

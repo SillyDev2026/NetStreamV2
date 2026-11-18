@@ -167,6 +167,26 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## v4.3.0: Lower idle memory and bounded queue storage
+
+- **Idle writer cleanup:** The legacy packet writer and scratch writer now clear packet dictionaries and route caches **when released**, not only on their next acquisition. This prevents idle pools retaining completed packet strings.
+- **High-water dictionary trimming:** `MaxPooledDictionaryEntries=128` bounds retained string-dictionary capacity for BitFrame and legacy writers/readers, as well as the native size estimator. Larger unique-string packets still work; their oversized tables are dropped on release.
+- **Long-running FIFO storage:** Sparse outbound queue arrays periodically compact into new tables, preserving original message order and logical counts. Drained queues discard an oversized array when the old tail exceeds `QueueRetainMaxSlots=512`. No wire changes.
+- **Memory diagnostics:** `GetMemoryDiagnostics()` now reports `QueueCompactions`, `QueueStorageRebuilds`, `DictionaryPoolRebuilds`, `NativeMeasureDictionaryRebuilds`, `PooledWriterResets`, and cap values.
+- **Regressions:** Added `MemoryRetentionRegression` paired Studio scripts (1,200 ordered U16 events + 128 unique strings), and source-audit queue FIFO and retention models. There are now **92 Studio test/benchmark scripts**.
+- **Caveat:** Reduced retained capacity is an **engineering expectation**, not a measured percentage. Rebuilding large tables increases occasional allocations/GC work. Validate retained heap and CPU p95 in Studio before deploying.
+
+[Memory retention audit and tuning guide](docs/MEMORY_EFFICIENCY.md).
+
+```luau
+NetStream.Configure({
+    MaxPooledDictionaryEntries = 128,
+    QueueRetainMaxSlots = 512,
+})
+local memory = NetStream.GetMemoryDiagnostics()
+print(memory.QueueCompactions, memory.QueueStorageRebuilds)
+```
+
 ## v4.3.0: Dedicated U16/U32 tuple fast paths
 
 Homogeneous 2–32-field `U16` and `U32` schemas now use dedicated BitFrame buffer loops in both directions, including packed event runs. Unlike the existing mixed-field path, these specialize the field width at the route level and avoid per-field kind dispatch. They still perform a whole-payload bounds preflight.
@@ -182,7 +202,7 @@ The paired `HomogeneousIntegerRunRegression` Studio test exercises 32 U16 and 32
 - **Tighter time slices:** `DispatchBudgetCheckInterval=8` replaces the fixed 32-callback time-check cadence; choose 1–128. A single expensive or yielding listener may still overrun.
 - **Broadcast fairness:** `BroadcastFlushBudgetFraction=0.5` reserves the remaining periodic flush time for player-specific traffic when both queues are active; 1 restores the original behavior.
 - **Diagnostics:** `GetDispatchStats(player?)`, `DispatchPerPlayerDrops`, `DispatchDisconnectedDrops`, `DispatchPeakBacklog`, `DispatchMaxPlayerBacklog` and `BroadcastBudgetSlices`.
-- **Tests:** 90 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
+- **Tests:** 92 Studio test script sources including the new `DispatchFairnessRegression` and `BroadcastBudgetRegression` client/server pairs. Source CI checks do **not** replace live multiplayer performance tests. Wire layout and Compression codec are unchanged.
 
 ```luau
 NetStream.Configure({

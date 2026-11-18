@@ -8,6 +8,7 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 
 | Test pair | Purpose |
 |---|---|
+| `MemoryRetentionRegression` | 1,200 ordered U16 packets + 128 unique strings; verify sparse queue compaction, dictionary trim, drain and FIFO |
 | `TypedTupleABBenchmark` | Two-sided A/B probe, 512 U16 + 512 U32 12-field events; encoded bytes and encode/decode p95 |
 | `HomogeneousIntegerRunRegression` | 12-field U16/U32 packed runs, boundary values, FIFO, paired echoes, fast path counters |
 | `DispatchFairnessRegression` | 160-message client burst; validates per-player queue cap and dropped work stats |
@@ -56,6 +57,10 @@ Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with 
 The code uses nearest-rank indexing (`ceil(count * percentile)`). A missing sample returns `nil`; do not substitute 0 ms. Since measurements are sampled and retained in a bounded ring, results only reflect **retained observations**, not all lifetime traffic.
 
 `RoundTripMs` must be explicitly recorded by a client-side ping/pong benchmark using `RecordRoundTripSample`. Handshake RTT is a different metric. `JitterMs` represents the absolute difference between sequential recorded RTTs (not network packet-delay variation per RFC 3550).
+
+## v4.3.0 idle-memory and sparse queue measurements
+
+Run `MemoryRetentionRegression.server.lua` and `MemoryRetentionRegression.client.lua` in an isolated Studio session. Use the intentionally tight dictionary/queue retention caps from the scripts only for testing, and observe `QueueCompactions`, `QueueStorageRebuilds`, `DictionaryPoolRebuilds` and `PooledWriterResets` through `GetMemoryDiagnostics()`. Then compare old and new commit under identical sustained traffic and post-burst idle periods. Record stabilized Luau heap (via `gcinfo()` / Studio memory profiler), allocation spikes, GC duration, encode/decode/flush p95 and throughput. Trimming capacity lowers expected idle retention but can increase allocation churn. Source audit and parser compilation are not equivalent to a measured memory reduction. See [memory retention audit](MEMORY_EFFICIENCY.md).
 
 ## Running the built-in typed tuple A/B probe
 

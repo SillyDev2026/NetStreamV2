@@ -2,12 +2,20 @@
 
 The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
 
+## v4.3.0 — Bounded idle memory and sparse queue storage
+
+- Clean up eligible legacy/scratch packet writers **upon pooling**, so retained writers cannot hold the last packet's string dictionaries or route caches during idle periods.
+- Bound idle dictionary storage with `MaxPooledDictionaryEntries=128`; release oversized Luau string dictionary arrays/maps in BitFrame and legacy writer/reader pools. Rebuild large native dynamic-size measurement dictionaries instead of retaining cleared hash capacity.
+- Compact sustained sparse outbound queues by copying live entries into a new array after a sufficient head advance; release oversized array storage on drain using `QueueRetainMaxSlots=512`. Surviving message order, logical queue count and packet format are preserved.
+- Extend `GetMemoryDiagnostics()` with pool rebuild, writer-release reset, and FIFO compaction counters/caps.
+- Add 2 paired `MemoryRetentionRegression` scripts and source-level deterministic FIFO + cleanup models (92 Studio script sources total). Measurements of GC/heap savings in Roblox Studio remain pending; table rebuilds may add allocation overhead.
+
 ## v4.3.0 — Homogeneous integer codec specialization
 
 - Specialized 2–32-field U16/U32 tuples and packed runs with single bounds preflight and direct bit reads/writes, avoiding per-field type dispatch.
 - Added `TypedTupleFastPathEnabled=true` by default; false uses the previous wire-identical generic mixed fixed-width path. Both settings are interoperable between peers.
 - Exposed six scalar and batched tuple fast-path counters in `GetStats()` / `GetPerformanceStats()`.
-- Added paired 12-field U16/U32 test cases and deterministic bit-parity models at unaligned offsets. The full suite now contains 90 Studio-script sources, including a paired on/off A/B performance probe.
+- Added paired 12-field U16/U32 test cases and deterministic bit-parity models at unaligned offsets. The full suite now contains 92 Studio-script sources, including a paired on/off A/B performance probe and memory retention regression.
 - No benchmark-derived performance claim; BitFrame v1 and Compression codec 230 unchanged.
 
 ## v4.3.0 — Dispatch overload protection and fair outbound processing

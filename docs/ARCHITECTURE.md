@@ -166,6 +166,16 @@ The dispatch queue has bounded backlog and processes messages in Heartbeat work 
 
 ## 8. Memory and telemetry
 
+### New v4.3.0 pool capacity controls
+
+Idle pooled legacy/scratch writers are reset on **release** rather than waiting until the next acquire, avoiding holding packet strings while inactive. BitFrame and legacy reader/writer dictionaries are cleared normally for small packets, but dictionaries exceeding `MaxPooledDictionaryEntries` are replaced with fresh tables on release. The native byte-cost estimator counts distinct new strings per packet and likewise replaces oversized pooled hash tables. Small bursts reuse existing table capacity; large bursts do not permanently inflate idle pools.
+
+Outgoing reliable/unreliable FIFOs can otherwise retain sparse arrays during sustained traffic. `compactQueue` allocates an exact-size table for the active suffix once the consumed prefix grows beyond 1,024 and half the slot range. Upon a complete drain, `clearDrainedQueue` releases an oversized table if the old tail exceeds `QueueRetainMaxSlots`. The operations preserve FIFO and logical message counts, cost occasional CPU/GC, and **do not** change packet codecs or delivery guarantees.
+
+[Memory retention guide](MEMORY_EFFICIENCY.md).
+
+
+
 The module pools BitFrame writers/readers, legacy readers/writers, message objects, argument arrays and batch buffers. Pooled buffer capacity is retained by design, so a high pool hit count is not equivalent to a net memory saving under every workload.
 
 When `PerformanceTelemetryEnabled = true`, bounded sample series track `EncodeMs`, `DecodeMs`, `DispatchMs`, `QueueMs`, `PacketBytes`, `RoundTripMs` and `JitterMs` with nearest-rank p50/p95/p99, min/max and mean. RTT samples are caller-supplied from explicit ping/pong probes; they are not built-in ongoing ICMP ping.
