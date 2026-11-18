@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.2.0-2563eb)
+![Release](https://img.shields.io/badge/release-v4.2.3-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current release candidate: NetStream v4.2.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
+> **Current release candidate: NetStream v4.2.3.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -167,6 +167,16 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## v4.2.1–v4.2.3: Three option updates
+
+**v4.2.1 — Packed-run fast path.** Mixed fixed-width Bool/U8/U16/I16/U32/I32 event runs now encode and decode with one aggregate bit-capacity check for the whole run instead of per-message checks. The wire layout stays identical; `BitFrameFixedSchemaRunWrites` and `BitFrameFixedSchemaRunReads` expose usage.
+
+**v4.2.2 — Revisioned field-delta codec.** `NetStream.CreateDeltaCodec({"Coins", "Wins", "Title"})` returns `:Full(state, revision)`, `:Diff(before, after, baseRevision)`, and `:Apply(previous, previousRevision, frame)`. Bit masks identify changed fields and explicit nil deletions; invalid revisions, malformed masks, extra values and stale snapshots are rejected before any state is mutated. **The caller must send these frames over a reliable ordered Event, track each recipient's revision, and request a full snapshot after a mismatch or reconnect.** The codec is not automatic StateRoute replication. Dynamic envelope costs can outweigh savings for tiny states.
+
+**v4.2.3 — Server-owned interest groups.** `NetStream.CreateInterestGroup()` returns a group with `:Add(player)`, `:Remove(player)`, `:Contains(player)`, `:Count()`, `:Fire(event, ...)`, `:FireUnreliable(event, ...)`, `:SetState(stateRoute, value, unreliable?)`, `:Clear()`, and `:Destroy()`. Only connected members receive enqueued updates, and payloads are validated before the first recipient. Group sends return `(allAccepted, recipientsQueued)`, not delivery receipts. Stats: `InterestGroupFanouts`, `InterestRecipientsQueued`. The caller manages AOI membership; there is no automatic spatial index.
+
+**Safety and verification:** BitFrame v1 and Compression codec 230 are unchanged. Paired Roblox Studio `MixedFixedSchemaRegression`, `DeltaCodecRegression` and `InterestGroupRegression` tests are included. Source CI checks do not prove Studio multiplayer correctness or CPU/network improvements.
+
 ## v4.2.0: mixed fixed-width BitFrame fast path
 
 - **Precompiled field widths:** Schemas with 2–32 Bool/U8/U16/I16/U32/I32 fields use one packet-capacity check and direct bit-buffer reads/writes, including signed integer reconstruction. Existing all-Bool/all-U8 paths remain.
@@ -288,6 +298,9 @@ Existing BitFrame, Boolean, CPU/memory, compression, handshake, batching and p50
 
 | Release | Main change |
 |---|---|
+| **4.2.3** | Interest-group recipient routing, lifecycle and paired regression |
+| **4.2.2** | Revisioned field-delta codec with null deletion, gap detection and paired regression |
+| **4.2.1** | Mixed fixed-schema packed-run batch preflight and counters |
 | **4.2.0** | Mixed fixed-width schema preflight/read/write, 16-field packed runs and paired boundary/FIFO regression |
 | **4.1.1** | Optional exact BitFrame packet-size instrumentation, sent-only bit breakdown, 76 paired/runtime scripts |
 | **4.1.0** | Opt-in low-traffic batching preset and reliable coalesced state duplicate suppression (with cache invalidation) |
