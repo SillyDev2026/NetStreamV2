@@ -1386,6 +1386,12 @@ end
 function Writer:varUInt(value)
 	assert(value >= 0 and value <= MAX_SAFE_INTEGER and isInteger(value), "NetStream varuint expects a non-negative safe integer")
 	local position = self.position
+	if value < 128 then
+		if position >= self.capacity then self:ensure(1) end
+		buffer.writeu8(self.buffer, position, value)
+		self.position = position + 1
+		return
+	end
 	if position + 8 > self.capacity then
 		-- A short varint can fit even when fewer than eight bytes remain.
 		-- Reserving eight bytes used to overgrow buffers (or reject valid
