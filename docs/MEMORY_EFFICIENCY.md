@@ -1,6 +1,17 @@
-# NetStreamV2 v4.3.0 — Memory retention audit
+# Memory Retention and Pool Efficiency
 
-These are source-level changes to reduce the **retained Luau heap after traffic bursts**. They do not alter BitFrame v1, the bundled Compression 2.4.2 codec (230), route IDs, packet ordering, or the encoded wire bytes.
+> **Scope:** Originally audited in v4.3.0; updated for the v4.3.1-compatible `main` branch. Heap savings remain an **engineering expectation** until measured in Roblox Studio under equivalent loads.
+
+These source-level changes aim to reduce the **retained Luau heap after traffic bursts**. They do not alter BitFrame v1, the bundled Compression 2.4.2 codec (230), route IDs, packet ordering, or the encoded wire bytes.
+
+## Latest compatible changes
+
+- The standalone Codec now reuses bounded writer, reader, and argument-array pools for complex payloads. Tiny primitive tuples can bypass writer/reader wrappers entirely.
+- Already-reset pool objects no longer undergo redundant dictionary clearing when checked out again.
+- The native writer performs exact varint-capacity checks, preventing unnecessary buffer growth or rejecting otherwise valid final-byte writes.
+- The latest codec fixes enforce argument-count and output-byte limits even on optimized paths.
+
+Pool-hit counters indicate object reuse; they do **not** report a measured reduction in Roblox memory usage. Read [Packer optimization](PACKER_MEMORY_OPTIMIZATION.md) for same-process CPU results and trade-offs.
 
 ## Findings and changes
 
@@ -39,3 +50,9 @@ These counters indicate that retention controls **executed**, not the number of 
 4. Confirm `GetStats().DroppedReliable`, sent message count, and encoded bytes are unchanged for same workload. A source-audit/parse pass cannot establish network delivery or a measured memory win.
 
 **Verification status:** Deterministic source audit and official Luau parse/compile are CI gates; Roblox Studio Play tests and matched heap-after-GC benchmarks are pending. Avoid percentage memory claims until measured.
+
+## Related documentation
+
+- [Packer optimization](PACKER_MEMORY_OPTIMIZATION.md)
+- [Benchmarking protocol](BENCHMARKING.md)
+- [Project overview](../README.md)

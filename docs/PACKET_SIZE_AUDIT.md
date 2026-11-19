@@ -1,4 +1,6 @@
-# NetStreamV2 v4.1.1 — Binary Packet-Size Audit
+# Binary Packet-Size Audit
+
+> **Historical audit:** Initially performed against v4.1.1. The current v4.3.1-compatible `main` branch still uses BitFrame v1 and codec 230, but this historical report is **not** a fresh byte-for-byte audit of every new code path.
 
 **Scope:** BitFrame v1, bundled Compression 2.4.2 (codec 230). This report is grounded in `Internal.bitFrameWriteOne`, `finishBitFrameBatch`, `BitFrameWriter:adaptiveUInt` and successful `sendBatch` in `Netstream.lua`. It reports **encoded buffers**, not packet profiler's complete remote-call estimates, internet packets, TLS, or Roblox engine replication. This is an audit of source layout; actual performance still requires a Roblox Studio run.
 
@@ -32,7 +34,7 @@ For schema Events, if route ID = 1001, adaptive route ID length = 16 bits.
 
 Byte lengths round each *complete packet*, not every message, up to a whole byte. Packed-run savings require adjacent schema Events using the same route, appropriate configuration, and actual batching. The eight-message example's aggregate metadata is 29 bits (1+2+16+1+8+1), data 128 bits and padding 3 bits.
 
-## User's measured benchmark context
+## Previously reported benchmark context
 
 The supplied stress run was 9,998 U32 logical pings, 369 outgoing batches, 41,468 NetStream encoded outgoing bytes, with 9,998 echoed responses, RTT average 74.861 ms and P95 91.130 ms. Dividing gives ~4.15 encoded bytes per message. The 112-byte example for 27 U32 values is consistent with this aggregate but **does not prove every packet contained exactly 27 messages**. The Packet Profiler screenshot displayed a **14-byte buffer** and an **estimated 28-byte RemoteEvent call**; those are two different accounting scopes. Without a full packet decode, the 14-byte buffer's exact field breakdown remains unknown.
 
@@ -60,3 +62,9 @@ print("Route IDs:", result.Totals.RouteIdBits, "Payload:", result.Totals.Payload
 5. **Keep Roblox profiler scope separate:** Buffer byte length is exact for NetStream output; remote-call total includes other accounted overhead that this module cannot directly remove.
 
 Use the paired `PacketSizeAuditRegression` tests to check these exact encoded-byte examples in Studio, and then compare the real stress test with audit off/on under a matched workload.
+
+## Related documentation
+
+- [Packer and memory optimization](PACKER_MEMORY_OPTIMIZATION.md)
+- [Benchmarking protocol](BENCHMARKING.md)
+- [Project overview](../README.md)

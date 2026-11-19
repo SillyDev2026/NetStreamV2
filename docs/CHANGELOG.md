@@ -1,74 +1,52 @@
-# NetStreamV2 Changelog
+# Changelog
 
-## Packer and memory efficiency hardening (unreleased)
+NetStreamV2 uses versioned release notes for its historical changes and a separate **unreleased** section for compatible improvements merged into `main`. The current code identifies as **v4.3.1**, with **BitFrame v1**, bundled **Compression v2.4.2**, and **codec 230**. A merged change does not imply a separately published release or completed Roblox Studio validation.
 
-- Add byte-compatible direct native encoding/decoding for tiny primitive tuples (up to four fields), avoiding writer/reader wrapper work on common short messages.
-- Remove double-clearing of already-reset pooled writer, reader, BitFrame dictionaries, packed-value arrays, scratch writers and native measurement maps.
+For installation and supported APIs, see the [project README](../README.md). For test methodology, see [Runtime validation](RUNTIME_VALIDATION.md) and [Benchmarking](BENCHMARKING.md).
 
-- Reuse the transport writer/reader pools within public Codec encode/decode
-  instead of creating a new backing buffer and dictionary table for each call.
-  Failures in native decoding return readers to the pool.
-- Reuse bounded argument arrays in Codec.Encode, TryEncode and Analyze.
-- Specialize single-byte native varints, optimize one-byte BitFrame adaptive
-  route IDs, and reserve exact varint lengths near writer capacity.
-- Lock in byte-for-byte packet compatibility, pooled-object behavior and
-  max-size boundary correctness through new executable Luau regression tests.
-- Add identical baseline-vs-optimized packer CPU profiling to CI; no protocol
-  or compression codec revision. No unmeasured memory-size claim.
+## Unreleased — v4.3.1-Compatible Main-Branch Improvements
 
-## RPC error-information disclosure fix (unreleased)
+These improvements are implemented on `main`, without a release-number or wire-format change.
 
-- Stop returning raw server callback exceptions, stack traces, or value-validation
-  error details to remote clients. Return generic RPC error descriptions, log
-  details server-side under debug diagnostics, and expose separate callback/
-  invalid-return counters.
-- Add a Luau regression that deliberately includes a private marker inside
-  a server exception and asserts it is absent from the queued client reply.
+### Security and transaction boundaries
 
-## Standalone Luau stress regression gate (unreleased)
+- Introduced server-only Event/Function route policies (`SetServerPolicy`) with validation and authorization before gameplay callbacks.
+- Added opt-in default-deny routing (`RequireServerPolicies`) and rejection of yielding or throwing security predicates.
+- Added an opt-in switch to reject client-origin State routes, clearing previously accepted untrusted peer-state cache values when enabled.
+- Added player-bound, action-specific, one-time server-issued tickets, bounded per-player ticket storage, expiry, replay suppression, and revocation semantics.
+- Added a bounded in-memory idempotency helper for request keys. **Neither tickets nor idempotency provide durable cross-server exactly-once transactions.**
+- Replaced potentially sensitive server RPC error tracebacks and return-value diagnostics with generic client-facing errors; retained server diagnostic counters.
 
-- Add deterministic 96-peer simulated server load and adversarial tests against
-  actual BitFrame encode/receive/dispatch, legacy fallback, strict command
-  authorization, 512 in-flight RPCs, one-time tickets, deduplication, delta
-  revisions, codec integrity and malformed-packet fuzzing.
-- Run stress as an independent mandatory GitHub Actions job step using the
-  pinned Luau interpreter. Captured times are interpreter workload timings,
-  not Roblox networking benchmarks.
-- Document the reproduction command and remaining Studio multiplayer gaps.
+### Reliability and correctness
 
-## Unreleased v4.3.1 reliability and security bug fixes
+- Fixed StateRoute getters returning `nil` instead of legitimate `false` values.
+- Detached nested tables, mutable buffers, shared references, and cyclic values in peer-state snapshots.
+- Corrected the capacity accounting and revocation behavior of consumed action tickets.
+- Enforced `MaxTableEntries` in standalone codec argument paths, including the tiny-packet path.
+- Enforced `MaxOutgoingBatchBytes` even when a pooled writer has more allocated capacity. Valid encoded packet bytes remain unchanged.
 
-- Clear pre-existing client-origin peer-state cache when `RejectClientStateRoutes(true)` is first enabled, preventing stale untrusted values from remaining visible in `GetState` / `GetStateSnapshot`.
-- Correct the action-ticket cap: completed/used tickets no longer block new outstanding offers until expiration. Keep bounded replay tombstones without ever reissuing an old ticket ID.
-- Correct `ActionGate:Revoke` so it does not falsely report cancellation for an expired or already-redeemed ticket.
-- Make `GetStateSnapshot` a detached deep copy for nested tables and mutable buffer values (with cycle handling), avoiding write-through into the live peer-state cache.
-- Preserve legitimate `false` values from `StateRoute:Get`; formerly the `and ... or nil` idiom incorrectly returned `nil`.
-- Add targeted executable Luau regressions; no transport wire-format, compression codec, or released version changes. Roblox Studio multiplayer and load tests remain outstanding.
+### Packer and memory efficiency
 
+- Added byte-compatible direct native packing and decoding of tiny primitive tuples (up to four values), bypassing temporary writer/reader wrappers.
+- Reused bounded writer, reader, and argument-array pools for complex standalone Codec operations.
+- Eliminated redundant pool resets, specialized one-byte variable integers, and reserved exact lengths at buffer limits.
+- Recorded same-process Luau microbenchmarks: one sample measured approximately **41% faster tiny encoding** and **42% faster tiny decoding**; structured cases were modestly slower. These are **not** Roblox Studio throughput or memory measurements.
+- See [Packer memory optimization](PACKER_MEMORY_OPTIMIZATION.md) for benchmark details and limitations.
 
-The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+### Testing and verification
 
-## v4.3.1 security hardening patch candidate (unreleased)
+- Standardized the entire Markdown documentation set around the current main-branch status, installation, security boundaries, and reproducible test instructions. Added a CI check for local documentation links, titles, and fenced code.
+- Expanded the pinned Luau CI regressions for codec, RPC, security, state, malformed packets, packet-size bounds, and memory-pool behavior.
+- Added a deterministic 96-peer **simulation**, including 512 concurrent yielding RPC callbacks, packet fuzzing, one-use ticket replay tests, and revisioned state transitions.
+- Added reproducible packer microbenchmark and in-process A/B comparison commands. These tests execute production Luau functions but do not simulate live Roblox networking.
+- Studio multiplayer stress, memory/GC measurement, network loss, and durable transaction testing remain outstanding.
 
-- Add opt-in server-only authorization and input validation for Event and Function routes. Guard execution is shared across event scalar/tuple dispatch and RPCs; exceptions and non-true responses fail closed.
-- Add a bounded per-player, in-memory idempotency guard for transaction IDs, including reservations for yielding handlers. This does not constitute durable exactly-once delivery.
-- Expose security rejection/error/duplicate/capacity telemetry, add executable production-code Luau regressions and a server-authoritative usage guide.
-- No wire or compression codec changes; unchanged/unprotected routes retain their existing behavior. Roblox Studio integration and load tests are required before release.
+## v4.3.1 — Runtime Validation and Lifecycle Corrections
 
-## v4.3.1 — Runtime regression gates, strict delta frames and RPC teardown
-## Unreleased security hardening (v4.3.1-compatible)
-
-- Add server-issued, player-bound, one-use action tickets with action binding, TTL, capped per-player storage, revocation and replay rejection; handlers revalidate mutable game conditions.
-- Add optional fail-closed incoming Event/Function policy mode; deny callback authorization predicates that yield or throw.
-- Add optional incoming State route rejection before server peer-state writes on all existing receive paths.
-- Add security stats, runtime regression cases, paired Studio scripts and usage docs. No BitFrame/Compression format changes. Pending Roblox Studio live validation.
-
-
-
-- Reproduce and reject nil-mask wraparound and noncanonical delta value arrays; bound validation work to the schema's maximum 32 values plus one rejected entry.
-- Discard RPC returns after player disconnect or module destruction before allocating an outbound message/queue. In-flight callbacks retain existing completion/accounting semantics.
-- Execute actual codec, delta and RPC production functions in the official Luau interpreter on every CI run. Pin the compiler/interpreter revision for repeatable validation.
-- Standalone tests passed locally; Studio multiplayer, scheduler, transport and competitive performance measurements remain pending. Wire formats and Compression v2.4.2 are unchanged.
+- Rejected oversized delta nil masks before 32-bit conversion and rejected sparse, keyed, or otherwise noncanonical delta values before mutating state.
+- Prevented late RPC callbacks from recreating outgoing queues after player disconnect or module destruction, while preserving callback completion and concurrency-slot accounting.
+- Added production-code Luau regressions for tuple serialization, compression corruption, delta transitions, and yielding RPC lifecycle behavior.
+- Preserved BitFrame v1 and codec 230. These checks do not replace actual Studio transport testing.
 
 ## v4.3.0 — RPC in-flight limits, callback cleanup and vararg optimization
 

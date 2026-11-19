@@ -1,8 +1,22 @@
-# NetStreamV2 Benchmarks and Release Verification
+# Benchmarking and Release Verification
 
-**Baseline:** v4.2.3. **Candidate:** v4.3.0. No benchmark values are pre-filled: results must be measured in Roblox Studio.
+> **Current branch:** v4.3.1-compatible `main`, BitFrame v1, Compression v2.4.2 (codec 230). The historical v4.2.3 → v4.3.0 comparison procedures below remain as references; they are **not** current measured release results.
 
-## Test environment
+This guide distinguishes **standalone Luau microbenchmarks**, which measure code-path CPU time, from **Roblox Studio measurements**, which are required to evaluate real networking, memory, and frame-time behavior. Do not compare libraries using different payloads, player counts, protocol options, or hardware.
+
+## Recommended verification sequence
+
+1. Run `node scripts/source-audit.mjs` and `node scripts/runtime-tests.mjs` in the repository root.
+2. Run `node scripts/runtime-tests.mjs --stress-only` to exercise the deterministic simulated-server workload.
+3. Run `node scripts/runtime-tests.mjs --compare-only` for a same-process native Codec A/B CPU sample, and `--profile-only` for the packer microbenchmarks.
+4. Run the paired `tests/*.server.lua` and `tests/*.client.lua` suites in separate Roblox Studio Play sessions.
+5. Record engine CPU p50/p95/p99, allocation and post-GC heap, encoded bytes, delivery loss, queue pressure, and callback outcomes under equal loads.
+
+Standalone runs can establish **functional regressions and sample CPU costs**, but **not** real Roblox network latency or a production memory reduction. See [Runtime validation](RUNTIME_VALIDATION.md), [Server stress](SERVER_STRESS_VALIDATION.md), and [Packer profiling](PACKER_MEMORY_OPTIMIZATION.md).
+
+
+
+## Roblox Studio test environment
 
 Place the repository's `Netstream.lua` ModuleScript in `ReplicatedStorage` with `Compression.lua` as its `Compression` child. Place one `tests/*.server.lua` file in `ServerScriptService` and its matching `*.client.lua` in `StarterPlayerScripts`. Keep separate Play sessions for each pair.
 
@@ -260,3 +274,9 @@ For real savings, run a matched 60-second Roblox Studio autoclick workload using
 Enable `PacketSizeAuditEnabled = true` before creating routes on the client. Run `tests/PacketSizeAuditRegression.server.lua` and `.client.lua` as a matched Studio Play session. The client checks the precise encoded BitFrame bytes for one U32 route 1001 (7 B), one U16 route 1002 (5 B), one U16 route 1 (4 B), and eight packed U16 route 1002 values (20 B). The last packet's metadata bit categories must sum to UsefulBits, with padding summing to PhysicalBits. The total is 36 encoded bytes across 11 logical messages; this is not an estimate of total Roblox network traffic. Report `NetStream.GetPacketSizeAudit().Totals`, `LastPacket`, `NetStream.GetStats()`, Packet Profiler buffer and remote-call totals, and RTT. Enable auditing only during diagnosis; repeat with instrumentation disabled to characterize application performance.
 
 Read [Packet Size Audit](PACKET_SIZE_AUDIT.md) for derivations and measurement limitations.
+
+## Related documentation
+
+- [Architecture](ARCHITECTURE.md)
+- [Packet-size audit](PACKET_SIZE_AUDIT.md)
+- [Project overview](../README.md)
