@@ -1,15 +1,13 @@
-# NetStreamV2 server security policies (v4.3.1 patch candidate)
+# Server-Side Security Policies and Idempotency
 
-For the stronger server-issued one-use ticket flow, fail-closed callback mode,
-and client State ingress rejection, see [Action-gate security](ACTION_GATE_SECURITY.md).
+> **Status:** Implemented in the v4.3.1-compatible `main` branch. Security policies and action-ticket enforcement are opt-in; verify adoption for each sensitive route.
 
-
-NetStream's client is **untrusted**. This patch adds an opt-in, server-only policy
+NetStream's client is **untrusted**. This implementation adds an opt-in, server-only policy
 gateway for inbound `Event` and `Function` routes, with a bounded idempotency
-helper. It does **not** prevent exploiters from sending remote packets, make
+helper. See [Action-gate security](ACTION_GATE_SECURITY.md) for one-use server-issued tickets, strict route mode, and client State rejection. It does **not** prevent exploiters from sending remote packets, make
 client scripts tamper-proof, or replace game-specific authorization.
 
-## Event policy — all listeners are gated
+## Example: validate a purchase request
 
 ```luau
 -- ServerScriptService. NEVER accept client-reported balances or prices.
@@ -72,14 +70,14 @@ Authorize = function(player, ...): boolean?})`
 - Server-only. The route must be a registered `Event` or `Function` route;
   at least one predicate is required. Predicates must return exactly `true`.
 - Predicates are evaluated in order: Validate, then Authorize.
-- A `false`/non-true result or an exception rejects the request. Exceptions
+- A `false`/non-true result, exception, or yield rejects the request. Exceptions
   are counted in `SecurityPolicyErrors`, not propagated to gameplay callbacks.
 - All listeners on a protected event route share the same policy. Scalar and
   packed event packet paths converge before callback dispatch.
 - RPC callbacks are screened before invocation; a rejected RPC receives the
   generic error `Request rejected`. Event rejections are silently dropped.
-- Existing routes without policies keep their prior behavior; this is an
-  opt-in mechanism, **not** a global deny-by-default firewall.
+- Existing routes without policies keep their prior behavior unless
+  `NetStream.RequireServerPolicies(true)` is enabled. In strict mode, missing policies are denied.
 - A policy is evaluated at callback dispatch time. Keep policy functions
   fast and **non-yielding**, do not mutate authoritative state in them, and
   recheck critical conditions in the transaction handler.
@@ -122,7 +120,6 @@ messages. Detailed errors are logged only through server-side debug logging.
 This change deliberately removes implementation details from RPC errors;
 callers should not parse raw server stack traces.
 
-## Validation boundaries
 ## Peer-state isolation and snapshots
 
 When enabling `NetStream.RejectClientStateRoutes(true)`, any previously
@@ -139,6 +136,8 @@ All peer-state values remain untrusted client data, even when read from a
 copied snapshot. Do not treat snapshots as authoritative gameplay or economy
 state.
 
+## Validation boundaries
+
 
 
 `tests/runtime/security.luau` exercises actual event/scalar dispatch,
@@ -152,3 +151,9 @@ test rapid join/leave and permission changes, and stress concurrent purchases.
 
 Security code cannot protect replicated code and assets. Only server-exclusive
 scripts and server-owned gameplay state should contain authority.
+
+## Related documentation
+
+- [Action tickets and strict route mode](ACTION_GATE_SECURITY.md)
+- [Server stress-test methodology](SERVER_STRESS_VALIDATION.md)
+- [Project overview](../README.md)
