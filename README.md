@@ -167,6 +167,23 @@ sequenceDiagram
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
 
+## Server-side security policy patch (v4.3.1 feature branch)
+
+Opt-in `NetStream.SetServerPolicy(EventOrFunctionRoute, {Validate = ..., Authorize = ...})`
+blocks malformed or unauthorized client requests **before gameplay callbacks**,
+including scalar event and RPC paths. Only server scripts can install policies;
+policy exceptions fail closed. Existing routes remain unchanged until secured.
+
+`NetStream.CreateIdempotencyGuard()` reserves bounded per-player request keys
+before a protected server action, rejecting duplicate keys (including in-flight
+requests) within one server session. It does **not** prevent clients from choosing
+fresh keys or replace server-side purchase validation, durable transactions, or
+physics/combat authority. New security counters appear in `GetStats()`.
+
+See [server security policies, threat model and usage](docs/SECURITY.md).
+Executable Luau security regressions were added; full Studio multiplayer
+verification and release versioning are still pending.
+
 ## v4.3.1: Executable regression gates and lifecycle fixes
 
 - **Delta validation:** Reject nil masks above the schema width before 32-bit conversion; reject sparse or keyed value arrays before allocating the next state. Valid snapshots/deltas retain their existing format.

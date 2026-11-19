@@ -15,6 +15,10 @@ const hooks = `
 NetStream.__test = {
     players = Players,
     register = function(id, callback) functionRoutes[id] = {_callback = callback} end,
+    registerFunction = function(id, route) functionRoutes[id] = route end,
+    registerEvent = function(id, route) eventRoutes[id] = route end,
+    dispatch = dispatchRoute,
+    dispatchScalar = dispatchRouteScalar,
     charge = Internal.chargeIncomingCall,
     run = Internal.runIncomingCall,
 }
@@ -39,7 +43,7 @@ local function loadNetStream()
 end
 `;
 try {
-    for (const suite of ['codec', 'delta', 'rpc']) {
+    for (const suite of ['codec', 'delta', 'rpc', 'security']) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
         const result = spawnSync(process.env.LUAU_BIN || 'luau', [path], {stdio: 'inherit'});
