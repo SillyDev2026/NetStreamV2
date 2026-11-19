@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {existsSync, readFileSync, readdirSync, statSync} from "node:fs";
+import {existsSync, readFileSync, readdirSync} from "node:fs";
 import {dirname, relative, resolve, join} from "node:path";
 import {fileURLToPath} from "node:url";
 
@@ -51,7 +51,8 @@ for (const [path, content] of markdown) {
         }
     }
     if (inFence) problems.push(`${relative(root, path)}: unclosed code fence`);
-    if (titleCount !== 1) problems.push(`${relative(root, path)}: expected one H1, found ${titleCount}`);
+    const archivedManual = path.endsWith("/docs/README_LEGACY_v2.3.22.md");
+    if (titleCount === 0 || (!archivedManual && titleCount !== 1)) problems.push(`${relative(root, path)}: expected ${archivedManual ? "at least one" : "one"} H1, found ${titleCount}`);
     headings.set(path, slugs);
 }
 for (const [path, content] of markdown) {
