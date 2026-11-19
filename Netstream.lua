@@ -8108,10 +8108,10 @@ function StateRoute:Get(player)
 		end
 		assert(typeof(player) == "Instance" and player:IsA("Player"), "State:Get(player) expects a Player on the server")
 		local state = Internal.peekPeerState(player)
-		return state and state[self.Id] or nil
+		return if state then state[self.Id] else nil
 	end
 	local state = Internal.peekPeerState(nil)
-	return state and state[self.Id] or nil
+	return if state then state[self.Id] else nil
 end
 
 local NetStream = {}
