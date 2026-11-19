@@ -2,6 +2,9 @@
 
 ## What changed
 
+- A new **tiny native tuple path** handles up to four nil, boolean, small signed/unsigned integer, or short distinct-string values directly. A tiny encode creates only the final packet buffer; a tiny decode builds the returned value table without allocating a Reader wrapper. Duplicate strings, longer strings, extended numbers, tables and other values automatically fall back to the existing codec. Byte format is identical to the pre-patch native codec.
+- Decoded native messages still follow the original validation rules, including the exact count and trailing-byte checks. Fuzz tests and golden-byte tests cover the new parser.
+
 - `NetStream.Codec._EncodeArgs` now borrows a bounded transport writer instead of allocating a new `Writer` object and 256-byte backing buffer for every call.
 - `NetStream.Codec._DecodeArgs` now borrows a bounded transport reader and returns it even when a malformed native packet throws. This avoids allocating fresh reader metadata and string-dictionary tables for routine decoding and rejected packets.
 - `Codec.Encode`, `Codec.TryEncode`, and `Codec.Analyze` reuse the existing bounded argument-array pool. For successful calls, temporary arrays are returned immediately. Unexpected encoding errors discard the partially written writer for garbage collection rather than recycling potentially inconsistent state.
