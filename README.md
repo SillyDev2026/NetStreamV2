@@ -13,6 +13,22 @@
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
 
+## Codec memory and packer improvements (unreleased)
+
+The native Codec packs tiny (up to four) primitive arguments directly into the
+final output buffer and parses matching packets without constructing temporary
+writer/reader wrappers. Larger or dictionary-based payloads use existing
+bounded pools. The standalone `NetStream.Codec` now reuses bounded writer, reader and
+argument-array pools, cutting temporary object churn on repeated encode/decode
+calls. Small native varints and short BitFrame route IDs use a faster packing
+path; exact varint-length reservations avoid unnecessary capacity expansion.
+Packets remain byte-compatible with BitFrame v1 and codec 230.
+
+See [packer memory optimization and baseline profiling](docs/PACKER_MEMORY_OPTIMIZATION.md).
+Run `node scripts/runtime-tests.mjs --profile-only` for source-level timing and `node scripts/runtime-tests.mjs --compare-only` for same-process original-versus-pooled Codec timings. These Luau
+microbenchmarks are indicative; CI also runs the new pool, malformed-input,
+and wire-format regressions. Real Roblox Studio heap/CPU profiling remains pending.
+
 ## Quick start
 
 Put the repository code into **ModuleScripts** in Roblox Studio:

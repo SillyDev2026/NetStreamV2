@@ -1,5 +1,21 @@
 # NetStreamV2 Changelog
 
+## Packer and memory efficiency hardening (unreleased)
+
+- Add byte-compatible direct native encoding/decoding for tiny primitive tuples (up to four fields), avoiding writer/reader wrapper work on common short messages.
+- Remove double-clearing of already-reset pooled writer, reader, BitFrame dictionaries, packed-value arrays, scratch writers and native measurement maps.
+
+- Reuse the transport writer/reader pools within public Codec encode/decode
+  instead of creating a new backing buffer and dictionary table for each call.
+  Failures in native decoding return readers to the pool.
+- Reuse bounded argument arrays in Codec.Encode, TryEncode and Analyze.
+- Specialize single-byte native varints, optimize one-byte BitFrame adaptive
+  route IDs, and reserve exact varint lengths near writer capacity.
+- Lock in byte-for-byte packet compatibility, pooled-object behavior and
+  max-size boundary correctness through new executable Luau regression tests.
+- Add identical baseline-vs-optimized packer CPU profiling to CI; no protocol
+  or compression codec revision. No unmeasured memory-size claim.
+
 ## RPC error-information disclosure fix (unreleased)
 
 - Stop returning raw server callback exceptions, stack traces, or value-validation

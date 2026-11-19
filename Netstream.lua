@@ -514,6 +514,8 @@ local Stats = {
 	MessagePoolHits = 0,
 	ArgsPoolHits = 0,
 	WriterPoolHits = 0,
+	CodecTinyFastEncodes = 0,
+	CodecTinyFastDecodes = 0,
 	ReaderPoolHits = 0,
 	RateLimitedBatches = 0,
 	GlobalRateLimitedBatches = 0,
@@ -1386,8 +1388,17 @@ end
 function Writer:varUInt(value)
 	assert(value >= 0 and value <= MAX_SAFE_INTEGER and isInteger(value), "NetStream varuint expects a non-negative safe integer")
 	local position = self.position
+	if value < 128 then
+		if position >= self.capacity then self:ensure(1) end
+		buffer.writeu8(self.buffer, position, value)
+		self.position = position + 1
+		return
+	end
 	if position + 8 > self.capacity then
-		self:ensure(8)
+		-- A short varint can fit even when fewer than eight bytes remain.
+		-- Reserving eight bytes used to overgrow buffers (or reject valid
+		-- packets near MaxOutgoingBatchBytes).
+		self:ensure(Internal.varUIntByteLength(value))
 	end
 	local target = self.buffer
 	repeat
@@ -1425,7 +1436,7 @@ function Internal.acquireScratchWriter(minCapacity)
 	if writer then
 		scratchWriterPool[#scratchWriterPool] = nil
 		writer.maxBytes = Config.MaxOutgoingBatchBytes
-		writer:reset()
+		-- Returned scratch writers are reset before entering the pool.
 		Stats.ScratchWriterPoolHits += 1
 	else
 		writer = Writer.new(math.max(128, minCapacity or 128), Config.MaxOutgoingBatchBytes)
@@ -1609,8 +1620,7 @@ function Internal.acquireBitFrameWriter()
 	if writer then
 		pool[#pool] = nil
 		writer.bitPosition = 0
-		table.clear(writer.strings)
-		table.clear(writer.stringToIndex)
+		-- releaseBitFrameWriter cleared its dictionaries before pooling.
 		Stats.BitFrameWriterPoolHits += 1
 		return writer
 	end
@@ -1659,7 +1669,7 @@ end
 function Internal.BitFrameWriter:adaptiveUInt(value)
 	local bitPosition = self.bitPosition
 	if type(value) == "number" and value >= 0 and value < 128 and value % 1 == 0 then
-		self:ensureBits(8)
+		if bitPosition + 8 > self.capacity * 8 or bitPosition + 8 > Config.BitFrameMaxBytes * 8 then self:ensureBits(8) end
 		buffer.writebits(self.buffer, bitPosition, 8, value)
 		self.bitPosition = bitPosition + 8
 		return
@@ -3086,8 +3096,7 @@ function Internal.acquireNativeMeasureState(writer)
 	else
 		state = { strings = {}, seen = {}, nextStringIndex = 0, stringEntries = 0 }
 	end
-	table.clear(state.strings)
-	table.clear(state.seen)
+	-- releaseNativeMeasureState clears both maps before reuse.
 	state.nextStringIndex = writer and #writer.strings or 0
 	state.stringEntries = 0
 	return state
@@ -3632,7 +3641,7 @@ local function acquirePackedValues(capacity)
 	local values = packedValuePool[#packedValuePool]
 	if values then
 		packedValuePool[#packedValuePool] = nil
-		table.clear(values)
+		-- releasePackedValues cleared the array before it was pooled.
 		Stats.PackedValuePoolHits += 1
 		return values
 	end
@@ -4734,7 +4743,7 @@ local function acquireWriter()
 	if writer then
 		writerPool[#writerPool] = nil
 		writer.maxBytes = Config.MaxOutgoingBatchBytes
-		writer:reset()
+		-- The release path already reset position, route state and dictionaries.
 		Stats.WriterPoolHits += 1
 		return writer
 	end
@@ -6129,7 +6138,14 @@ local function acquireReader(data)
 	local reader = readerPool[#readerPool]
 	if reader then
 		readerPool[#readerPool] = nil
-		reader:reset(data)
+		-- releaseReader cleared strings and detached its previous packet.
+		-- Rebinding does not need a second dictionary clear.
+		reader.buffer = data
+		reader.position = 0
+		reader.length = buffer.len(data)
+		reader.lastEventRoute = nil
+		reader.lastCallRoute = nil
+		reader.lastStateRoute = nil
 		Stats.ReaderPoolHits += 1
 		return reader
 	end
@@ -9918,18 +9934,114 @@ end
 
 local Codec = {}
 
+-- Direct native tiny-tuple codec: no Writer/Reader object or scratch buffer.
+-- Only canonical, single-byte primitive descriptors are emitted; all other
+-- payloads use the existing wire-compatible dynamic codec.
+local function tryEncodeTinyCodec(args)
+	local count = args.n
+	if count < 0 or count > 4 then return nil end
+	local bytes = 2 -- native mode and one-byte argument count
+	for i = 1, count do
+		local value = args[i]
+		local kind = type(value)
+		if value == nil or kind == "boolean" then
+			bytes += 1
+		elseif kind == "number" then
+			if not isInteger(value) or value < -7 or value > 14 then return nil end
+			bytes += 1
+		elseif kind == "string" then
+			local length = #value
+			if length >= 15 then return nil end
+			for j = 1, i - 1 do
+				if args[j] == value then return nil end -- dictionary reference encoding
+			end
+			bytes += length + 1
+		else
+			return nil
+		end
+	end
+	if Config.CompressionEnabled and Internal.shouldAttemptCompression(args) then return nil end
+	local output = buffer.create(bytes)
+	buffer.writeu8(output, 0, 0)
+	buffer.writeu8(output, 1, count)
+	local position = 2
+	for i = 1, count do
+		local value = args[i]
+		local kind = type(value)
+		if value == nil then
+			buffer.writeu8(output, position, TYPE_NIL * 16)
+			position += 1
+		elseif kind == "boolean" then
+			buffer.writeu8(output, position, TYPE_BOOL * 16 + (if value then 1 else 0))
+			position += 1
+		elseif kind == "number" then
+			buffer.writeu8(output, position, if value >= 0 then TYPE_UINT * 16 + value else TYPE_SINT * 16 - value * 2 - 1)
+			position += 1
+		else
+			local length = #value
+			buffer.writeu8(output, position, TYPE_STRING * 16 + length)
+			position += 1
+			if length > 0 then buffer.writestring(output, position, value); position += length end
+		end
+	end
+	Stats.CodecTinyFastEncodes += 1
+	return output
+end
+
+local function tryDecodeTinyCodec(data, length)
+	if length < 2 or length > 64 then return nil end
+	local count = buffer.readu8(data, 1)
+	if count > 4 then return nil end
+	local args = table.create(count)
+	local position = 2
+	for i = 1, count do
+		if position >= length then return nil end
+		local descriptor = buffer.readu8(data, position)
+		position += 1
+		local kind = math.floor(descriptor / 16)
+		local meta = descriptor % 16
+		if kind == TYPE_NIL and meta == 0 then
+			args[i] = nil
+		elseif kind == TYPE_BOOL and meta <= 1 then
+			args[i] = meta == 1
+		elseif kind == TYPE_UINT and meta < 15 then
+			args[i] = meta
+		elseif kind == TYPE_SINT and meta < 15 and meta % 2 == 1 then
+			args[i] = -((meta + 1) / 2)
+		elseif kind == TYPE_STRING and meta < 15 then
+			if position + meta > length then return nil end
+			args[i] = if meta == 0 then "" else buffer.readstring(data, position, meta)
+			position += meta
+		else
+			return nil
+		end
+	end
+	if position ~= length then return nil end
+	args.n = count
+	Stats.CodecTinyFastDecodes += 1
+	return args
+end
+
 -- Codec mode 0 is NetStream's native value codec and supports every value type
 -- accepted by validateArgs (Vector3/CFrame/Color3/buffer/etc). Mode 1 is the
 -- structural Compression v2.3 packet and is selected only when it round-trips
 -- the argument table and produces a smaller physical payload.
 function Codec._EncodeArgs(args)
-	local writer = Writer.new(256, Config.MaxOutgoingBatchBytes)
+	local tiny = tryEncodeTinyCodec(args)
+	if tiny then return tiny, false, nil end
+	-- Reuse the same bounded writer pool as the transport packer, while
+	-- ensuring the final packet owns an independent buffer.
+	local writer = acquireWriter()
 	writer:u8(0)
 	writer:varUInt(args.n)
 	for index = 1, args.n do
 		writeValue(writer, args[index], 0, nil)
 	end
 	local nativeData = writer:finish()
+	-- Keep the frequent successful encode path allocation-light. On an
+	-- exceptional write failure the partially used writer is left for GC,
+	-- instead of recycling a possibly inconsistent object.
+	releaseWriter(writer)
 
 	if Config.CompressionEnabled and Internal.shouldAttemptCompression(args) then
 		local ok, packet = pcall(Compression.Compress, args, Internal.compressionOptions())
@@ -9956,22 +10068,35 @@ function Codec._DecodeArgs(data)
 	end
 
 	local mode = buffer.readu8(data, 0)
+	if mode == 0 then
+		local tiny = tryDecodeTinyCodec(data, length)
+		if tiny then
+			validateArgs(tiny)
+			return tiny
+		end
+	end
 	local args
 	if mode == 0 then
-		local reader = Reader.new(data)
-		reader.position = 1
-		local count = reader:varUInt()
-		if count > Config.MaxTableEntries then
-			error("NetStream.Codec.Decode argument count exceeds MaxTableEntries", 0)
-		end
-		args = table.create(count)
-		args.n = count
-		for index = 1, count do
-			args[index] = readValue(reader, 0)
-		end
-		if reader.position ~= reader.length then
-			error("NetStream.Codec.Decode trailing bytes", 0)
-		end
+		local reader = acquireReader(data)
+		local ok, decodedOrError = pcall(function()
+			reader.position = 1
+			local count = reader:varUInt()
+			if count > Config.MaxTableEntries then
+				error("NetStream.Codec.Decode argument count exceeds MaxTableEntries", 0)
+			end
+			local decoded = table.create(count)
+			decoded.n = count
+			for index = 1, count do
+				decoded[index] = readValue(reader, 0)
+			end
+			if reader.position ~= reader.length then
+				error("NetStream.Codec.Decode trailing bytes", 0)
+			end
+			return decoded
+		end)
+		releaseReader(reader)
+		if not ok then error(decodedOrError, 0) end
+		args = decodedOrError
 	elseif mode == 1 then
 		local payloadBytes = length - 1
 		if payloadBytes <= 0 then
@@ -9992,9 +10117,10 @@ function Codec._DecodeArgs(data)
 end
 
 function Codec.Encode(...)
-	local args = table.pack(...)
+	local args = makeArgs(...)
 	validateArgs(args)
 	local data = Codec._EncodeArgs(args)
+	releaseArgs(args)
 	return data
 end
 
@@ -10004,12 +10130,12 @@ function Codec.Decode(data)
 end
 
 function Codec.TryEncode(...)
-	local args = table.pack(...)
+	local args = makeArgs(...)
 	local ok, dataOrError = pcall(function()
 		validateArgs(args)
-		local data = Codec._EncodeArgs(args)
-		return data
+		return Codec._EncodeArgs(args)
 	end)
+	releaseArgs(args)
 	if ok then return true, dataOrError, nil end
 	return false, nil, tostring(dataOrError)
 end
@@ -10025,9 +10151,10 @@ function Codec.ByteLength(...)
 end
 
 function Codec.Analyze(...)
-	local args = table.pack(...)
+	local args = makeArgs(...)
 	validateArgs(args)
 	local data, compressed, report = Codec._EncodeArgs(args)
+	releaseArgs(args)
 	return {
 		EncodedBytes = buffer.len(data),
 		Compressed = compressed,
