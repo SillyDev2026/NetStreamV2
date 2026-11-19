@@ -20,7 +20,7 @@ Set `LUAU_BIN` to the official Luau interpreter path when necessary. The `--prof
 
 ## Harness design
 
-The runner embeds the complete Compression module and Netstream and Netstream module bodies inside temporary Luau functions. It supplies minimal service/Random/task doubles and inserts private test access immediately before Netstream's final return. The published ModuleScript exposes no test hooks. Temporary files are removed after execution. Unimplemented scheduler calls fail explicitly; deferred flush scheduling is suppressed. Tests do not start the remote transport.
+The runner embeds the complete `Compression.lua` and `Netstream.lua` module bodies inside temporary Luau functions. It supplies minimal service/Random/task doubles and inserts private test access immediately before Netstream's final return. The published ModuleScript exposes no test hooks. Temporary files are removed after execution. Unimplemented scheduler calls fail explicitly; deferred flush scheduling is suppressed. Tests do not start the remote transport.
 
 | Suite | Executed behavior |
 |---|---|
