@@ -260,6 +260,23 @@ end)
 assert(malformedRejected > FUZZ_CASES * 0.95, "Unexpectedly many random payloads were accepted")
 print("PASS fuzz: rejected=" .. malformedRejected .. " out of " .. FUZZ_CASES .. " random buffers")
 
+local incomingBefore = ingressCount
+local fuzzDecodeBefore = net.GetStats().DecodeErrors
+benchmark("BitFrame network fuzz", 2400, function()
+    for iteration = 1, 2400 do
+        local packetSize = 1 + iteration % 36
+        local randomPacket = buffer.create(packetSize)
+        for byte = 0, packetSize - 1 do buffer.writeu8(randomPacket, byte, nextByte()) end
+        hooks.receivePacket(players[(iteration - 1) % PEERS + 1], randomPacket)
+    end
+    return 2400
+end)
+while net.GetStats().DispatchBacklog > 0 do hooks.drainDispatch() end
+assert(ingressCount == incomingBefore, "Random BitFrame packets invoked authorized gameplay")
+assert(net.GetStats().DecodeErrors > fuzzDecodeBefore, "Malformed inbound BitFrame packets were not rejected")
+assert(net.GetStats().DispatchBacklog == 0, "Malformed packets leaked callback backlog")
+print("PASS network fuzz: inbound BitFrame decoder rejected malformed payloads without dispatching gameplay")
+
 local legacy = loadNetStream()
 legacy.Configure({BitFrameEnabled = false, CompressionEnabled = false, HandshakeEnabled = false})
 local legacyHooks = legacy.__test
