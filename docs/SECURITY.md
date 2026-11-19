@@ -107,6 +107,21 @@ Authorize = function(player, ...): boolean?})`
   ingress limits as additional layers. Event drops under rate/dispatch pressure
   still require app-level acknowledgement/retry decisions.
 
+## RPC failure privacy
+
+A callback that throws can contain private server script paths, server
+internals or credentials in its error message. **Never** return the raw
+`debug.traceback` or value-validation diagnostics to untrusted clients.
+Incoming server RPCs now return generic `Remote callback failed`,
+`Remote callback unavailable`, or `Remote callback returned invalid data`
+messages. Detailed errors are logged only through server-side debug logging.
+`GetRPCStats()` and `GetStats()` expose `CallbackErrors` /
+`IncomingCallCallbackErrors` and `InvalidResults` /
+`IncomingCallInvalidResults` for operator diagnostics.
+
+This change deliberately removes implementation details from RPC errors;
+callers should not parse raw server stack traces.
+
 ## Validation boundaries
 ## Peer-state isolation and snapshots
 
