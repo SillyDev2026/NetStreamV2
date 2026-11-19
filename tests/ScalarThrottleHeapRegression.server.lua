@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, TransportFastFlushEnabled = false})
 local T = NetStream.Types
 local Limited = NetStream.Event("__NSScalarThrottleHeap", {Id = 36101, Schema = {T.U16}, MaxPerSecond = 1, Burst = 1, Compression = false})
@@ -15,7 +15,7 @@ Limited:Connect(function(player, value)
         local stats = NetStream.GetStats()
         assert(stats.DecodeErrors == 0, "Dropped scalar triggered a decoder or releaseArgs error")
         assert(Ack:FireClientNow(player, 1), "Scalar route throttle ACK failed")
-        print("NetStream 4.3.0 route scalar throttle PASS", stats.RouteRateLimited)
+        print("NetStream 4.3.1 route scalar throttle PASS", stats.RouteRateLimited)
     end)
 end)
-print("NetStream 4.3.0 route scalar throttle server ready")
+print("NetStream 4.3.1 route scalar throttle server ready")

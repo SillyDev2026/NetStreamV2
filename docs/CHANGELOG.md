@@ -1,6 +1,13 @@
 # NetStreamV2 Changelog
 
-The current release candidate is **v4.3.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.3.1 — Runtime regression gates, strict delta frames and RPC teardown
+
+- Reproduce and reject nil-mask wraparound and noncanonical delta value arrays; bound validation work to the schema's maximum 32 values plus one rejected entry.
+- Discard RPC returns after player disconnect or module destruction before allocating an outbound message/queue. In-flight callbacks retain existing completion/accounting semantics.
+- Execute actual codec, delta and RPC production functions in the official Luau interpreter on every CI run. Pin the compiler/interpreter revision for repeatable validation.
+- Standalone tests passed locally; Studio multiplayer, scheduler, transport and competitive performance measurements remain pending. Wire formats and Compression v2.4.2 are unchanged.
 
 ## v4.3.0 — RPC in-flight limits, callback cleanup and vararg optimization
 

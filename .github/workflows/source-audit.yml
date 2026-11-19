@@ -20,14 +20,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Build official Luau parser
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Build official Luau compiler and interpreter
         run: |
-          git clone --depth 1 https://github.com/luau-lang/luau.git /tmp/luau-src
+          git init /tmp/luau-src
+          git -C /tmp/luau-src remote add origin https://github.com/luau-lang/luau.git
+          git -C /tmp/luau-src fetch --depth 1 origin c87565b8b0db5d5d5bfd2b8b00ad6573e5d06d9f
+          git -C /tmp/luau-src checkout --detach FETCH_HEAD
           cmake -S /tmp/luau-src -B /tmp/luau-build -DCMAKE_BUILD_TYPE=Release -DLUAU_BUILD_TESTS=OFF
-          cmake --build /tmp/luau-build --target Luau.Compile.CLI --parallel 2
+          cmake --build /tmp/luau-build --target Luau.Compile.CLI Luau.Repl.CLI --parallel 2
       - name: Parse NetStream and test Luau scripts
         run: |
-          find . -type f -name '*.lua' -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile --only-parse > /dev/null
+          find . -type f \( -name '*.lua' -o -name '*.luau' \) -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile --only-parse > /dev/null
       - name: Compile every Luau source and regression script
         run: |
-          find . -type f -name '*.lua' -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile > /dev/null
+          find . -type f \( -name '*.lua' -o -name '*.luau' \) -print0 | xargs -0 -n 1 /tmp/luau-build/luau-compile > /dev/null
+      - name: Execute production Luau runtime regressions
+        env:
+          LUAU_BIN: /tmp/luau-build/luau
+        run: node scripts/runtime-tests.mjs

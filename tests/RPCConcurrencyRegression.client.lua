@@ -2,7 +2,7 @@
 -- StarterPlayerScripts; pair with RPCConcurrencyRegression.server.lua in a fresh Studio Play session.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, MaxConcurrentIncomingCalls = 8, MaxConcurrentIncomingCallsPerPlayer = 2, MaxIncomingCallsPerSecond = 1000, MaxGlobalIncomingCallsPerSecond = 2000, CallTimeout = 3, TransportFastFlushEnabled = true})
 local T = NetStream.Types
 local Busy = NetStream.Function("__NSRPCBusy43", {Id = 44370, Schema = {T.U16}, Compression = false})
@@ -17,7 +17,7 @@ Ack:Connect(function(ack)
         local ok, value = pcall(function() return Busy:InvokeServerNow(65000) end)
         assert(ok and value == 65000, "RPC did not recover after sustained in-flight rejection")
         finished = true
-        print("NetStream v4.3.0 RPC concurrency CLIENT PASS")
+        print("NetStream v4.3.1 RPC concurrency CLIENT PASS")
     end)
 end)
 task.wait(0.5)
