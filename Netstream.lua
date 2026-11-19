@@ -1387,7 +1387,10 @@ function Writer:varUInt(value)
 	assert(value >= 0 and value <= MAX_SAFE_INTEGER and isInteger(value), "NetStream varuint expects a non-negative safe integer")
 	local position = self.position
 	if position + 8 > self.capacity then
-		self:ensure(8)
+		-- A short varint can fit even when fewer than eight bytes remain.
+		-- Reserving eight bytes used to overgrow buffers (or reject valid
+		-- packets near MaxOutgoingBatchBytes).
+		self:ensure(Internal.varUIntByteLength(value))
 	end
 	local target = self.buffer
 	repeat
@@ -1659,7 +1662,7 @@ end
 function Internal.BitFrameWriter:adaptiveUInt(value)
 	local bitPosition = self.bitPosition
 	if type(value) == "number" and value >= 0 and value < 128 and value % 1 == 0 then
-		self:ensureBits(8)
+		if bitPosition + 8 > self.capacity * 8 or bitPosition + 8 > Config.BitFrameMaxBytes * 8 then self:ensureBits(8) end
 		buffer.writebits(self.buffer, bitPosition, 8, value)
 		self.bitPosition = bitPosition + 8
 		return
@@ -9923,13 +9926,20 @@ local Codec = {}
 -- structural Compression v2.3 packet and is selected only when it round-trips
 -- the argument table and produces a smaller physical payload.
 function Codec._EncodeArgs(args)
-	local writer = Writer.new(256, Config.MaxOutgoingBatchBytes)
-	writer:u8(0)
-	writer:varUInt(args.n)
-	for index = 1, args.n do
-		writeValue(writer, args[index], 0, nil)
-	end
-	local nativeData = writer:finish()
+	-- Reuse the same bounded writer pool as the transport packer, while
+	-- ensuring the final packet owns an independent buffer.
+	local writer = acquireWriter()
+	local ok, nativeOrError = pcall(function()
+		writer:u8(0)
+		writer:varUInt(args.n)
+		for index = 1, args.n do
+			writeValue(writer, args[index], 0, nil)
+		end
+		return writer:finish()
+	end)
+	releaseWriter(writer)
+	if not ok then error(nativeOrError, 0) end
+	local nativeData = nativeOrError
 
 	if Config.CompressionEnabled and Internal.shouldAttemptCompression(args) then
 		local ok, packet = pcall(Compression.Compress, args, Internal.compressionOptions())
@@ -9958,20 +9968,26 @@ function Codec._DecodeArgs(data)
 	local mode = buffer.readu8(data, 0)
 	local args
 	if mode == 0 then
-		local reader = Reader.new(data)
-		reader.position = 1
-		local count = reader:varUInt()
-		if count > Config.MaxTableEntries then
-			error("NetStream.Codec.Decode argument count exceeds MaxTableEntries", 0)
-		end
-		args = table.create(count)
-		args.n = count
-		for index = 1, count do
-			args[index] = readValue(reader, 0)
-		end
-		if reader.position ~= reader.length then
-			error("NetStream.Codec.Decode trailing bytes", 0)
-		end
+		local reader = acquireReader(data)
+		local ok, decodedOrError = pcall(function()
+			reader.position = 1
+			local count = reader:varUInt()
+			if count > Config.MaxTableEntries then
+				error("NetStream.Codec.Decode argument count exceeds MaxTableEntries", 0)
+			end
+			local decoded = table.create(count)
+			decoded.n = count
+			for index = 1, count do
+				decoded[index] = readValue(reader, 0)
+			end
+			if reader.position ~= reader.length then
+				error("NetStream.Codec.Decode trailing bytes", 0)
+			end
+			return decoded
+		end)
+		releaseReader(reader)
+		if not ok then error(decodedOrError, 0) end
+		args = decodedOrError
 	elseif mode == 1 then
 		local payloadBytes = length - 1
 		if payloadBytes <= 0 then
