@@ -22,6 +22,8 @@ The standard runner without --stress-only still runs the existing codec, delta, 
 | Delta replication | 96 x 180 = 17,280 transitions | Revisions increase and stale frames are rejected |
 | Codec round trips | 3,000 structured payloads | False, interior nil, buffers, tables round-trip |
 | Malformed fuzz | 3,000 deterministic raw buffers | TryDecode cannot throw to callers; invalid input generally rejected |
+| Inbound BitFrame fuzz | 2,400 random raw wire buffers | Decoder rejects malformed payloads and never dispatches gameplay |
+| Legacy fallback | 64 peers x 24 = 1,536 legacy packets | Actual fallback encoder/decoder respects authorization policy |
 
 These are simulated Luau server operations, **not 96 real Roblox clients**. Reported durations are Luau interpreter CPU timings on CI hardware, not ping, network throughput or engine frame times. There are no arbitrary latency assertions.
 
