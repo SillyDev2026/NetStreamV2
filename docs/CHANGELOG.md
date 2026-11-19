@@ -1,5 +1,15 @@
 # NetStreamV2 Changelog
 
+## Unreleased v4.3.1 reliability and security bug fixes
+
+- Clear pre-existing client-origin peer-state cache when `RejectClientStateRoutes(true)` is first enabled, preventing stale untrusted values from remaining visible in `GetState` / `GetStateSnapshot`.
+- Correct the action-ticket cap: completed/used tickets no longer block new outstanding offers until expiration. Keep bounded replay tombstones without ever reissuing an old ticket ID.
+- Correct `ActionGate:Revoke` so it does not falsely report cancellation for an expired or already-redeemed ticket.
+- Make `GetStateSnapshot` a detached deep copy for nested tables and mutable buffer values (with cycle handling), avoiding write-through into the live peer-state cache.
+- Preserve legitimate `false` values from `StateRoute:Get`; formerly the `and ... or nil` idiom incorrectly returned `nil`.
+- Add targeted executable Luau regressions; no transport wire-format, compression codec, or released version changes. Roblox Studio multiplayer and load tests remain outstanding.
+
+
 The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
 
 ## v4.3.1 security hardening patch candidate (unreleased)
