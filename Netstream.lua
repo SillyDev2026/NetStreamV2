@@ -9929,17 +9929,16 @@ function Codec._EncodeArgs(args)
 	-- Reuse the same bounded writer pool as the transport packer, while
 	-- ensuring the final packet owns an independent buffer.
 	local writer = acquireWriter()
-	local ok, nativeOrError = pcall(function()
-		writer:u8(0)
-		writer:varUInt(args.n)
-		for index = 1, args.n do
-			writeValue(writer, args[index], 0, nil)
-		end
-		return writer:finish()
-	end)
+	writer:u8(0)
+	writer:varUInt(args.n)
+	for index = 1, args.n do
+		writeValue(writer, args[index], 0, nil)
+	end
+	local nativeData = writer:finish()
+	-- Keep the frequent successful encode path allocation-light. On an
+	-- exceptional write failure the partially used writer is left for GC,
+	-- instead of recycling a possibly inconsistent object.
 	releaseWriter(writer)
-	if not ok then error(nativeOrError, 0) end
-	local nativeData = nativeOrError
 
 	if Config.CompressionEnabled and Internal.shouldAttemptCompression(args) then
 		local ok, packet = pcall(Compression.Compress, args, Internal.compressionOptions())
