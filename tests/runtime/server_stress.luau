@@ -117,6 +117,41 @@ assert(net.GetStats().BitFrameAtomicRejectedPackets == baselineAtomicDrops + 1, 
 assert(net.GetStats().DispatchBacklog == 0, "BitFrame callback backlog leaked")
 print("PASS wire: " .. validPackets .. " valid accepted, " .. maliciousPackets .. " policy-denied, malformed batch rolled back")
 
+local rpcRuns = 0
+local rpc = {Id = 600004, _callback = function(player, value)
+    assert(active[player] ~= nil, "Unknown RPC player")
+    coroutine.yield()
+    rpcRuns += 1
+    return value + 1
+end}
+hooks.registerFunction(rpc.Id, rpc)
+net.SetServerPolicy(rpc, {
+    Validate = function(_, value) return type(value) == "number" and value > 0 end,
+    Authorize = function(player) return active[player] ~= nil end,
+})
+local pendingRPCs = table.create(512)
+benchmark("concurrent RPC admission", 512, function()
+    for index = 1, 512 do
+        local player = players[(index - 1) % PEERS + 1]
+        assert(hooks.charge(player), "RPC slot denied before configured cap")
+        local thread = coroutine.create(hooks.run)
+        local ok, err = coroutine.resume(thread, player, rpc.Id, index, table.pack(index))
+        assert(ok, tostring(err))
+        assert(coroutine.status(thread) == "suspended", "Expected an in-flight RPC")
+        pendingRPCs[index] = thread
+    end
+    assert(net.GetRPCStats().Active == 512, "In-flight RPC count incorrect at saturation")
+    assert(not hooks.charge(players[1]), "Global RPC concurrency cap bypassed")
+    for _, thread in pendingRPCs do
+        local ok, err = coroutine.resume(thread)
+        assert(ok and coroutine.status(thread) == "dead", tostring(err))
+    end
+    assert(net.GetRPCStats().Active == 0 and rpcRuns == 512, "RPC completion leaked capacity or lost handler results")
+    assert(net.GetRPCStats().ExecutionErrors == 0, "Successful RPCs reported callback errors")
+    return rpcRuns
+end)
+print("PASS RPC: 512 in-flight callbacks saturated global cap and returned all slots")
+
 local gate = net.CreateActionGate({TTLSeconds = 120, MaxTicketsPerPlayer = 16})
 local ticketSuccess, ticketReplays, ticketWrongPlayer = 0, 0, 0
 benchmark("action ticket cycles", PEERS * TICKETS_PER_PEER, function()
