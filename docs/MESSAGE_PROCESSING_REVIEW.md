@@ -1,8 +1,12 @@
-# NetStreamV2 v4.3.0 — Message-processing review
+# Message Processing: Design Review
+
+> **Historical scope:** v4.3.0 message-processing decisions. This document records design references and engineering rationale; it is **not** an independently verified ranking of networking libraries or an assertion that all competing implementations behave identically today.
+
+The current branch also contains v4.3.1-compatible security and packer improvements. See the [changelog](CHANGELOG.md) for subsequent changes.
 
 ## Other Roblox networking projects reviewed
 
-The following are **public feature references**, not code sources copied into NetStream:
+The following are **publicly documented design references**, not code copied into NetStreamV2. Verify current upstream behavior before relying on comparative claims:
 
 | Library | Useful published design | NetStream existing implementation | v4.3.0 decision |
 |---|---|---|---|
@@ -38,3 +42,9 @@ BlinkBlox and Zap illustrate what a generated schema-specific encoder can achiev
 - Acknowledged and retriable per-recipient state delta baselines
 
 This is a targeted performance/safety patch rather than a rewrite or a claim of world-leading speed.
+
+## Related documentation
+
+- [Architecture](ARCHITECTURE.md)
+- [Roadmap](NEXT_OPTIONS.md)
+- [Benchmark methodology](BENCHMARKING.md)
