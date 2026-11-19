@@ -80,6 +80,17 @@ BuyUpgrade:FireServer(7)
 
 This purchase example is instructional, not a real purchasing system. `FireServer` accepting a message **does not** mean the server approved it. Gameplay authorization must be handled server-side.
 
+## Automated Luau server stress testing
+
+The CI suite runs a deterministic standalone Luau server simulator over the
+actual NetStream/Compression source, including 96 simulated clients, inbound
+BitFrame decode/dispatch, legacy fallback, RPC saturation, one-use ticket
+replays, revisioned delta replication and malformed-packet fuzzing. Reproduce
+it with `node scripts/runtime-tests.mjs --stress-only` when the official
+Luau interpreter is installed. See [stress matrix and limitations](docs/SERVER_STRESS_VALIDATION.md).
+
+This does **not** simulate a live Roblox server or measure real network RTT.
+
 ## Architecture
 
 NetStream multiplexes logical routes across three Roblox remotes. The default namespace creates `ReplicatedStorage.__NetStream_NetStream`.
