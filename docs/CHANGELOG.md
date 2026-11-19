@@ -10,6 +10,14 @@ The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled *
 - No wire or compression codec changes; unchanged/unprotected routes retain their existing behavior. Roblox Studio integration and load tests are required before release.
 
 ## v4.3.1 — Runtime regression gates, strict delta frames and RPC teardown
+## Unreleased security hardening (v4.3.1-compatible)
+
+- Add server-issued, player-bound, one-use action tickets with action binding, TTL, capped per-player storage, revocation and replay rejection; handlers revalidate mutable game conditions.
+- Add optional fail-closed incoming Event/Function policy mode; deny callback authorization predicates that yield or throw.
+- Add optional incoming State route rejection before server peer-state writes on all existing receive paths.
+- Add security stats, runtime regression cases, paired Studio scripts and usage docs. No BitFrame/Compression format changes. Pending Roblox Studio live validation.
+
+
 
 - Reproduce and reject nil-mask wraparound and noncanonical delta value arrays; bound validation work to the schema's maximum 32 values plus one rejected entry.
 - Discard RPC returns after player disconnect or module destruction before allocating an outbound message/queue. In-flight callbacks retain existing completion/accounting semantics.
