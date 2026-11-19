@@ -1,11 +1,13 @@
-# Server-issued action tickets and fail-closed route security
+# Server-Issued Action Tickets and Fail-Closed Route Security
 
-This patch extends the v4.3.1 security framework without changing BitFrame v1,
+> **Status:** Available in the current v4.3.1-compatible `main` branch. These controls are opt-in and do not alter BitFrame v1 or codec 230.
+
+This feature extends the v4.3.1 security framework without changing BitFrame v1,
 codec 230, or any transport packet format. It is a defense-in-depth layer,
 **not** a client anti-tamper system. Clients can forge or replay packets and
 modify everything they receive. Only the server's state and rules are trusted.
 
-## 1. Server-only action ticket gate
+## Server-only action ticket gate
 
 `NetStream.CreateActionGate({TTLSeconds = 10, MaxTicketsPerPlayer = 32})`
 creates a local server-only ticket registry.
@@ -34,19 +36,13 @@ The server must re-check changing facts—balance, ownership, stock and
 entitlements—inside the handler. Tickets do **not** authorize a fresh client
 request the server never approved.
 
-Records are in process memory: no cross-server durability, inventory lock,
-Ticket capacity counts **outstanding unused** tickets. Completed tickets retain
-a bounded replay tombstone (up to the configured cap); old tombstones can be
-evicted without allowing redemption, because numeric IDs are never reused.
-`Revoke` returns false for expired or already consumed tickets, including
-a redemption currently executing. It cannot undo a committed or in-flight
-transaction. Recheck authoritative conditions immediately before committing.
+Ticket records are **in-memory and server-local**. They do not provide cross-server durability, inventory locks, or exactly-once persistence. The TTL and per-player cap bound the registry's retained records.
 
+Capacity counts **outstanding unused** tickets. Completed tickets retain a bounded replay tombstone; older tombstones can be evicted safely because IDs are never reused. A revoked, expired, or consumed ticket cannot be redeemed.
 
-or exactly-once persistence guarantee. The per-player cap and TTL bound memory.
-`Revoke` does not cancel a handler already running.
+`Revoke` returns `false` for an expired or already-consumed ticket, including one whose handler is running. Revocation cannot undo a transaction in progress. Recheck server-owned prices, balances, entitlements, and cooldowns **inside the handler** immediately before committing.
 
-## 2. Server-to-client-to-server example
+## Server-to-client-to-server example
 
 Server:
 
@@ -121,12 +117,12 @@ Never let an untrusted client generate arbitrary purchase offers. The server
 should only issue tickets for actions that make sense for the player's current
 server-validated context.
 
-## 3. Opt-in policy firewall
+## Opt-in route policy enforcement
 
 `NetStream.RequireServerPolicies(true)` enables default-deny mode for
 **incoming Event and Function gameplay callbacks** on that server.
 
-- Unknown/unprotected routes are rejected before gameplay callbacks.
+- Routes without an installed policy are rejected before gameplay callbacks.
 - `NetStream.SetServerPolicy(route, {Validate=..., Authorize=...})` provides
   the allow conditions. Both callbacks (when present) must return exactly
   `true`; errors and **yields** are denied.
@@ -141,7 +137,7 @@ This checks callback admission, not the atomicity of game data writes.
 Authorization policies must remain pure and non-yielding; changing conditions
 must also be verified in the protected handler.
 
-## 4. Monitoring and testing
+## Diagnostics and testing
 
 `GetStats()` adds:
 
@@ -151,13 +147,19 @@ must also be verified in the protected handler.
 `SecurityTicketsCapacityDrops`, `SecurityTicketsHandlerErrors`.
 
 `tests/runtime/tickets.luau` runs in the official Luau interpreter in CI.
-Run the paired Studio scripts for actual server/client transport behavior.
+Run `tests/ActionTicketRegression.server.lua` and its matching client script in Roblox Studio to validate the actual server/client transport.
 CI service mocks do not simulate multiplayer, Heartbeat, network loss,
 DataStores or cross-server persistence.
 
-## Threat-model limitations
+## Threat model and limitations
 
 No key, hash, encrypted packet, client checksum or handshake can make client
 data immutable once it reaches the player's machine. The server-to-client-
 to-server round trip limits *which* actions may be attempted but is not a
 substitute for authoritative game state and independent validation.
+
+## Related documentation
+
+- [Security policies and idempotency](SECURITY.md)
+- [Runtime validation](RUNTIME_VALIDATION.md)
+- [NetStreamV2 overview](../README.md)
