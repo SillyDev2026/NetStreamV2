@@ -531,6 +531,13 @@ local Stats = {
 	CancelledLatest = 0,
 	CancelledQueued = 0,
 	RouteRateLimited = 0,
+	SecurityPolicyChecks = 0,
+	SecurityPolicyAccepted = 0,
+	SecurityPolicyRejects = 0,
+	SecurityPolicyErrors = 0,
+	SecurityIdempotencyDuplicates = 0,
+	SecurityIdempotencyCapacityDrops = 0,
+	SecurityIdempotencyHandlerErrors = 0,
 	TrafficSnapshots = 0,
 	CompressionAttempts = 0,
 	CompressionRealtimeSkips = 0,
@@ -5792,10 +5799,39 @@ function Internal.disconnectNode(route, node)
 	route._listenerCount -= 1
 end
 
+-- Server-side gameplay policy. Every registered callback on a guarded route shares this gate.
+function Internal.allowServerRoute(route, player, args, scalar)
+	if not IS_SERVER or not route or not route._serverPolicy then return true end
+	Stats.SecurityPolicyChecks += 1
+	if not player or player.Parent ~= Players then
+		Stats.SecurityPolicyRejects += 1
+		return false
+	end
+	local policy = route._serverPolicy
+	for _, predicate in {policy.Validate, policy.Authorize} do
+		if predicate then
+			local ok, accepted
+			if scalar then
+				ok, accepted = pcall(predicate, player, args)
+			else
+				ok, accepted = pcall(predicate, player, table.unpack(args, 1, args.n))
+			end
+			if not ok then Stats.SecurityPolicyErrors += 1 end
+			if not ok or accepted ~= true then
+				Stats.SecurityPolicyRejects += 1
+				return false
+			end
+		end
+	end
+	Stats.SecurityPolicyAccepted += 1
+	return true
+end
+
 local function dispatchRoute(route, player, args)
 	if not route then
 		return
 	end
+	if not Internal.allowServerRoute(route, player, args, false) then return end
 	local node = route._head
 	while node do
 		local nextNode = node.next
@@ -5821,6 +5857,7 @@ local function dispatchRouteScalar(route, player, value)
 	if not route then
 		return
 	end
+	if not Internal.allowServerRoute(route, player, value, true) then return end
 	local node = route._head
 	while node do
 		local nextNode = node.next
@@ -5971,6 +6008,11 @@ end
 
 function Internal.handleCall(player, routeId, id, args)
 	local route = functionRoutes[routeId]
+	if not Internal.allowServerRoute(route, player, args, false) then
+		releaseArgs(args)
+		enqueueReturn(player, id, false, table.pack("Request rejected"))
+		return
+	end
 	local callback = route and route._callback or nil
 	local usesFallback = false
 	if not callback and fallbackCallHandler then
@@ -8584,6 +8626,88 @@ function NetStream.CreateInterestGroup()
 		return allAccepted, recipients
 	end
 	return group
+end
+
+-- Policies run only on the server and apply before ALL Event listeners or an RPC callback.
+-- A policy is not a substitute for server-owned balances, permissions and atomic transactions.
+function NetStream.SetServerPolicy(route, policy)
+	assert(IS_SERVER, "SetServerPolicy is server-only")
+	assert(not destroyed, "NetStream has been destroyed")
+	assert(type(route) == "table" and type(route.Id) == "number"
+		and (eventRoutes[route.Id] == route or functionRoutes[route.Id] == route),
+		"SetServerPolicy expects a registered Event or Function route")
+	assert(type(policy) == "table", "SetServerPolicy requires a policy table")
+	local validate = policy.Validate
+	local authorize = policy.Authorize
+	assert(validate ~= nil or authorize ~= nil, "SetServerPolicy needs Validate and/or Authorize")
+	assert(validate == nil or type(validate) == "function", "Policy.Validate must be a function")
+	assert(authorize == nil or type(authorize) == "function", "Policy.Authorize must be a function")
+	route._serverPolicy = table.freeze({Validate = validate, Authorize = authorize})
+	return route
+end
+
+-- This optional server-only helper reserves a client request key BEFORE executing an action.
+-- It prevents duplicate processing of the SAME key within one server session; it cannot
+-- prove client intent, stop new-key replay, or guarantee durability across server restarts.
+function NetStream.CreateIdempotencyGuard(options)
+	assert(IS_SERVER, "CreateIdempotencyGuard is server-only")
+	assert(not destroyed, "NetStream has been destroyed")
+	assert(options == nil or type(options) == "table", "Idempotency options must be a table")
+	options = options or {}
+	local ttl = if options.TTLSeconds == nil then 60 else options.TTLSeconds
+	local cap = if options.MaxEntriesPerPlayer == nil then 128 else options.MaxEntriesPerPlayer
+	assert(type(ttl) == "number" and isFiniteNumber(ttl) and ttl >= 1 and ttl <= 3600, "TTLSeconds must be between 1 and 3600")
+	assert(type(cap) == "number" and isInteger(cap) and cap >= 1 and cap <= 4096, "MaxEntriesPerPlayer must be between 1 and 4096")
+	local records = setmetatable({}, {__mode = "k"})
+	local guard = {}
+	function guard:Execute(player, requestKey, handler)
+		assert(self == guard, "IdempotencyGuard Execute requires :")
+		assert(not destroyed, "NetStream has been destroyed")
+		assert(typeof(player) == "Instance" and player:IsA("Player") and player.Parent == Players, "Execute expects a connected Player")
+		assert(type(handler) == "function", "Execute requires a server handler")
+		local keyType = type(requestKey)
+		assert((keyType == "string" and #requestKey >= 1 and #requestKey <= 64)
+			or (keyType == "number" and isInteger(requestKey) and requestKey >= 1 and requestKey <= MAX_SAFE_INTEGER),
+			"Request key must be a nonempty string <=64 bytes or a positive safe integer")
+		local current = os.clock()
+		local entries = records[player]
+		if not entries then
+			entries = {}
+			records[player] = entries
+		end
+		local size = 0
+		for key, entry in pairs(entries) do
+			if entry.status ~= "pending" and entry.expires <= current then
+				entries[key] = nil
+			else
+				size += 1
+			end
+		end
+		if entries[requestKey] ~= nil then
+			Stats.SecurityIdempotencyDuplicates += 1
+			return false, "Duplicate"
+		end
+		if size >= cap then
+			Stats.SecurityIdempotencyCapacityDrops += 1
+			return false, "Capacity"
+		end
+		local entry = {status = "pending", expires = 0}
+		entries[requestKey] = entry
+		local results
+		local ok = xpcall(function() results = table.pack(handler()) end, debug.traceback)
+		entry.status = if ok then "complete" else "failed"
+		entry.expires = os.clock() + ttl
+		if not ok then
+			Stats.SecurityIdempotencyHandlerErrors += 1
+			return false, "HandlerError"
+		end
+		return true, table.unpack(results, 1, results.n)
+	end
+	function guard:ClearPlayer(player)
+		assert(self == guard, "IdempotencyGuard ClearPlayer requires :")
+		records[player] = nil
+	end
+	return table.freeze(guard)
 end
 
 function NetStream.CreateDeltaCodec(fieldNames)
