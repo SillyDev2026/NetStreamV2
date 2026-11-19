@@ -47,3 +47,8 @@ jobs:
           LUAU_BIN: /tmp/luau-build/luau
         timeout-minutes: 5
         run: node scripts/runtime-tests.mjs --stress-only
+      - name: Profile packer allocation reuse and byte signatures
+        env:
+          LUAU_BIN: /tmp/luau-build/luau
+        timeout-minutes: 5
+        run: node scripts/runtime-tests.mjs --profile-only
