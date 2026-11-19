@@ -19,6 +19,11 @@ for index = 1, PEERS do
     state[player] = {Coins = 1000, Events = 0, Purchases = 0}
 end
 local metrics = {}
+local function mockDisconnectAll(self)
+    self._head = nil
+    self._tail = nil
+    self._listenerCount = 0
+end
 local function benchmark(name, expected, callback)
     local started = os.clock()
     local count = callback()
@@ -31,7 +36,7 @@ end
 local calls = 0
 local accepted = 0
 local rejected = 0
-local guarded = {Id = 600001, _listenerCount = 1}
+local guarded = {Id = 600001, _listenerCount = 1, DisconnectAll = mockDisconnectAll}
 guarded._head = {connected = true, once = false, callback = function(player, amount)
     assert(amount == 1, "Invalid amount reached server gameplay")
     local profile = state[player]
@@ -66,7 +71,7 @@ assert(stats.SecurityPolicyAccepted == accepted)
 assert(stats.SecurityPolicyRejects == rejected)
 print("PASS firewall: accepted=" .. accepted .. " rejected=" .. rejected)
 
-local deniedRoute = {Id = 600002, _listenerCount = 1}
+local deniedRoute = {Id = 600002, _listenerCount = 1, DisconnectAll = mockDisconnectAll}
 deniedRoute._head = {connected = true, callback = function() error("Unprotected command executed") end}
 hooks.registerEvent(deniedRoute.Id, deniedRoute)
 benchmark("default-deny firewall", PEERS * 40, function()
@@ -78,7 +83,7 @@ end)
 assert(net.GetStats().SecurityUnprotectedDrops == PEERS * 40, "Unprotected events were not dropped")
 
 local ingressCount = 0
-local ingress = {Id = 600003, _listenerCount = 1}
+local ingress = {Id = 600003, _listenerCount = 1, DisconnectAll = mockDisconnectAll}
 ingress._head = {connected = true, once = false, callback = function(player, value)
     assert(active[player] == true and value == 2, "Untrusted packet changed authoritative state")
     ingressCount += 1
@@ -281,7 +286,7 @@ local legacy = loadNetStream()
 legacy.Configure({BitFrameEnabled = false, CompressionEnabled = false, HandshakeEnabled = false})
 local legacyHooks = legacy.__test
 local legacyCallbacks = 0
-local legacyRoute = {Id = 700001, _listenerCount = 1}
+local legacyRoute = {Id = 700001, _listenerCount = 1, DisconnectAll = mockDisconnectAll}
 legacyRoute._head = {connected = true, once = false, callback = function(_, amount)
     assert(amount == 1, "Forged legacy payload reached gameplay")
     legacyCallbacks += 1
