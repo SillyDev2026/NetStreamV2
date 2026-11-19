@@ -1,6 +1,8 @@
-# Codec memory and packer optimization (unreleased)
+# Codec Memory and Packer Optimization
 
-## What changed
+> **Status:** Implemented on the v4.3.1-compatible `main` branch. Fast paths preserve BitFrame v1, codec 230, and valid encoded packet bytes. The limitations and measured trade-offs below still apply.
+
+## Implementation summary
 
 - A new **tiny native tuple path** handles up to four nil, boolean, small signed/unsigned integer, or short distinct-string values directly. A tiny encode creates only the final packet buffer; a tiny decode builds the returned value table without allocating a Reader wrapper. Duplicate strings, longer strings, extended numbers, tables and other values automatically fall back to the existing codec. Byte format is identical to the pre-patch native codec.
 - Decoded native messages still follow the original validation rules, including the exact count and trailing-byte checks. Fuzz tests and golden-byte tests cover the new parser.
@@ -23,11 +25,11 @@ node scripts/runtime-tests.mjs
 node scripts/runtime-tests.mjs --stress-only
 ```
 
-GitHub CI runs all three commands on the pinned Luau toolchain. The benchmark compares an untouched `main` baseline branch (`bench/packer-baseline-v431`) with the optimized feature branch (`perf/codec-pools-packer-v431`), using identical `tests/runtime/packer_profile.luau` workloads.
+GitHub CI runs these commands on the pinned Luau toolchain. The historical baseline branch (`bench/packer-baseline-v431`) and optimized branch (`perf/codec-pools-packer-v431`) use the same `tests/runtime/packer_profile.luau` workloads. For a fairer CPU comparison on current code, `--compare-only` runs the original and optimized native Codec paths within one Luau process.
 
-The profile prints best-of-three Luau CPU timings, writer/reader pool hits, and golden packet bytes. CI worker variation and compiler warmup can affect timings, so treat a single comparison as **indicative**, not a controlled performance guarantee. `tests/runtime/packer_regression.luau` asserts 2,750 pooled encode/decode cycles, malformed-input recovery, unchanged golden wire bytes, and exact max-size varint boundaries.
+The profile prints best-of-three Luau CPU timings, writer/reader pool hits, and golden packet bytes. CI worker variation and compiler warmup can affect timings, so treat a single comparison as **indicative**, not a controlled performance guarantee. `tests/runtime/packer_regression.luau` tests 2,500 direct tiny-tuple cycles, 250 complex pooled cycles, malformed-input recovery, golden wire bytes, and exact max-size varint boundaries.
 
-## One same-process A/B sample
+## Same-process A/B results (single sample)
 
 On the pinned official Luau CLI in [CI run 44510402505](https://github.com/SillyDev2026/NetStreamV2/actions/runs/44510402505), old per-call Writer.new/Reader.new behavior and the optimized public Codec API ran in the **same process**. Best-of-four timed loops produced:
 
@@ -44,9 +46,19 @@ temporary wrapper/backing-buffer allocation and GC churn. There is **no claim
 of an overall throughput gain** for every application workload. Writer/reader
 pool-hit counters demonstrate reuse but do not quantify Roblox heap savings.
 
+## Codec input and output limits
+
+The follow-up fix merged in PR #22 enforces `MaxTableEntries` for standalone argument counts, including tiny tuples, and `MaxOutgoingBatchBytes` for all native writer paths even when the backing buffer has spare capacity. These are correctness protections, not new packet encodings.
+
 ## Production limitations
 
 - Pool hits are evidence of reuse, not a direct measurement of Lua heap or Roblox engine allocation counts.
 - These optimizations do not reduce network ping or Roblox RemoteEvent overhead.
 - Real Studio MicroProfiler, heap snapshots, and matched throughput tests against Zap/Blink/ByteNet remain needed to establish production efficiency.
 - Large persistent application payloads still dominate memory; app code must respect configured size limits and avoid constructing unnecessary temporary tables.
+
+## Related documentation
+
+- [Memory retention and pool sizing](MEMORY_EFFICIENCY.md)
+- [Performance methodology](BENCHMARKING.md)
+- [Main README](../README.md)
