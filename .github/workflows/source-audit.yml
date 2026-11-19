@@ -52,3 +52,8 @@ jobs:
           LUAU_BIN: /tmp/luau-build/luau
         timeout-minutes: 5
         run: node scripts/runtime-tests.mjs --profile-only
+      - name: Compare pooled and original codecs within one Luau process
+        env:
+          LUAU_BIN: /tmp/luau-build/luau
+        timeout-minutes: 5
+        run: node scripts/runtime-tests.mjs --compare-only
