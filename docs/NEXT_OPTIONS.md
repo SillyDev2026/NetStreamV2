@@ -1,6 +1,23 @@
-# NetStreamV2 — Prioritized Upgrade Options
+# Engineering Roadmap and Prioritized Improvements
 
-**Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.
+> **Status:** The current `main` branch identifies as v4.3.1. The numbered historical sections below record completed design iterations and their original follow-up proposals. They are not a list of features missing from the latest branch.
+
+Priority scores in older sections are **engineering estimates**, not measured performance or competitive rankings. Every significant change requires controlled compatibility, security, and Roblox Studio verification.
+
+## Current priorities
+
+| Priority | Work item | Acceptance criteria |
+| --- | --- | --- |
+| **1 — Production validation** | Live Roblox Studio multiplayer stress under representative game traffic | p50/p95/p99, frame time, packet loss, server Lua heap/GC, connection recovery, and sustained duration recorded |
+| **2 — Structured codec throughput** | Reduce allocation *and* CPU cost for complex native payloads | Byte-for-byte compatibility and better same-process encode/decode results without security regressions |
+| **3 — Durable authoritative transactions** | Integrate game-specific persistent ledgers, conflict handling, and restart safety | Concurrent purchases and cross-server transitions cannot duplicate persistent rewards |
+| **4 — Acknowledged replication** | Per-player revision ACKs, explicit resync, and snapshot budgets | Deterministic recovery from missed/stale state revisions |
+| **5 — Controlled competitor comparison** | Compare equivalent payloads and limits with competing Roblox networking libraries | Published workload, configuration, machine, memory, and repeatable measurements |
+
+**Already implemented on `main`:** optional strict server route policies, one-use action tickets, BitFrame v1 fast paths, direct tiny Codec packing, pooled serializers, codec bounds enforcement, and the standalone server stress suite.
+
+For current behavior, see the [project README](../README.md) and [changelog](CHANGELOG.md). Historical version sections follow.
+
 
 ## v4.3.0 — RPC concurrency and common vararg hot paths
 
@@ -206,3 +223,9 @@ flowchart LR
 ## After v3.8.0
 
 Prioritize measured per-schema CPU costs, Studio heap-after-burst profiles, and GC pause p95/p99 before adding specialized optimizations. Confirm that lower idle-pool caps do not increase GC spikes during sustained message bursts. Do not claim a competitor speed win without the same-workload test.
+
+## Related documentation
+
+- [Benchmarking and acceptance procedure](BENCHMARKING.md)
+- [Packer memory optimization](PACKER_MEMORY_OPTIMIZATION.md)
+- [Runtime validation](RUNTIME_VALIDATION.md)
