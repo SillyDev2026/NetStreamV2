@@ -13,6 +13,8 @@ assert(source.includes("self:ensure(Internal.varUIntByteLength(value))"), "Write
 assert(source.includes("function Codec.Encode(...)") && source.includes("local args = makeArgs(...)"), "Public encoder must reuse argument pool");
 assert(read("tests/runtime/packer_regression.luau").includes("0003271063616263"), "Baseline golden codec bytes missing");
 assert(read("scripts/runtime-tests.mjs").includes("--profile-only"), "Packer profiling CLI missing");
+assert(read("scripts/runtime-tests.mjs").includes("--compare-only"), "In-process packer A/B CLI missing");
+assert(read(".github/workflows/source-audit.yml").includes("node scripts/runtime-tests.mjs --compare-only"), "Same-process Codec comparison not covered by CI");
 assert(read(".github/workflows/source-audit.yml").includes("node scripts/runtime-tests.mjs --profile-only"), "Packer profiling not covered by CI");
 const version = "4.3.1";
 assert(read("tests/runtime/server_stress.luau").includes("PASS server stress:"), "Missing Luau server stress completion assertion");
