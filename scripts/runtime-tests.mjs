@@ -39,8 +39,8 @@ NetStream.__test = {
     end,
     baselineCodecDecode = function(data)
         local reader = Reader.new(data)
+        assert(buffer.readu8(data, 0) == 0)
         reader.position = 1
-        assert(reader:u8() == 0)
         local count = reader:varUInt()
         assert(count <= Config.MaxTableEntries)
         local args = table.create(count)
