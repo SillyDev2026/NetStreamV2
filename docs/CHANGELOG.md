@@ -2,6 +2,9 @@
 
 ## Packer and memory efficiency hardening (unreleased)
 
+- Add byte-compatible direct native encoding/decoding for tiny primitive tuples (up to four fields), avoiding writer/reader wrapper work on common short messages.
+- Remove double-clearing of already-reset pooled writer, reader, BitFrame dictionaries, packed-value arrays, scratch writers and native measurement maps.
+
 - Reuse the transport writer/reader pools within public Codec encode/decode
   instead of creating a new backing buffer and dictionary table for each call.
   Failures in native decoding return readers to the pool.
