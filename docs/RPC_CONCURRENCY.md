@@ -1,6 +1,8 @@
-# v4.3.0 RPC Concurrency & Call Lifecycle
+# RPC Concurrency and Callback Lifecycle
 
-## Problem addressed
+> **Scope:** Introduced in v4.3.0 and maintained on the v4.3.1-compatible `main` branch. Concurrency controls are separate from per-second ingress limits and route authorization.
+
+## Problem and design
 
 NetStream previously enforced incoming call **rate** (calls per second) but not the number of asynchronous callbacks remaining alive at once. A callback that yields for several seconds can allow thousands of outstanding Luau tasks across a server, even when every call was rate-compliant.
 
@@ -15,9 +17,13 @@ NetStream.Configure({
 
 Both are server-side limits. `0` disables a specific limit (for apps that intentionally manage their own callback concurrency); the existing per-second call budgets still apply. The concurrency limits check admitted active RPC callbacks, not queued outgoing events, and do **not** cancel callbacks already running.
 
-The request admission path now checks existing per-second limits **and** concurrency limits before reserving one in-flight slot. All four received RPC wire paths call the same guarded runner. That runner executes the registered function callback and releases the global and player slot after it finishes, even if the callback raises an exception. If callback processing raises an unexpected internal error, `IncomingCallExecutionErrors` records it; normal application exceptions are already returned by the existing RPC error transport.
+The request admission path now checks existing per-second limits **and** concurrency limits before reserving one in-flight slot. All four received RPC wire paths call the same guarded runner. That runner executes the registered function callback and releases the global and player slot after it finishes, even if the callback raises an exception. If callback processing raises an unexpected internal error, `IncomingCallExecutionErrors` records it; application callback errors are returned as **generic** client-facing messages; detailed stack traces stay in server-side debug diagnostics.
 
 **Overload behavior:** Rejected RPC calls are silently dropped using the library's existing rate-rejection convention, so the invoking peer will generally observe its configured `CallTimeout`. Do not use fire-and-forget RPCs for non-idempotent critical actions without idempotency keys, acknowledgments, and an application-level retry policy. Legitimately yielding RPC callbacks may need a higher cap. There is no promise to terminate a long-running/hung callback automatically.
+
+## Error handling and privacy
+
+When an RPC callback fails, the server returns `Remote callback failed` rather than the raw exception. Invalid callback results and missing callback handlers also receive generic messages. Operators can inspect `CallbackErrors` and `InvalidResults` from `GetRPCStats()` without exposing sensitive server error details to clients. See [Security policies](SECURITY.md).
 
 ## Diagnostics
 
@@ -43,9 +49,15 @@ The new paired `tests/RPCConcurrencyRegression.server.lua` / `*.client.lua` test
 
 Source audit checks all four `task.spawn` sites use the guarded runner, validates configuration fragments, models multi-player caps and slot reclamation, and checks direct-copy paths. CI Luau syntax validation and source tests are **not** a substitute for a Studio test; network timing may make the burst-based assertions sensitive to runtime conditions. Run this pair in a fresh Play session without unrelated scripts; repeat with 1 and 4 players and with long callback durations.
 
-## Remaining review items
+## Remaining verification work
 
-- No automated Studio multiplayer runtime yet; use the 94 authored Studio scripts for isolated tests.
+- The repository provides authored Studio regression scripts, but the automated Luau mock harness is **not** a real multiplayer Studio runtime. Execute the relevant paired scripts for engine-level verification.
 - Per-second and in-flight controls complement, rather than replace, authentication, domain validation, anti-exploit logic, or server-authoritative game state.
 - Compare p95/p99 callback turnaround time, active task count, heap after GC, total RPC success/error/timeouts, and CPU scheduling under 1/10/25-player workload. Measure with concurrency caps on and off in otherwise identical sessions.
 - **Do not** claim all bugs are fixed or that the new hot paths outperform Zap, BlinkBlox, ByteNet, or Satset without matched results.
+
+## Related documentation
+
+- [Server stress validation](SERVER_STRESS_VALIDATION.md)
+- [Runtime validation](RUNTIME_VALIDATION.md)
+- [Project overview](../README.md)
