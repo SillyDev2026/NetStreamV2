@@ -514,6 +514,8 @@ local Stats = {
 	MessagePoolHits = 0,
 	ArgsPoolHits = 0,
 	WriterPoolHits = 0,
+	CodecTinyFastEncodes = 0,
+	CodecTinyFastDecodes = 0,
 	ReaderPoolHits = 0,
 	RateLimitedBatches = 0,
 	GlobalRateLimitedBatches = 0,
@@ -9932,11 +9934,101 @@ end
 
 local Codec = {}
 
+-- Direct native tiny-tuple codec: no Writer/Reader object or scratch buffer.
+-- Only canonical, single-byte primitive descriptors are emitted; all other
+-- payloads use the existing wire-compatible dynamic codec.
+local function tryEncodeTinyCodec(args)
+	local count = args.n
+	if count < 0 or count > 4 then return nil end
+	local bytes = 2 -- native mode and one-byte argument count
+	for i = 1, count do
+		local value = args[i]
+		local kind = type(value)
+		if value == nil or kind == "boolean" then
+			bytes += 1
+		elseif kind == "number" then
+			if not isInteger(value) or value < -7 or value > 14 then return nil end
+			bytes += 1
+		elseif kind == "string" then
+			local length = #value
+			if length >= 15 then return nil end
+			for j = 1, i - 1 do
+				if args[j] == value then return nil end -- dictionary reference encoding
+			end
+			bytes += length + 1
+		else
+			return nil
+		end
+	end
+	if Config.CompressionEnabled and Internal.shouldAttemptCompression(args) then return nil end
+	local output = buffer.create(bytes)
+	buffer.writeu8(output, 0, 0)
+	buffer.writeu8(output, 1, count)
+	local position = 2
+	for i = 1, count do
+		local value = args[i]
+		local kind = type(value)
+		if value == nil then
+			buffer.writeu8(output, position, TYPE_NIL * 16)
+			position += 1
+		elseif kind == "boolean" then
+			buffer.writeu8(output, position, TYPE_BOOL * 16 + (if value then 1 else 0))
+			position += 1
+		elseif kind == "number" then
+			buffer.writeu8(output, position, if value >= 0 then TYPE_UINT * 16 + value else TYPE_SINT * 16 - value * 2 - 1)
+			position += 1
+		else
+			local length = #value
+			buffer.writeu8(output, position, TYPE_STRING * 16 + length)
+			position += 1
+			if length > 0 then buffer.writestring(output, position, value); position += length end
+		end
+	end
+	Stats.CodecTinyFastEncodes += 1
+	return output
+end
+
+local function tryDecodeTinyCodec(data, length)
+	if length < 2 or length > 64 then return nil end
+	local count = buffer.readu8(data, 1)
+	if count > 4 then return nil end
+	local args = table.create(count)
+	local position = 2
+	for i = 1, count do
+		if position >= length then return nil end
+		local descriptor = buffer.readu8(data, position)
+		position += 1
+		local kind = math.floor(descriptor / 16)
+		local meta = descriptor % 16
+		if kind == TYPE_NIL and meta == 0 then
+			args[i] = nil
+		elseif kind == TYPE_BOOL and meta <= 1 then
+			args[i] = meta == 1
+		elseif kind == TYPE_UINT and meta < 15 then
+			args[i] = meta
+		elseif kind == TYPE_SINT and meta < 15 and meta % 2 == 1 then
+			args[i] = -((meta + 1) / 2)
+		elseif kind == TYPE_STRING and meta < 15 then
+			if position + meta > length then return nil end
+			args[i] = if meta == 0 then "" else buffer.readstring(data, position, meta)
+			position += meta
+		else
+			return nil
+		end
+	end
+	if position ~= length then return nil end
+	args.n = count
+	Stats.CodecTinyFastDecodes += 1
+	return args
+end
+
 -- Codec mode 0 is NetStream's native value codec and supports every value type
 -- accepted by validateArgs (Vector3/CFrame/Color3/buffer/etc). Mode 1 is the
 -- structural Compression v2.3 packet and is selected only when it round-trips
 -- the argument table and produces a smaller physical payload.
 function Codec._EncodeArgs(args)
+	local tiny = tryEncodeTinyCodec(args)
+	if tiny then return tiny, false, nil end
 	-- Reuse the same bounded writer pool as the transport packer, while
 	-- ensuring the final packet owns an independent buffer.
 	local writer = acquireWriter()
@@ -9976,6 +10068,13 @@ function Codec._DecodeArgs(data)
 	end
 
 	local mode = buffer.readu8(data, 0)
+	if mode == 0 then
+		local tiny = tryDecodeTinyCodec(data, length)
+		if tiny then
+			validateArgs(tiny)
+			return tiny
+		end
+	end
 	local args
 	if mode == 0 then
 		local reader = acquireReader(data)
