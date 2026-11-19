@@ -1,12 +1,22 @@
 # NetStreamV2 Architecture
 
-**Applies to NetStream v4.3.0, BitFrame v1, Compression v2.4.2 (codec 230).**
+> **Applies to:** The current v4.3.1-compatible `main` branch, BitFrame v1, and bundled Compression v2.4.2 (codec 230). Older version-specific sections below document the evolution of the same codebase.
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
-## 1. Responsibility boundaries
+## Current architecture at a glance
 
-NetStream provides a networking API, serialization, traffic scheduling, session-capability handshake, validation and telemetry. Roblox supplies the actual network transport. Your server gameplay scripts remain responsible for ownership, inventory, spending, state persistence, permissions and anti-exploit logic.
+- **Server authority:** Inbound Event/Function callbacks support per-route policies and optional default-deny enforcement. Server-issued tickets and idempotency helpers are server-local controls; they do not establish client integrity or durable exactly-once execution.
+- **State trust:** Client-origin State routes can be rejected before updating server peer-state caches. Snapshot getters return detached copies but remain untrusted data.
+- **Packer:** BitFrame v1 is still the default wire format. Standalone Codec adds a byte-compatible direct path for tiny primitive tuples and uses bounded pools for complex payloads.
+- **Limits:** The latest code enforces codec argument and writer-byte limits, including optimized fast paths.
+- **Verification:** Executable Luau and deterministic stress suites run in CI; Roblox Studio network, heap, and end-to-end throughput measurements require separate runs.
+
+See [Security](SECURITY.md), [Action tickets](ACTION_GATE_SECURITY.md), [Packer optimization](PACKER_MEMORY_OPTIMIZATION.md), and [Runtime validation](RUNTIME_VALIDATION.md).
+
+## 1. Component responsibilities
+
+NetStream provides a networking API, serialization, traffic scheduling, session-capability handshake, validation, and telemetry. Roblox supplies the actual network transport. Your server gameplay scripts remain responsible for ownership, inventory, spending, state persistence, permissions and anti-exploit logic.
 
 ```mermaid
 flowchart TB
@@ -234,3 +244,9 @@ Per-target reliable `State` suppression maintains bounded, weak-keyed last-**suc
 ## v4.1.1 packet-size audit instrumentation
 
 When `PacketSizeAuditEnabled` is true, the existing writer separately accounts for each BitFrame message's presence bit, two message-kind bits, variable-length route/request IDs, schema-event run bit and optional run count, plus all remaining payload bits. One end bit finishes the packet and byte padding fills the remainder. Only a **successfully dispatched RemoteEvent** records these logical packet bits; encoding attempts and budget re-encodes do not affect totals. `GetPacketSizeAudit()` returns `LastPacket` and `Totals`. The wire grammar and public send/receive behavior are unchanged. Detailed examples: [Packet Size Audit](PACKET_SIZE_AUDIT.md).
+
+## Related documentation
+
+- [Project overview and installation](../README.md)
+- [Benchmarking methodology](BENCHMARKING.md)
+- [Version history](CHANGELOG.md)
