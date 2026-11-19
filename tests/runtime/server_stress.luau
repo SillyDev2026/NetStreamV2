@@ -157,6 +157,26 @@ benchmark("concurrent RPC admission", 512, function()
 end)
 print("PASS RPC: 512 in-flight callbacks saturated global cap and returned all slots")
 
+local tracebackSecret = "PRIVATE_SERVER_TRACE_SHOULD_NOT_LEAK"
+local failingRPC = {Id = 600006, _callback = function() error(tracebackSecret) end}
+hooks.registerFunction(failingRPC.Id, failingRPC)
+net.SetServerPolicy(failingRPC, {Authorize = function() return true end})
+assert(hooks.charge(players[1]))
+hooks.run(players[1], failingRPC.Id, 900001, table.pack(1))
+local failureReply = hooks.peekRPCReply(players[1])
+assert(failureReply and failureReply[1] == false and failureReply[2] == "Remote callback failed", "RPC handler leaked error or traceback to client")
+assert(not string.find(failureReply[2], tracebackSecret, 1, true), "Sensitive server error content was returned")
+assert(net.GetRPCStats().CallbackErrors == 1, "RPC application error was not counted")
+local invalidRPC = {Id = 600007, _callback = function() return math.huge end}
+hooks.registerFunction(invalidRPC.Id, invalidRPC)
+net.SetServerPolicy(invalidRPC, {Authorize = function() return true end})
+assert(hooks.charge(players[1]))
+hooks.run(players[1], invalidRPC.Id, 900002, table.pack(1))
+local invalidReply = hooks.peekRPCReply(players[1])
+assert(invalidReply and invalidReply[1] == false and invalidReply[2] == "Remote callback returned invalid data", "Invalid server results leaked implementation details")
+assert(net.GetRPCStats().InvalidResults == 1, "Invalid callback return was not counted")
+print("PASS RPC: server exception tracebacks and invalid result internals never reach the client")
+
 local gate = net.CreateActionGate({TTLSeconds = 120, MaxTicketsPerPlayer = 16})
 local ticketSuccess, ticketReplays, ticketWrongPlayer = 0, 0, 0
 benchmark("action ticket cycles", PEERS * TICKETS_PER_PEER, function()
