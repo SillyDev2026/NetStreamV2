@@ -260,6 +260,48 @@ end)
 assert(malformedRejected > FUZZ_CASES * 0.95, "Unexpectedly many random payloads were accepted")
 print("PASS fuzz: rejected=" .. malformedRejected .. " out of " .. FUZZ_CASES .. " random buffers")
 
+local legacy = loadNetStream()
+legacy.Configure({BitFrameEnabled = false, CompressionEnabled = false, HandshakeEnabled = false})
+local legacyHooks = legacy.__test
+local legacyCallbacks = 0
+local legacyRoute = {Id = 700001, _listenerCount = 1}
+legacyRoute._head = {connected = true, once = false, callback = function(_, amount)
+    assert(amount == 1, "Forged legacy payload reached gameplay")
+    legacyCallbacks += 1
+end}
+legacyHooks.registerEvent(legacyRoute.Id, legacyRoute)
+local legacyPlayers = table.create(64)
+local legacyAllowed = {}
+for index = 1, 64 do
+    local player = {Parent = legacyHooks.players, __player = true, IsA = function(_, kind) return kind == "Player" end}
+    legacyPlayers[index] = player
+    legacyAllowed[player] = index % 13 ~= 0
+end
+legacy.SetServerPolicy(legacyRoute, {
+    Validate = function(_, amount) return amount == 1 end,
+    Authorize = function(player) return legacyAllowed[player] == true end,
+})
+legacy.RequireServerPolicies(true)
+legacyHooks.startWithoutTransport()
+local legacyExpected = 0
+benchmark("legacy transport fallback", 64 * 24, function()
+    for _, player in legacyPlayers do
+        for operation = 1, 24 do
+            local amount = if operation % 7 == 0 then 99 else 1
+            if legacyAllowed[player] and amount == 1 then legacyExpected += 1 end
+            local payload = legacyHooks.encodeTransportEvent(legacyRoute.Id, amount)
+            legacyHooks.receivePacket(player, payload)
+        end
+    end
+    return 64 * 24
+end)
+while legacy.GetStats().DispatchBacklog > 0 do legacyHooks.drainDispatch() end
+assert(legacyCallbacks == legacyExpected, "Legacy encoder/decoder bypassed or lost an accepted command")
+assert(legacy.GetStats().ReceivedMessages == 64 * 24, "Legacy transport lost packet counts")
+assert(legacy.GetStats().DecodeErrors == 0, "Legacy transport rejected valid packets")
+print("PASS legacy: authenticated and malformed requests respected server policies")
+legacy.Destroy()
+
 for index, player in players do
     assert(state[player].Purchases == TICKETS_PER_PEER, "Lost/duplicated server-side transactions")
     if index % 16 ~= 0 then assert(state[player].Events > 0) else assert(state[player].Events == 0) end
