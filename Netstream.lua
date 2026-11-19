@@ -417,6 +417,7 @@ local stateDeliveryCache = setmetatable({}, {__mode = "k"})
 local eventRoutes = {}
 local functionRoutes = {}
 local stateRoutes = {}
+local requireServerPolicies = false
 local eventNames = {}
 local functionNames = {}
 local stateNames = {}
@@ -535,6 +536,14 @@ local Stats = {
 	SecurityPolicyAccepted = 0,
 	SecurityPolicyRejects = 0,
 	SecurityPolicyErrors = 0,
+	SecurityPolicyYieldRejects = 0,
+	SecurityUnprotectedDrops = 0,
+	SecurityTicketsIssued = 0,
+	SecurityTicketsRedeemed = 0,
+	SecurityTicketsRejected = 0,
+	SecurityTicketsReplayDrops = 0,
+	SecurityTicketsCapacityDrops = 0,
+	SecurityTicketsHandlerErrors = 0,
 	SecurityIdempotencyDuplicates = 0,
 	SecurityIdempotencyCapacityDrops = 0,
 	SecurityIdempotencyHandlerErrors = 0,
@@ -5801,21 +5810,37 @@ end
 
 -- Server-side gameplay policy. Every registered callback on a guarded route shares this gate.
 function Internal.allowServerRoute(route, player, args, scalar)
-	if not IS_SERVER or not route or not route._serverPolicy then return true end
+	if not IS_SERVER then return true end
+	local policy = route and route._serverPolicy or nil
+	if not policy and not requireServerPolicies then return true end
 	Stats.SecurityPolicyChecks += 1
 	if not player or player.Parent ~= Players then
 		Stats.SecurityPolicyRejects += 1
 		return false
 	end
-	local policy = route._serverPolicy
+	if not policy then
+		Stats.SecurityUnprotectedDrops += 1
+		Stats.SecurityPolicyRejects += 1
+		return false
+	end
 	for pass = 1, 2 do
 		local predicate = if pass == 1 then policy.Validate else policy.Authorize
 		if predicate then
+			-- Policies cannot yield. A suspended check is denied and closed rather than
+			-- blocking the dispatcher indefinitely or running after authorization changes.
+			local thread = coroutine.create(predicate)
 			local ok, accepted
 			if scalar then
-				ok, accepted = pcall(predicate, player, args)
+				ok, accepted = coroutine.resume(thread, player, args)
 			else
-				ok, accepted = pcall(predicate, player, table.unpack(args, 1, args.n))
+				ok, accepted = coroutine.resume(thread, player, table.unpack(args, 1, args.n))
+			end
+			if coroutine.status(thread) ~= "dead" then
+				Stats.SecurityPolicyYieldRejects += 1
+				Stats.SecurityPolicyErrors += 1
+				coroutine.close(thread)
+				Stats.SecurityPolicyRejects += 1
+				return false
 			end
 			if not ok then Stats.SecurityPolicyErrors += 1 end
 			if not ok or accepted ~= true then
@@ -8709,6 +8734,121 @@ function NetStream.CreateIdempotencyGuard(options)
 		records[player] = nil
 	end
 	return table.freeze(guard)
+end
+
+-- Optional fail-closed mode for inbound Event/Function callbacks only.
+-- It does not authorize client-owned State routes or alter outbound server traffic.
+function NetStream.RequireServerPolicies(enabled)
+	assert(IS_SERVER, "RequireServerPolicies is server-only")
+	assert(not destroyed, "NetStream has been destroyed")
+	assert(type(enabled) == "boolean", "RequireServerPolicies expects a boolean")
+	requireServerPolicies = enabled
+	return enabled
+end
+
+-- A one-time, player-bound server-issued permission for a specific action.
+-- Tickets are deliberately NOT secrets and cannot establish client integrity.
+function NetStream.CreateActionGate(options)
+	assert(IS_SERVER, "CreateActionGate is server-only")
+	assert(not destroyed, "NetStream has been destroyed")
+	assert(options == nil or type(options) == "table", "ActionGate options must be a table")
+	options = options or {}
+	local ttl = if options.TTLSeconds == nil then 10 else options.TTLSeconds
+	local cap = if options.MaxTicketsPerPlayer == nil then 32 else options.MaxTicketsPerPlayer
+	assert(type(ttl) == "number" and isFiniteNumber(ttl) and ttl >= 1 and ttl <= 300, "ActionGate TTLSeconds must be 1..300")
+	assert(type(cap) == "number" and isInteger(cap) and cap >= 1 and cap <= 1024, "ActionGate MaxTicketsPerPlayer must be 1..1024")
+	local records = setmetatable({}, {__mode = "k"})
+	local nextTicket = 0
+	local gate = {}
+	local function connected(player)
+		return typeof(player) == "Instance" and player:IsA("Player") and player.Parent == Players
+	end
+	local function cleanup(entries, now)
+		local live = 0
+		for id, entry in pairs(entries) do
+			if entry.expires <= now then entries[id] = nil else live += 1 end
+		end
+		return live
+	end
+	local function validAction(value)
+		return type(value) == "string" and #value > 0 and #value <= 64
+	end
+	local function validServerPayload(value)
+		if value == nil or type(value) == "boolean" then return true end
+		if type(value) == "number" then return isFiniteNumber(value) end
+		return type(value) == "string" and #value <= 128
+	end
+	function gate:Issue(player, action, payload)
+		assert(self == gate, "ActionGate Issue requires :")
+		assert(not destroyed, "NetStream has been destroyed")
+		assert(connected(player), "ActionGate Issue expects a connected Player")
+		assert(validAction(action), "ActionGate requires a nonempty action name <=64 bytes")
+		assert(validServerPayload(payload), "ActionGate server payload must be a primitive")
+		local now = os.clock()
+		local entries = records[player]
+		if not entries then entries = {}; records[player] = entries end
+		if cleanup(entries, now) >= cap then
+			Stats.SecurityTicketsCapacityDrops += 1
+			return nil, "Capacity"
+		end
+		if nextTicket >= 4294967295 then return nil, "Exhausted" end
+		nextTicket += 1
+		entries[nextTicket] = {action = action, payload = payload, expires = now + ttl, used = false}
+		Stats.SecurityTicketsIssued += 1
+		return nextTicket
+	end
+	function gate:Redeem(player, ticketId, action, handler)
+		assert(self == gate, "ActionGate Redeem requires :")
+		assert(not destroyed, "NetStream has been destroyed")
+		assert(type(handler) == "function", "ActionGate Redeem expects a server handler")
+		if not connected(player) or not validAction(action)
+			or type(ticketId) ~= "number" or not isInteger(ticketId) or ticketId < 1 or ticketId > 4294967295 then
+			Stats.SecurityTicketsRejected += 1
+			return false, "InvalidRequest"
+		end
+		local entries = records[player]
+		local entry = entries and entries[ticketId]
+		if not entry then
+			Stats.SecurityTicketsRejected += 1
+			return false, "Unknown"
+		end
+		if entry.expires <= os.clock() then
+			entries[ticketId] = nil
+			Stats.SecurityTicketsRejected += 1
+			return false, "Expired"
+		end
+		if entry.used then
+			Stats.SecurityTicketsReplayDrops += 1
+			Stats.SecurityTicketsRejected += 1
+			return false, "Duplicate"
+		end
+		if entry.action ~= action then
+			Stats.SecurityTicketsRejected += 1
+			return false, "WrongAction"
+		end
+		-- Reserve before the handler executes, including if it yields.
+		entry.used = true
+		local results
+		local ok = xpcall(function() results = table.pack(handler(player, entry.payload)) end, debug.traceback)
+		if not ok then
+			Stats.SecurityTicketsHandlerErrors += 1
+			return false, "HandlerError"
+		end
+		Stats.SecurityTicketsRedeemed += 1
+		return true, table.unpack(results, 1, results.n)
+	end
+	function gate:Revoke(player, ticketId)
+		assert(self == gate, "ActionGate Revoke requires :")
+		local entries = records[player]
+		if not entries or not entries[ticketId] then return false end
+		entries[ticketId] = nil
+		return true
+	end
+	function gate:ClearPlayer(player)
+		assert(self == gate, "ActionGate ClearPlayer requires :")
+		records[player] = nil
+	end
+	return table.freeze(gate)
 end
 
 function NetStream.CreateDeltaCodec(fieldNames)
