@@ -35,6 +35,7 @@ These improvements are implemented on `main`, without a release-number or wire-f
 
 ### Testing and verification
 
+- Standardized the entire Markdown documentation set around the current main-branch status, installation, security boundaries, and reproducible test instructions. Added a CI check for local documentation links, titles, and fenced code.
 - Expanded the pinned Luau CI regressions for codec, RPC, security, state, malformed packets, packet-size bounds, and memory-pool behavior.
 - Added a deterministic 96-peer **simulation**, including 512 concurrent yielding RPC callbacks, packet fuzzing, one-use ticket replay tests, and revisioned state transitions.
 - Added reproducible packer microbenchmark and in-process A/B comparison commands. These tests execute production Luau functions but do not simulate live Roblox networking.
