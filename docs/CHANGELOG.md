@@ -2,6 +2,13 @@
 
 The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
 
+## v4.3.1 security hardening patch candidate (unreleased)
+
+- Add opt-in server-only authorization and input validation for Event and Function routes. Guard execution is shared across event scalar/tuple dispatch and RPCs; exceptions and non-true responses fail closed.
+- Add a bounded per-player, in-memory idempotency guard for transaction IDs, including reservations for yielding handlers. This does not constitute durable exactly-once delivery.
+- Expose security rejection/error/duplicate/capacity telemetry, add executable production-code Luau regressions and a server-authoritative usage guide.
+- No wire or compression codec changes; unchanged/unprotected routes retain their existing behavior. Roblox Studio integration and load tests are required before release.
+
 ## v4.3.1 — Runtime regression gates, strict delta frames and RPC teardown
 
 - Reproduce and reject nil-mask wraparound and noncanonical delta value arrays; bound validation work to the schema's maximum 32 values plus one rejected entry.
