@@ -10,6 +10,14 @@ const version = "4.3.1";
 const securitySource = read("Netstream.lua");
 assert(securitySource.includes("function NetStream.SetServerPolicy(route, policy)"), "Missing server policy API");
 assert(securitySource.includes("function NetStream.CreateIdempotencyGuard(options)"), "Missing idempotency API");
+
+assert(securitySource.includes("function NetStream.CreateActionGate(options)"), "Missing server-issued action gate");
+assert(securitySource.includes("function NetStream.RequireServerPolicies(enabled)"), "Missing strict-policy mode");
+assert(securitySource.includes("function NetStream.RejectClientStateRoutes(enabled)"), "Missing State ingress block");
+assert(securitySource.includes("if IS_SERVER and player and rejectClientStateRoutes and route and stateRoutes[route.Id] == route"), "State ingress not fail-closed");
+assert(securitySource.includes("entry.used = true"), "Ticket must be consumed before running handler");
+assert(securitySource.includes("coroutine.close(thread)"), "Yielding policies must close suspended checks");
+assert(read("tests/runtime/tickets.luau").includes("State ingress rejection"), "Missing ticket security regressions");
 assert(securitySource.includes("Internal.allowServerRoute(route, player, args, false)"), "Missing event dispatch policy gate");
 assert(securitySource.includes("Internal.allowServerRoute(route, player, value, true)"), "Missing scalar policy gate");
 assert(securitySource.includes("Internal.allowServerRoute(route, player, args, false) then"), "Missing inbound policy checks");
