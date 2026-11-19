@@ -9154,14 +9154,31 @@ function NetStream.GetState(player)
 	return Internal.getPeerState(nil)
 end
 
+-- Snapshot must not share mutable nested State payload tables or buffers.
+-- Peer state is client-reported data, not server-authoritative gameplay state.
+local function cloneStateSnapshot(value, seen)
+	if typeof(value) == "buffer" then
+		local copy = buffer.create(buffer.len(value))
+		buffer.copy(copy, 0, value)
+		return copy
+	end
+	if type(value) ~= "table" then return value end
+	local prior = seen[value]
+	if prior then return prior end
+	local copy = table.clone(value)
+	seen[value] = copy
+	for key, nested in pairs(value) do copy[key] = cloneStateSnapshot(nested, seen) end
+	return copy
+end
+
 function NetStream.GetStateSnapshot(player)
 	if IS_SERVER then
 		assert(player and player:IsA("Player"), "NetStream.GetStateSnapshot(player) requires a Player on the server")
 		local state = Internal.peekPeerState(player)
-		return if state then table.clone(state) else {}
+		return if state then cloneStateSnapshot(state, {}) else {}
 	end
 	local state = Internal.peekPeerState(nil)
-	return if state then table.clone(state) else {}
+	return if state then cloneStateSnapshot(state, {}) else {}
 end
 
 function NetStream.GetLastPacketBytes()
