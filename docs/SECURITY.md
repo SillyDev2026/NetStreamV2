@@ -1,5 +1,9 @@
 # NetStreamV2 server security policies (v4.3.1 patch candidate)
 
+For the stronger server-issued one-use ticket flow, fail-closed callback mode,
+and client State ingress rejection, see [Action-gate security](ACTION_GATE_SECURITY.md).
+
+
 NetStream's client is **untrusted**. This patch adds an opt-in, server-only policy
 gateway for inbound `Event` and `Function` routes, with a bounded idempotency
 helper. It does **not** prevent exploiters from sending remote packets, make
