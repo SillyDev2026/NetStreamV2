@@ -52,6 +52,25 @@ assert(net.RejectClientStateRoutes(false) == false)
 assert(hooks.allowance(stateRoute, player, 1) == 1, "State compatibility mode broken")
 print("PASS TICKETS: State ingress rejection before peer-state mutation")
 
+local nested = {Payload = {Score = 8, Encoded = buffer.fromstring("abc")}}
+local internalState = net.GetState(player)
+internalState[9945] = nested
+local firstSnapshot = net.GetStateSnapshot(player)
+local secondSnapshot = net.GetStateSnapshot(player)
+assert(firstSnapshot ~= internalState and firstSnapshot[9945] ~= nested, "Snapshot returned live state")
+assert(firstSnapshot[9945].Payload ~= nested.Payload, "Snapshot retained nested table alias")
+assert(firstSnapshot[9945].Payload.Encoded ~= nested.Payload.Encoded, "Snapshot retained mutable buffer alias")
+firstSnapshot[9945].Payload.Score = 123
+buffer.writeu8(firstSnapshot[9945].Payload.Encoded, 0, 122)
+assert(nested.Payload.Score == 8 and buffer.readu8(nested.Payload.Encoded, 0) == 97, "Editing snapshot mutated trusted cached state")
+assert(secondSnapshot[9945].Payload.Score == 8, "Separate snapshots aliased each other")
+local cyclic = {}
+cyclic.Self = cyclic
+internalState[9946] = cyclic
+local cyclicSnapshot = net.GetStateSnapshot(player)
+assert(cyclicSnapshot[9946] ~= cyclic and cyclicSnapshot[9946].Self == cyclicSnapshot[9946], "Snapshot failed to clone cycles safely")
+print("PASS STATE: nested tables, mutable buffers and cyclic snapshots are detached")
+
 local gate = net.CreateActionGate({TTLSeconds = 20, MaxTicketsPerPlayer = 2})
 assert(not pcall(function() gate:Issue(player, "Buy", {}) end), "Mutable server payload allowed")
 assert(not pcall(function() gate:Issue(player, "", 1) end), "Empty action allowed")
