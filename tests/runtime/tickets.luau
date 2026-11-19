@@ -38,6 +38,16 @@ assert(rpcRuns == 1 and net.GetRPCStats().Active == 0, "Guarded RPC failed")
 assert(net.RequireServerPolicies(false) == false)
 print("PASS TICKETS: fail-closed opt-in policies, yield rejection, RPC and disconnect")
 
+local stateRoute = {Id = 9944}
+hooks.registerState(stateRoute.Id, stateRoute)
+assert(net.RejectClientStateRoutes(true))
+assert(hooks.allowance(stateRoute, player, 1) == 0)
+assert(hooks.allowance(stateRoute, player, 3) == 0)
+assert(net.GetStats().SecurityClientStateDrops == 4, "Blocked client State updates were not counted")
+assert(net.RejectClientStateRoutes(false) == false)
+assert(hooks.allowance(stateRoute, player, 1) == 1, "State compatibility mode broken")
+print("PASS TICKETS: State ingress rejection before peer-state mutation")
+
 local gate = net.CreateActionGate({TTLSeconds = 20, MaxTicketsPerPlayer = 2})
 assert(not pcall(function() gate:Issue(player, "Buy", {}) end), "Mutable server payload allowed")
 assert(not pcall(function() gate:Issue(player, "", 1) end), "Empty action allowed")
