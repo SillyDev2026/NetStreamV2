@@ -154,3 +154,16 @@ assert(third and third > secondTicket, "Revoked ticket slot was not recovered")
 assert(rollover:Redeem(player, third, "Repeat", function() return true end))
 assert(not rollover:Redeem(player, third, "Repeat", function() error("Replay executed") end))
 print("PASS TICKETS: consumed offers free admission, tombstones bounded and revocation accurate")
+
+local sustained = net.CreateActionGate({TTLSeconds = 30, MaxTicketsPerPlayer = 4})
+local previousId = 0
+for iteration = 1, 512 do
+    local requestId = sustained:Issue(player, "Cycle", iteration)
+    assert(requestId and requestId > previousId, "Tickets were reused or leaked admission capacity")
+    local accepted, echoed = sustained:Redeem(player, requestId, "Cycle", function(_, value) return value end)
+    assert(accepted and echoed == iteration, "Action ticket was rejected before expiration")
+    local replayed = sustained:Redeem(player, requestId, "Cycle", function() error("Replay executed") end)
+    assert(not replayed, "Previously redeemed ticket was reused")
+    previousId = requestId
+end
+print("PASS TICKETS: 512 issue/redeem/replay cycles without capacity leaks")
