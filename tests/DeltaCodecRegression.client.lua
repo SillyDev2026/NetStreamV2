@@ -2,7 +2,7 @@
 -- Pair with DeltaCodecRegression.server.lua in a separate Roblox Studio Play session.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false})
 local T = NetStream.Types
 local Codec = NetStream.CreateDeltaCodec({"Coins", "Wins", "Title", "Ready"})
@@ -23,7 +23,7 @@ Frame:Connect(function(packet)
     elseif received == 2 then
         assert(revision == 2 and current.Coins == 12 and current.Wins == 1 and current.Title == nil and current.Ready == true, "Delta changes corrupted")
         assert(Ack:FireServer(received), "Could not acknowledge delta state")
-        print("NetStream v4.3.0 delta codec CLIENT PASS")
+        print("NetStream v4.3.1 delta codec CLIENT PASS")
     else
         error("Unexpected extra delta frame")
     end

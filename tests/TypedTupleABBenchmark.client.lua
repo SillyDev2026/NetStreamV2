@@ -2,7 +2,7 @@
 -- StarterPlayerScripts. Pair with TypedTupleABBenchmark.server.lua; run separate sessions with optional BoolValue "NSTypedTupleFastPath".
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 local switch = ReplicatedStorage:FindFirstChild("NSTypedTupleFastPath")
 local fast = if switch and switch:IsA("BoolValue") then switch.Value else true
 NetStream.Configure({HandshakeEnabled = false, TypedTupleFastPathEnabled = fast, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.03, TransportTargetMessagesPerPacket = 128, PackedSchemaRunEnabled = true, PackedSchemaRunMaxFields = 16, MaxBatchMessages = 256, PerformanceTelemetryEnabled = true, PerformanceTelemetrySampleEvery = 1, PerformanceTelemetryCapacity = 512})

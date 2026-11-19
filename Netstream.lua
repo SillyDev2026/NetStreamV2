@@ -212,7 +212,7 @@ end
 
 local IS_SERVER = RunService:IsServer()
 local ALL = {}
-local VERSION = "4.3.0"
+local VERSION = "4.3.1"
 -- Legacy byte protocols are retained only for BitFrameEnabled=false fallback.
 -- Keep them on Internal so BitFrame does not spend top-level Luau registers.
 Internal.LEGACY_PROTOCOL = 0x30
@@ -5959,6 +5959,7 @@ local function enqueueDispatchScalar(route, player, value)
 end
 
 local function enqueueReturn(player, id, ok, results)
+	if destroyed or (IS_SERVER and (not player or player.Parent ~= Players)) then return end
 	local args = acquireArgsCount(results.n + 1)
 	args[1] = ok
 	for i = 1, results.n do
@@ -8643,7 +8644,7 @@ function NetStream.CreateDeltaCodec(fieldNames)
 		local nilMask = frame.NilMask
 		local values = frame.Values
 		if type(full) ~= "boolean" or type(mask) ~= "number" or not isInteger(mask) or mask < 0 or mask > fullMask
-			or type(nilMask) ~= "number" or not isInteger(nilMask) or nilMask < 0 or bit32.band(nilMask, bit32.bnot(mask)) ~= 0
+			or type(nilMask) ~= "number" or not isInteger(nilMask) or nilMask < 0 or nilMask > fullMask or bit32.band(nilMask, bit32.bnot(mask)) ~= 0
 			or type(values) ~= "table" or not validRevision(frame.Revision) then
 			return nil, previousRevision, "Malformed delta frame"
 		end
@@ -8654,6 +8655,20 @@ function NetStream.CreateDeltaCodec(fieldNames)
 			or frame.Revision ~= previousRevision + 1 or mask == 0 then
 			return nil, previousRevision, "Delta revision mismatch; request a full snapshot"
 		end
+		local valueBits = bit32.band(mask, bit32.bnot(nilMask))
+		local expectedValues = 0
+		while valueBits ~= 0 do
+			valueBits = bit32.band(valueBits, valueBits - 1)
+			expectedValues += 1
+		end
+		local actualValues = 0
+		for key in pairs(values) do
+			actualValues += 1
+			if actualValues > expectedValues or type(key) ~= "number" or not isInteger(key) or key < 1 or key > expectedValues then
+				return nil, previousRevision, "Invalid delta value array"
+			end
+		end
+		if actualValues ~= expectedValues then return nil, previousRevision, "Delta value count mismatch" end
 		local nextState = {}
 		if not full then
 			for i = 1, count do

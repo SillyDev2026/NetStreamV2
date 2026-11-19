@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.3.0-2563eb)
+![Release](https://img.shields.io/badge/release-v4.3.1-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current release candidate: NetStream v4.3.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
+> **Current release candidate: NetStream v4.3.1.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Executable standalone Luau regressions, source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -166,6 +166,14 @@ sequenceDiagram
 ```
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
+
+## v4.3.1: Executable regression gates and lifecycle fixes
+
+- **Delta validation:** Reject nil masks above the schema width before 32-bit conversion; reject sparse or keyed value arrays before allocating the next state. Valid snapshots/deltas retain their existing format.
+- **RPC cleanup:** Callbacks completing after player disconnect or `Destroy()` no longer recreate outbound queues. Existing callbacks still finish and return their concurrency slots.
+- **Runtime CI:** Run the production modules in the official Luau VM: 1,000 native codec tuple round-trips, 500 compression round-trip/corruption cases, 2,000 delta transitions, malformed-frame rejection, and yielding RPC lifecycle tests. Minimal Roblox service mocks do **not** simulate network delivery or Studio scheduling.
+
+See [runtime validation and remaining gaps](docs/RUNTIME_VALIDATION.md). There is no measured claim of lower ping or superiority to competing libraries.
 
 ## v4.3.0: RPC overload protection and lower-cost argument copies
 

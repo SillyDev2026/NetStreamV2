@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, BandwidthGovernorEnabled = false, MaxDispatchPerCycle = 2, MaxDispatchBacklog = 64, TransportFastFlushEnabled = false, MaxBatchMessages = 128})
 local T = NetStream.Types
 local Data = NetStream.Event("__NSDispatchCompactionData", {Id = 40101, Schema = {T.U16}, Compression = false})
@@ -19,5 +19,5 @@ task.delay(30, function()
 	assert(stats.DecodeErrors == 0, "Packet decode failed under sustained backlog")
 	assert(accepted >= 65, "Stress run did not process enough dispatch items")
 	assert(stats.DispatchQueueCompactions > 0, "Sustained pending dispatch queue did not compact; inspect packet delivery")
-	print("NetStream v4.3.0 dispatch compaction PASS", "processed", accepted, "compactions", stats.DispatchQueueCompactions, "dropped", stats.DroppedDispatch)
+	print("NetStream v4.3.1 dispatch compaction PASS", "processed", accepted, "compactions", stats.DispatchQueueCompactions, "dropped", stats.DroppedDispatch)
 end)

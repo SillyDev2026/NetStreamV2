@@ -2,7 +2,7 @@
 -- StarterPlayerScripts; pair with DispatchFairnessRegression.server.lua in Studio.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.1, MaxBatchMessages = 256, MaxDispatchPerCycle = 1, MaxDispatchBacklog = 64, DispatchPerPlayerBacklogLimit = 12, DispatchBudgetCheckInterval = 1})
 local T = NetStream.Types
 local Ready = NetStream.Event("__NSDispatchReady43", {Id = 44301, Schema = {T.Bool}, Compression = false})
@@ -13,7 +13,7 @@ Ack:Connect(function(delivered, dropped)
     assert(delivered >= 1 and delivered <= 160, "Invalid delivered count")
     assert(dropped > 0, "Per-player cap did not discard excess pending callbacks")
     finished = true
-    print("NetStream v4.3.0 dispatch client PASS", delivered, dropped)
+    print("NetStream v4.3.1 dispatch client PASS", delivered, dropped)
 end)
 assert(Ready:FireServerNow(true), "Dispatch ready handshake failed")
 task.wait(1)

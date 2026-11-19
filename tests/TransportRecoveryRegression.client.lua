@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, PackedSchemaRunEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0, BandwidthGovernorEnabled = true, BandwidthLimitBytesPerSecond = 64000, BandwidthMaxPacketsPerSecond = 1, MaxBatchMessages = 64})
 local T = NetStream.Types
 local Event = NetStream.Event("__NSIsolatedRecovery", {Id = 37041, Schema = {T.U16}, Compression = false, Trusted = true})
@@ -14,7 +14,7 @@ Ack:Connect(function(value)
 	assert(stats.TransportDeferredRestoredMessages >= 1, "Expected deferred reliable messages to be restored")
 	assert(stats.DecodeErrors == 0, "Recovery produced malformed inbound packets")
 	finished = true
-	print("NetStream 4.3.0 isolated defer recovery CLIENT PASS", "deferred", stats.TransportDeferredRestoredMessages, "rejected", stats.RejectedMessages)
+	print("NetStream 4.3.1 isolated defer recovery CLIENT PASS", "deferred", stats.TransportDeferredRestoredMessages, "rejected", stats.RejectedMessages)
 end)
 task.wait(2)
 assert(Event:FireServer(1), "First valid recovery payload rejected")

@@ -2,7 +2,7 @@
 -- ServerScriptService; pair with BroadcastBudgetRegression.client.lua in Studio.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.1, BroadcastFlushBudgetFraction = 0.25, MaxBatchesPerFlush = 2, MaxBatchMessages = 128})
 local T = NetStream.Types
 local Ready = NetStream.Event("__NSBroadcastReady43", {Id = 44311, Schema = {T.Bool}, Compression = false})
@@ -22,6 +22,6 @@ Ready:Connect(function(player, ready)
         local stats = NetStream.GetStats()
         assert(stats.BroadcastBudgetSlices > 0, "Broadcast consumed full budget without reserving targeted time")
         assert(Ack:FireClient(player, stats.BroadcastBudgetSlices), "Broadcast ACK enqueue failed")
-        print("NetStream v4.3.0 broadcast scheduler PASS", stats.BroadcastBudgetSlices)
+        print("NetStream v4.3.1 broadcast scheduler PASS", stats.BroadcastBudgetSlices)
     end)
 end)

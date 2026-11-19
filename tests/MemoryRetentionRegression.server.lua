@@ -2,7 +2,7 @@
 -- ServerScriptService. Pair with MemoryRetentionRegression.client.lua in an isolated Play session.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.0")
+assert(NetStream.GetVersion() == "4.3.1")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, PackedSchemaRunEnabled = false, TransportBatchWindowSeconds = 0, MaxBatchMessages = 32, MaxBatchesPerFlush = 1, QueueRetainMaxSlots = 16, MaxPooledDictionaryEntries = 16})
 local T = NetStream.Types
 local Ready = NetStream.Event("__NSMemReady43", {Id = 44360, Schema = {T.Bool}, Compression = false})
