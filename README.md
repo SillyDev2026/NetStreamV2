@@ -198,6 +198,7 @@ Node.js and the official Luau command-line interpreter are required for standalo
 
 ```bash
 node scripts/source-audit.mjs
+node scripts/docs-audit.mjs
 node scripts/runtime-tests.mjs
 node scripts/runtime-tests.mjs --stress-only
 node scripts/runtime-tests.mjs --profile-only
