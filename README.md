@@ -22,7 +22,7 @@ path; exact varint-length reservations avoid unnecessary capacity expansion.
 Packets remain byte-compatible with BitFrame v1 and codec 230.
 
 See [packer memory optimization and baseline profiling](docs/PACKER_MEMORY_OPTIMIZATION.md).
-Run `node scripts/runtime-tests.mjs --profile-only` to reproduce the Luau
+Run `node scripts/runtime-tests.mjs --profile-only` for source-level timing and `node scripts/runtime-tests.mjs --compare-only` for same-process original-versus-pooled Codec timings. These Luau
 microbenchmarks; CI also runs the new pool, malformed-input and wire-format
 regressions. Real Roblox Studio heap/CPU profiling remains pending.
 
