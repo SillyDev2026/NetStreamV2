@@ -15,7 +15,10 @@
 
 ## Codec memory and packer improvements (unreleased)
 
-The standalone `NetStream.Codec` now reuses bounded writer, reader and
+The native Codec packs tiny (up to four) primitive arguments directly into the
+final output buffer and parses matching packets without constructing temporary
+writer/reader wrappers. Larger or dictionary-based payloads use existing
+bounded pools. The standalone `NetStream.Codec` now reuses bounded writer, reader and
 argument-array pools, cutting temporary object churn on repeated encode/decode
 calls. Small native varints and short BitFrame route IDs use a faster packing
 path; exact varint-length reservations avoid unnecessary capacity expansion.
