@@ -26,11 +26,12 @@ local function hex(data)
 end
 assert(hex(net.Codec.Encode(7, false, "abc")) == "0003271063616263", "Codec changed the baseline wire bytes")
 local stats = net.GetStats()
-assert(stats.WriterPoolHits >= 2700, "Codec encode still allocates a writer per packet")
+assert(stats.CodecTinyFastEncodes >= 2500 and stats.CodecTinyFastDecodes >= 2500, "Tiny primitives did not use the direct native codec")
+assert(stats.WriterPoolHits >= 200, "Complex Codec encode still allocates a writer per packet")
 assert(stats.ArgsPoolHits >= 2700, "Codec encode still allocates argument tables per packet")
-assert(stats.ReaderPoolHits >= 2700, "Codec decode still allocates a reader per packet")
+assert(stats.ReaderPoolHits >= 200, "Complex Codec decode still allocates a reader per packet")
 assert(stats.WriterPoolSize >= 1 and stats.ReaderPoolSize >= 1, "Pooled resources were not retained")
-print("PASS PACKER: 2750 encoder/decoder cycles reused argument/writer/reader pools and preserved independent buffers")
+print("PASS PACKER: 2500 tiny direct tuples and 250 pooled complex tuples preserved independent buffers")
 
 local bad = buffer.create(buffer.len(first) - 1)
 buffer.copy(bad, 0, first, 0, buffer.len(bad))
@@ -58,3 +59,24 @@ writer = hooks.makeRawWriter(1024, 1024)
 writer.position = 1023
 assert(not pcall(function() writer:varUInt(128) end), "Oversized varuint crossed strict max-byte bound")
 print("PASS PACKER: exact varuint reservation preserves bytes and enforces output limits")
+
+local fixture = {
+    table.pack(),
+    table.pack(nil),
+    table.pack(true, false, nil, 0),
+    table.pack(-7, -1, 14, ""),
+    table.pack("xy", "xy", false),
+    table.pack(0, 1, -7, "four"),
+    table.pack(15, false, "fallback"),
+    table.pack("012345678901234", false),
+}
+for _, args in fixture do
+    local encoded = net.Codec.Encode(table.unpack(args, 1, args.n))
+    local decoded = table.pack(net.Codec.Decode(encoded))
+    assert(decoded.n == args.n, "Tiny/fallback argument count changed")
+    for i = 1, args.n do assert(decoded[i] == args[i], "Tiny/fallback primitive value changed at field " .. i) end
+    local ok, errorMessage = net.Codec.TryDecode(encoded)
+    assert(ok and errorMessage.n == args.n, "Tiny/fallback TryDecode failed")
+end
+assert(net.GetStats().CodecTinyFastEncodes > 2500, "No canonical tiny outputs produced")
+print("PASS PACKER: empty args, nil, signs, bools, duplicate strings and threshold fallbacks")
