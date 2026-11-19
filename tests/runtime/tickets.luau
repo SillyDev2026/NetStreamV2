@@ -71,6 +71,16 @@ local cyclicSnapshot = net.GetStateSnapshot(player)
 assert(cyclicSnapshot[9946] ~= cyclic and cyclicSnapshot[9946].Self == cyclicSnapshot[9946], "Snapshot failed to clone cycles safely")
 print("PASS STATE: nested tables, mutable buffers and cyclic snapshots are detached")
 
+local falseRoute = {Id = 9947}
+hooks.registerState(falseRoute.Id, falseRoute)
+internalState[falseRoute.Id] = false
+assert(hooks.stateGet(falseRoute, player) == false, "StateRoute:Get collapsed false to nil")
+internalState[falseRoute.Id] = true
+assert(hooks.stateGet(falseRoute, player) == true, "StateRoute:Get failed for true")
+internalState[falseRoute.Id] = nil
+assert(hooks.stateGet(falseRoute, player) == nil, "StateRoute:Get failed for absent value")
+print("PASS STATE: boolean false/true and absent-value parity")
+
 local gate = net.CreateActionGate({TTLSeconds = 20, MaxTicketsPerPlayer = 2})
 assert(not pcall(function() gate:Issue(player, "Buy", {}) end), "Mutable server payload allowed")
 assert(not pcall(function() gate:Issue(player, "", 1) end), "Empty action allowed")
