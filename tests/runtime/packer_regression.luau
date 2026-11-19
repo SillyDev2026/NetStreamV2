@@ -19,11 +19,18 @@ for i = 1, 2500 do
         assert(buffer.tostring(large) == largeBytes, "Pooled writer corrupted earlier complex packet")
     end
 end
+local function hex(data)
+    local chars = table.create(buffer.len(data))
+    for index = 0, buffer.len(data) - 1 do chars[index + 1] = string.format("%02x", buffer.readu8(data, index)) end
+    return table.concat(chars)
+end
+assert(hex(net.Codec.Encode(7, false, "abc")) == "0003271063616263", "Codec changed the baseline wire bytes")
 local stats = net.GetStats()
 assert(stats.WriterPoolHits >= 2700, "Codec encode still allocates a writer per packet")
+assert(stats.ArgsPoolHits >= 2700, "Codec encode still allocates argument tables per packet")
 assert(stats.ReaderPoolHits >= 2700, "Codec decode still allocates a reader per packet")
 assert(stats.WriterPoolSize >= 1 and stats.ReaderPoolSize >= 1, "Pooled resources were not retained")
-print("PASS PACKER: 2750 encoder/decoder cycles reused pooled wrappers and preserved separate buffers")
+print("PASS PACKER: 2750 encoder/decoder cycles reused argument/writer/reader pools and preserved independent buffers")
 
 local bad = buffer.create(buffer.len(first) - 1)
 buffer.copy(bad, 0, first, 0, buffer.len(bad))
