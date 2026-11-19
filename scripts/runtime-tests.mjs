@@ -27,6 +27,7 @@ NetStream.__test = {
     startWithoutTransport = function() started = true end,
     receivePacket = receive,
     drainDispatch = runDispatch,
+    makeRawWriter = function(capacity, maxBytes) return Writer.new(capacity, maxBytes) end,
     peekRPCReply = function(player)
         local bucket = targetBuckets[player]
         local queue = bucket and bucket.reliable
@@ -81,7 +82,7 @@ local function loadNetStream()
 end
 `;
 try {
-    const suites = process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets']);
+    const suites = process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression']);
     for (const suite of suites) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
