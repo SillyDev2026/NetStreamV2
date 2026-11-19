@@ -18,6 +18,14 @@ assert(securitySource.includes("if IS_SERVER and player and rejectClientStateRou
 assert(securitySource.includes("entry.used = true"), "Ticket must be consumed before running handler");
 assert(securitySource.includes("coroutine.close(thread)"), "Yielding policies must close suspended checks");
 assert(read("tests/runtime/tickets.luau").includes("State ingress rejection"), "Missing ticket security regressions");
+
+assert(source.includes("if enabled and not rejectClientStateRoutes then"), "Enabling strict State mode must purge previously accepted state");
+assert(source.includes("local function cloneStateSnapshot(value, seen)"), "Snapshots must clone nested mutable State values");
+assert(source.includes("return if state then state[self.Id] else nil"), "StateRoute:Get must preserve false");
+assert(!source.includes("return state and state[self.Id] or nil"), "Boolean false State regression");
+assert(source.includes("if entry.used then return false end"), "Used tickets must not claim successful revocation");
+assert(source.includes("Consumed tickets no longer occupy the outstanding-offer budget"), "Consumed tickets must not block fresh offers");
+
 assert(securitySource.includes("Internal.allowServerRoute(route, player, args, false)"), "Missing event dispatch policy gate");
 assert(securitySource.includes("Internal.allowServerRoute(route, player, value, true)"), "Missing scalar policy gate");
 assert(securitySource.includes("Internal.allowServerRoute(route, player, args, false) then"), "Missing inbound policy checks");
