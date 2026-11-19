@@ -1,5 +1,25 @@
 # NetStreamV2 Changelog
 
+## RPC error-information disclosure fix (unreleased)
+
+- Stop returning raw server callback exceptions, stack traces, or value-validation
+  error details to remote clients. Return generic RPC error descriptions, log
+  details server-side under debug diagnostics, and expose separate callback/
+  invalid-return counters.
+- Add a Luau regression that deliberately includes a private marker inside
+  a server exception and asserts it is absent from the queued client reply.
+
+## Standalone Luau stress regression gate (unreleased)
+
+- Add deterministic 96-peer simulated server load and adversarial tests against
+  actual BitFrame encode/receive/dispatch, legacy fallback, strict command
+  authorization, 512 in-flight RPCs, one-time tickets, deduplication, delta
+  revisions, codec integrity and malformed-packet fuzzing.
+- Run stress as an independent mandatory GitHub Actions job step using the
+  pinned Luau interpreter. Captured times are interpreter workload timings,
+  not Roblox networking benchmarks.
+- Document the reproduction command and remaining Studio multiplayer gaps.
+
 ## Unreleased v4.3.1 reliability and security bug fixes
 
 - Clear pre-existing client-origin peer-state cache when `RejectClientStateRoutes(true)` is first enabled, preventing stale untrusted values from remaining visible in `GetState` / `GetStateSnapshot`.

@@ -24,6 +24,41 @@ NetStream.__test = {
     dispatchScalar = dispatchRouteScalar,
     charge = Internal.chargeIncomingCall,
     run = Internal.runIncomingCall,
+    startWithoutTransport = function() started = true end,
+    receivePacket = receive,
+    drainDispatch = runDispatch,
+    peekRPCReply = function(player)
+        local bucket = targetBuckets[player]
+        local queue = bucket and bucket.reliable
+        local message = queue and queue.items[queue.tail]
+        if not message or message.kind ~= KIND_RETURN then return nil end
+        return table.pack(table.unpack(message.args, 1, message.args.n))
+    end,
+    encodeEventPacket = function(routeId, ...)
+        local route = assert(eventRoutes[routeId], "Missing stress route")
+        local args = table.pack(...)
+        local message = makeMessage(KIND_EVENT, routeId, 0, args, route._schema, "Normal")
+        local packet = Internal.encodeBitFrame({message})
+        releaseMessage(message)
+        return packet
+    end,
+    encodeTransportEvent = function(routeId, ...)
+        local route = assert(eventRoutes[routeId], "Missing transport route")
+        local args = table.pack(...)
+        local message = makeMessage(KIND_EVENT, routeId, 0, args, route._schema, "Normal")
+        local packet = encodeBatch({message})
+        releaseMessage(message)
+        return packet
+    end,
+    encodeTwoEvents = function(routeId, first, second)
+        local route = assert(eventRoutes[routeId], "Missing stress route")
+        local firstMessage = makeMessage(KIND_EVENT, routeId, 0, table.pack(first), route._schema, "Normal")
+        local secondMessage = makeMessage(KIND_EVENT, routeId, 0, table.pack(second), route._schema, "Normal")
+        local packet = Internal.encodeBitFrame({firstMessage, secondMessage})
+        releaseMessage(firstMessage)
+        releaseMessage(secondMessage)
+        return packet
+    end,
 }
 `;
 const bootstrap = `
@@ -46,7 +81,8 @@ local function loadNetStream()
 end
 `;
 try {
-    for (const suite of ['codec', 'delta', 'rpc', 'security', 'tickets']) {
+    const suites = process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets'];
+    for (const suite of suites) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
         const result = spawnSync(process.env.LUAU_BIN || 'luau', [path], {stdio: 'inherit'});

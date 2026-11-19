@@ -522,6 +522,8 @@ local Stats = {
 	IncomingCallConcurrencyDrops = 0,
 	IncomingCallPeak = 0,
 	IncomingCallExecutionErrors = 0,
+	IncomingCallCallbackErrors = 0,
+	IncomingCallInvalidResults = 0,
 	RejectedMessages = 0,
 	RejectedMalformedPackets = 0,
 	RejectedOversizedPackets = 0,
@@ -6049,7 +6051,8 @@ function Internal.handleCall(player, routeId, id, args)
 	end
 	if not callback then
 		releaseArgs(args)
-		enqueueReturn(player, id, false, table.pack("No NetStream callback registered for function route " .. tostring(routeId)))
+		Internal.debugWarn("No RPC callback registered for route:", routeId)
+		enqueueReturn(player, id, false, table.pack("Remote callback unavailable"))
 		return
 	end
 	local packed
@@ -6076,10 +6079,14 @@ function Internal.handleCall(player, routeId, id, args)
 		if valid then
 			enqueueReturn(player, id, true, packed)
 		else
-			enqueueReturn(player, id, false, table.pack("NetStream callback returned an unsupported value: " .. tostring(validationError)))
+			Stats.IncomingCallInvalidResults += 1
+			Internal.debugWarn("RPC callback returned invalid data:", validationError)
+			enqueueReturn(player, id, false, table.pack("Remote callback returned invalid data"))
 		end
 	else
-		enqueueReturn(player, id, false, table.pack(err))
+		Stats.IncomingCallCallbackErrors += 1
+		Internal.debugWarn("RPC callback raised an error:", err)
+		enqueueReturn(player, id, false, table.pack("Remote callback failed"))
 	end
 end
 
@@ -9549,6 +9556,8 @@ function NetStream.GetRPCStats(player)
 		PeakActive = Stats.IncomingCallPeak,
 		ConcurrencyDrops = Stats.IncomingCallConcurrencyDrops,
 		ExecutionErrors = Stats.IncomingCallExecutionErrors,
+		CallbackErrors = Stats.IncomingCallCallbackErrors,
+		InvalidResults = Stats.IncomingCallInvalidResults,
 	}
 end
 

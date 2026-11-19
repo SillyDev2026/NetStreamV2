@@ -42,3 +42,8 @@ jobs:
         env:
           LUAU_BIN: /tmp/luau-build/luau
         run: node scripts/runtime-tests.mjs
+      - name: Stress production server core with deterministic simulated peers
+        env:
+          LUAU_BIN: /tmp/luau-build/luau
+        timeout-minutes: 5
+        run: node scripts/runtime-tests.mjs --stress-only
