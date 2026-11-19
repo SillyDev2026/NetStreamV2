@@ -27,6 +27,13 @@ NetStream.__test = {
     startWithoutTransport = function() started = true end,
     receivePacket = receive,
     drainDispatch = runDispatch,
+    peekRPCReply = function(player)
+        local bucket = targetBuckets[player]
+        local queue = bucket and bucket.reliable
+        local message = queue and queue.items[queue.tail]
+        if not message or message.kind ~= KIND_RETURN then return nil end
+        return table.pack(table.unpack(message.args, 1, message.args.n))
+    end,
     encodeEventPacket = function(routeId, ...)
         local route = assert(eventRoutes[routeId], "Missing stress route")
         local args = table.pack(...)
