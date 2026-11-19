@@ -27,6 +27,23 @@ GitHub CI runs all three commands on the pinned Luau toolchain. The benchmark co
 
 The profile prints best-of-three Luau CPU timings, writer/reader pool hits, and golden packet bytes. CI worker variation and compiler warmup can affect timings, so treat a single comparison as **indicative**, not a controlled performance guarantee. `tests/runtime/packer_regression.luau` asserts 2,750 pooled encode/decode cycles, malformed-input recovery, unchanged golden wire bytes, and exact max-size varint boundaries.
 
+## One same-process A/B sample
+
+On the pinned official Luau CLI in [CI run 44510402505](https://github.com/SillyDev2026/NetStreamV2/actions/runs/44510402505), old per-call Writer.new/Reader.new behavior and the optimized public Codec API ran in the **same process**. Best-of-four timed loops produced:
+
+| Native Codec case | Original | Optimized | Measured change |
+| --- | ---: | ---: | ---: |
+| Small tuple encode | 1,930.8 ns/op | 1,140.5 ns/op | 40.9% faster |
+| Small tuple decode | 1,458.0 ns/op | 841.3 ns/op | 42.3% faster |
+| Structured tuple encode | 8,878.0 ns/op | 9,364.5 ns/op | 5.5% slower |
+| Structured tuple decode | 7,420.1 ns/op | 7,624.1 ns/op | 2.7% slower |
+
+The tiny fast path is the main CPU win. For structured payloads, the bounded
+pool currently has a small measured CPU cost; its purpose is to reduce
+temporary wrapper/backing-buffer allocation and GC churn. There is **no claim
+of an overall throughput gain** for every application workload. Writer/reader
+pool-hit counters demonstrate reuse but do not quantify Roblox heap savings.
+
 ## Production limitations
 
 - Pool hits are evidence of reuse, not a direct measurement of Lua heap or Roblox engine allocation counts.
