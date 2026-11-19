@@ -10013,9 +10013,10 @@ function Codec._DecodeArgs(data)
 end
 
 function Codec.Encode(...)
-	local args = table.pack(...)
+	local args = makeArgs(...)
 	validateArgs(args)
 	local data = Codec._EncodeArgs(args)
+	releaseArgs(args)
 	return data
 end
 
@@ -10025,12 +10026,12 @@ function Codec.Decode(data)
 end
 
 function Codec.TryEncode(...)
-	local args = table.pack(...)
+	local args = makeArgs(...)
 	local ok, dataOrError = pcall(function()
 		validateArgs(args)
-		local data = Codec._EncodeArgs(args)
-		return data
+		return Codec._EncodeArgs(args)
 	end)
+	releaseArgs(args)
 	if ok then return true, dataOrError, nil end
 	return false, nil, tostring(dataOrError)
 end
@@ -10046,9 +10047,10 @@ function Codec.ByteLength(...)
 end
 
 function Codec.Analyze(...)
-	local args = table.pack(...)
+	local args = makeArgs(...)
 	validateArgs(args)
 	local data, compressed, report = Codec._EncodeArgs(args)
+	releaseArgs(args)
 	return {
 		EncodedBytes = buffer.len(data),
 		Compressed = compressed,
