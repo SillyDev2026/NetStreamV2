@@ -5808,7 +5808,8 @@ function Internal.allowServerRoute(route, player, args, scalar)
 		return false
 	end
 	local policy = route._serverPolicy
-	for _, predicate in {policy.Validate, policy.Authorize} do
+	for pass = 1, 2 do
+		local predicate = if pass == 1 then policy.Validate else policy.Authorize
 		if predicate then
 			local ok, accepted
 			if scalar then
