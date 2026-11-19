@@ -1434,7 +1434,7 @@ function Internal.acquireScratchWriter(minCapacity)
 	if writer then
 		scratchWriterPool[#scratchWriterPool] = nil
 		writer.maxBytes = Config.MaxOutgoingBatchBytes
-		writer:reset()
+		-- Returned scratch writers are reset before entering the pool.
 		Stats.ScratchWriterPoolHits += 1
 	else
 		writer = Writer.new(math.max(128, minCapacity or 128), Config.MaxOutgoingBatchBytes)
@@ -1618,8 +1618,7 @@ function Internal.acquireBitFrameWriter()
 	if writer then
 		pool[#pool] = nil
 		writer.bitPosition = 0
-		table.clear(writer.strings)
-		table.clear(writer.stringToIndex)
+		-- releaseBitFrameWriter cleared its dictionaries before pooling.
 		Stats.BitFrameWriterPoolHits += 1
 		return writer
 	end
@@ -3095,8 +3094,7 @@ function Internal.acquireNativeMeasureState(writer)
 	else
 		state = { strings = {}, seen = {}, nextStringIndex = 0, stringEntries = 0 }
 	end
-	table.clear(state.strings)
-	table.clear(state.seen)
+	-- releaseNativeMeasureState clears both maps before reuse.
 	state.nextStringIndex = writer and #writer.strings or 0
 	state.stringEntries = 0
 	return state
@@ -3641,7 +3639,7 @@ local function acquirePackedValues(capacity)
 	local values = packedValuePool[#packedValuePool]
 	if values then
 		packedValuePool[#packedValuePool] = nil
-		table.clear(values)
+		-- releasePackedValues cleared the array before it was pooled.
 		Stats.PackedValuePoolHits += 1
 		return values
 	end
@@ -4743,7 +4741,7 @@ local function acquireWriter()
 	if writer then
 		writerPool[#writerPool] = nil
 		writer.maxBytes = Config.MaxOutgoingBatchBytes
-		writer:reset()
+		-- The release path already reset position, route state and dictionaries.
 		Stats.WriterPoolHits += 1
 		return writer
 	end
@@ -6138,7 +6136,14 @@ local function acquireReader(data)
 	local reader = readerPool[#readerPool]
 	if reader then
 		readerPool[#readerPool] = nil
-		reader:reset(data)
+		-- releaseReader cleared strings and detached its previous packet.
+		-- Rebinding does not need a second dictionary clear.
+		reader.buffer = data
+		reader.position = 0
+		reader.length = buffer.len(data)
+		reader.lastEventRoute = nil
+		reader.lastCallRoute = nil
+		reader.lastStateRoute = nil
 		Stats.ReaderPoolHits += 1
 		return reader
 	end
