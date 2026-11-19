@@ -418,6 +418,7 @@ local eventRoutes = {}
 local functionRoutes = {}
 local stateRoutes = {}
 local requireServerPolicies = false
+local rejectClientStateRoutes = false
 local eventNames = {}
 local functionNames = {}
 local stateNames = {}
@@ -538,6 +539,7 @@ local Stats = {
 	SecurityPolicyErrors = 0,
 	SecurityPolicyYieldRejects = 0,
 	SecurityUnprotectedDrops = 0,
+	SecurityClientStateDrops = 0,
 	SecurityTicketsIssued = 0,
 	SecurityTicketsRedeemed = 0,
 	SecurityTicketsRejected = 0,
@@ -6249,6 +6251,10 @@ function Internal.chargeIncomingCall(player)
 end
 
 local function consumeRouteAllowance(route, player, requested)
+	if IS_SERVER and player and rejectClientStateRoutes and route and stateRoutes[route.Id] == route then
+		Stats.SecurityClientStateDrops += requested
+		return 0
+	end
 	if not IS_SERVER or not player or not route or not route._maxPerSecond then
 		return requested
 	end
@@ -8738,6 +8744,16 @@ end
 
 -- Optional fail-closed mode for inbound Event/Function callbacks only.
 -- It does not authorize client-owned State routes or alter outbound server traffic.
+-- Protect server state by rejecting all inbound client State routes regardless
+-- of their encoding. This applies before updates enter peerStates and dispatch.
+function NetStream.RejectClientStateRoutes(enabled)
+	assert(IS_SERVER, "RejectClientStateRoutes is server-only")
+	assert(not destroyed, "NetStream has been destroyed")
+	assert(type(enabled) == "boolean", "RejectClientStateRoutes expects a boolean")
+	rejectClientStateRoutes = enabled
+	return enabled
+end
+
 function NetStream.RequireServerPolicies(enabled)
 	assert(IS_SERVER, "RequireServerPolicies is server-only")
 	assert(not destroyed, "NetStream has been destroyed")
