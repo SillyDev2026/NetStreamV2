@@ -1,74 +1,39 @@
-# NetStreamV2 Changelog
+# Changelog
 
-## Packer and memory efficiency hardening (unreleased)
+[← Documentation index](README.md) · [Project overview](../README.md) · [Runtime validation](RUNTIME_VALIDATION.md)
 
-- Add byte-compatible direct native encoding/decoding for tiny primitive tuples (up to four fields), avoiding writer/reader wrapper work on common short messages.
-- Remove double-clearing of already-reset pooled writer, reader, BitFrame dictionaries, packed-value arrays, scratch writers and native measurement maps.
+This document records source-level changes to NetStreamV2. **v4.3.1 is the current numbered source version.** Updates merged afterward are listed as **post-v4.3.1 maintenance**, not as an independently released v4.4.0. Historical entries describe changes at the time; they are not evidence that Roblox Studio multiplayer tests passed.
 
-- Reuse the transport writer/reader pools within public Codec encode/decode
-  instead of creating a new backing buffer and dictionary table for each call.
-  Failures in native decoding return readers to the pool.
-- Reuse bounded argument arrays in Codec.Encode, TryEncode and Analyze.
-- Specialize single-byte native varints, optimize one-byte BitFrame adaptive
-  route IDs, and reserve exact varint lengths near writer capacity.
-- Lock in byte-for-byte packet compatibility, pooled-object behavior and
-  max-size boundary correctness through new executable Luau regression tests.
-- Add identical baseline-vs-optimized packer CPU profiling to CI; no protocol
-  or compression codec revision. No unmeasured memory-size claim.
+## Post-v4.3.1 maintenance (current `main`)
 
-## RPC error-information disclosure fix (unreleased)
+These changes retain **BitFrame v1**, the **Compression v2.4.2 / codec 230** wire format, and the v4.3.1 source version.
 
-- Stop returning raw server callback exceptions, stack traces, or value-validation
-  error details to remote clients. Return generic RPC error descriptions, log
-  details server-side under debug diagnostics, and expose separate callback/
-  invalid-return counters.
-- Add a Luau regression that deliberately includes a private marker inside
-  a server exception and asserts it is absent from the queued client reply.
+### Codec correctness and memory efficiency
 
-## Standalone Luau stress regression gate (unreleased)
+- Enforce `MaxTableEntries` in the standalone codec, including optimized tiny-tuple paths, and honor `MaxOutgoingBatchBytes` even when pooled buffers have spare capacity ([PR #22](https://github.com/SillyDev2026/NetStreamV2/pull/22)).
+- Add byte-compatible direct encoding/decoding for short primitive tuples (up to four fields) and bounded writer, reader and argument-pool reuse for more complex payloads ([PR #21](https://github.com/SillyDev2026/NetStreamV2/pull/21)).
+- Avoid redundant pool clearing; specialize short varints and exact buffer-capacity reservations. Extend golden-byte, malformed-input, pool lifecycle and A/B benchmark tests.
+- A representative same-process official Luau CLI test measured **40.9% faster tiny encoding** and **42.3% faster tiny decoding** for its specific workload; complex codec cases were **5.5% slower** to encode and **2.7% slower** to decode. These results do not establish general Studio performance.
 
-- Add deterministic 96-peer simulated server load and adversarial tests against
-  actual BitFrame encode/receive/dispatch, legacy fallback, strict command
-  authorization, 512 in-flight RPCs, one-time tickets, deduplication, delta
-  revisions, codec integrity and malformed-packet fuzzing.
-- Run stress as an independent mandatory GitHub Actions job step using the
-  pinned Luau interpreter. Captured times are interpreter workload timings,
-  not Roblox networking benchmarks.
-- Document the reproduction command and remaining Studio multiplayer gaps.
+### Security and reliability
 
-## Unreleased v4.3.1 reliability and security bug fixes
+- Redact server RPC callback traces and internal value-validation errors from client replies, keeping detailed developer diagnostics server-side ([PR #20](https://github.com/SillyDev2026/NetStreamV2/pull/20)).
+- Add server-issued, single-use, player-bound action tickets, strict opt-in Event/Function policy gating, and optional client-origin State ingress rejection ([PR #18](https://github.com/SillyDev2026/NetStreamV2/pull/18)).
+- Correct ticket admission/revocation behavior, remove stale client State cache entries when enabling strict mode, preserve `false` in `StateRoute:Get`, and detach nested tables/buffers in `GetStateSnapshot` ([PR #19](https://github.com/SillyDev2026/NetStreamV2/pull/19)).
+- Retain bounded, **single-server** idempotency and RPC concurrency controls; gameplay code still owns persistent transaction consistency and authorization.
 
-- Clear pre-existing client-origin peer-state cache when `RejectClientStateRoutes(true)` is first enabled, preventing stale untrusted values from remaining visible in `GetState` / `GetStateSnapshot`.
-- Correct the action-ticket cap: completed/used tickets no longer block new outstanding offers until expiration. Keep bounded replay tombstones without ever reissuing an old ticket ID.
-- Correct `ActionGate:Revoke` so it does not falsely report cancellation for an expired or already-redeemed ticket.
-- Make `GetStateSnapshot` a detached deep copy for nested tables and mutable buffer values (with cycle handling), avoiding write-through into the live peer-state cache.
-- Preserve legitimate `false` values from `StateRoute:Get`; formerly the `and ... or nil` idiom incorrectly returned `nil`.
-- Add targeted executable Luau regressions; no transport wire-format, compression codec, or released version changes. Roblox Studio multiplayer and load tests remain outstanding.
+### Validation infrastructure
 
+- Add deterministic 96-peer Luau service simulations covering authorization, real BitFrame decoding, malformed-packet rollback, legacy protocol compatibility, 512 yielded RPC callbacks, ticket replay, delta revisions and fuzzing ([PR #20](https://github.com/SillyDev2026/NetStreamV2/pull/20)).
+- Extend official Luau CLI regressions and source audits, including packer profiles and an original-versus-optimized same-process comparison.
+- Keep the Roblox Studio paired regression scripts separate from CI simulation. **No live multiplayer throughput, Roblox heap savings in MiB, or real-network latency improvement is asserted** from the standalone test results.
 
-The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+## v4.3.1 — Runtime regression and lifecycle hardening
 
-## v4.3.1 security hardening patch candidate (unreleased)
-
-- Add opt-in server-only authorization and input validation for Event and Function routes. Guard execution is shared across event scalar/tuple dispatch and RPCs; exceptions and non-true responses fail closed.
-- Add a bounded per-player, in-memory idempotency guard for transaction IDs, including reservations for yielding handlers. This does not constitute durable exactly-once delivery.
-- Expose security rejection/error/duplicate/capacity telemetry, add executable production-code Luau regressions and a server-authoritative usage guide.
-- No wire or compression codec changes; unchanged/unprotected routes retain their existing behavior. Roblox Studio integration and load tests are required before release.
-
-## v4.3.1 — Runtime regression gates, strict delta frames and RPC teardown
-## Unreleased security hardening (v4.3.1-compatible)
-
-- Add server-issued, player-bound, one-use action tickets with action binding, TTL, capped per-player storage, revocation and replay rejection; handlers revalidate mutable game conditions.
-- Add optional fail-closed incoming Event/Function policy mode; deny callback authorization predicates that yield or throw.
-- Add optional incoming State route rejection before server peer-state writes on all existing receive paths.
-- Add security stats, runtime regression cases, paired Studio scripts and usage docs. No BitFrame/Compression format changes. Pending Roblox Studio live validation.
-
-
-
-- Reproduce and reject nil-mask wraparound and noncanonical delta value arrays; bound validation work to the schema's maximum 32 values plus one rejected entry.
-- Discard RPC returns after player disconnect or module destruction before allocating an outbound message/queue. In-flight callbacks retain existing completion/accounting semantics.
-- Execute actual codec, delta and RPC production functions in the official Luau interpreter on every CI run. Pin the compiler/interpreter revision for repeatable validation.
-- Standalone tests passed locally; Studio multiplayer, scheduler, transport and competitive performance measurements remain pending. Wire formats and Compression v2.4.2 are unchanged.
+- Add executable production-source Luau tests for malformed field-delta frames, replay rejection, callback lifecycle, concurrency accounting, and error recovery.
+- Validate whole value masks and dense arrays; preserve `false`, nil and high-bit state semantics.
+- Prevent late RPC callbacks from recreating outgoing buckets for disconnected players or after `Destroy()`.
+- Maintain compatibility with existing BitFrame v1 packet layouts.
 
 ## v4.3.0 — RPC in-flight limits, callback cleanup and vararg optimization
 
