@@ -8750,6 +8750,11 @@ function NetStream.RejectClientStateRoutes(enabled)
 	assert(IS_SERVER, "RejectClientStateRoutes is server-only")
 	assert(not destroyed, "NetStream has been destroyed")
 	assert(type(enabled) == "boolean", "RejectClientStateRoutes expects a boolean")
+	if enabled and not rejectClientStateRoutes then
+		-- Do not leave a previously accepted untrusted State value accessible
+		-- through GetState/GetStateSnapshot after strict ingress is enabled.
+		table.clear(peerStates)
+	end
 	rejectClientStateRoutes = enabled
 	return enabled
 end
@@ -8780,11 +8785,23 @@ function NetStream.CreateActionGate(options)
 		return typeof(player) == "Instance" and player:IsA("Player") and player.Parent == Players
 	end
 	local function cleanup(entries, now)
-		local live = 0
+		local outstanding = 0
+		local consumed = 0
+		local oldestConsumed = nil
 		for id, entry in pairs(entries) do
-			if entry.expires <= now then entries[id] = nil else live += 1 end
+			if entry.expires <= now then
+				entries[id] = nil
+			elseif entry.used then
+				consumed += 1
+				if oldestConsumed == nil or id < oldestConsumed then oldestConsumed = id end
+			else
+				outstanding += 1
+			end
 		end
-		return live
+		-- Consumed tickets no longer occupy the outstanding-offer budget.
+		-- Keep a bounded replay tombstone window; evicted IDs still cannot redeem.
+		if consumed >= cap and oldestConsumed ~= nil then entries[oldestConsumed] = nil end
+		return outstanding
 	end
 	local function validAction(value)
 		return type(value) == "string" and #value > 0 and #value <= 64
@@ -8855,8 +8872,13 @@ function NetStream.CreateActionGate(options)
 	end
 	function gate:Revoke(player, ticketId)
 		assert(self == gate, "ActionGate Revoke requires :")
+		assert(not destroyed, "NetStream has been destroyed")
 		local entries = records[player]
-		if not entries or not entries[ticketId] then return false end
+		local entry = entries and entries[ticketId]
+		if not entry then return false end
+		if entry.expires <= os.clock() then entries[ticketId] = nil; return false end
+		-- Do not pretend revocation can cancel a redemption already executing.
+		if entry.used then return false end
 		entries[ticketId] = nil
 		return true
 	end
