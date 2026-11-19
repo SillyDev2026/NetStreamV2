@@ -15,6 +15,12 @@
 
 ## Codec memory and packer improvements (unreleased)
 
+The bug-fix follow-up enforces `MaxTableEntries` for standalone Codec argument
+counts on both encode and decode, including the tiny-tuple path. Native scalar
+and varint writers also enforce `MaxOutgoingBatchBytes` when a pooled or grown
+buffer has more capacity than the configured limit. Valid packet bytes are
+unchanged. Regression coverage is included in `node scripts/runtime-tests.mjs`.
+
 The native Codec packs tiny (up to four) primitive arguments directly into the
 final output buffer and parses matching packets without constructing temporary
 writer/reader wrappers. Larger or dictionary-based payloads use existing

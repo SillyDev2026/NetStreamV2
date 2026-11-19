@@ -1320,49 +1320,49 @@ end
 
 function Writer:u8(value)
 	local position = self.position
-	if position + 1 > self.capacity then self:ensure(1) end
+	if position + 1 > self.capacity or (self.maxBytes and position + 1 > self.maxBytes) then self:ensure(1) end
 	buffer.writeu8(self.buffer, position, value)
 	self.position = position + 1
 end
 
 function Writer:i16(value)
 	local position = self.position
-	if position + 2 > self.capacity then self:ensure(2) end
+	if position + 2 > self.capacity or (self.maxBytes and position + 2 > self.maxBytes) then self:ensure(2) end
 	buffer.writei16(self.buffer, position, value)
 	self.position = position + 2
 end
 
 function Writer:u16(value)
 	local position = self.position
-	if position + 2 > self.capacity then self:ensure(2) end
+	if position + 2 > self.capacity or (self.maxBytes and position + 2 > self.maxBytes) then self:ensure(2) end
 	buffer.writeu16(self.buffer, position, value)
 	self.position = position + 2
 end
 
 function Writer:i32(value)
 	local position = self.position
-	if position + 4 > self.capacity then self:ensure(4) end
+	if position + 4 > self.capacity or (self.maxBytes and position + 4 > self.maxBytes) then self:ensure(4) end
 	buffer.writei32(self.buffer, position, value)
 	self.position = position + 4
 end
 
 function Writer:u32(value)
 	local position = self.position
-	if position + 4 > self.capacity then self:ensure(4) end
+	if position + 4 > self.capacity or (self.maxBytes and position + 4 > self.maxBytes) then self:ensure(4) end
 	buffer.writeu32(self.buffer, position, value)
 	self.position = position + 4
 end
 
 function Writer:f32(value)
 	local position = self.position
-	if position + 4 > self.capacity then self:ensure(4) end
+	if position + 4 > self.capacity or (self.maxBytes and position + 4 > self.maxBytes) then self:ensure(4) end
 	buffer.writef32(self.buffer, position, value)
 	self.position = position + 4
 end
 
 function Writer:f64(value)
 	local position = self.position
-	if position + 8 > self.capacity then self:ensure(8) end
+	if position + 8 > self.capacity or (self.maxBytes and position + 8 > self.maxBytes) then self:ensure(8) end
 	buffer.writef64(self.buffer, position, value)
 	self.position = position + 8
 end
@@ -1389,12 +1389,12 @@ function Writer:varUInt(value)
 	assert(value >= 0 and value <= MAX_SAFE_INTEGER and isInteger(value), "NetStream varuint expects a non-negative safe integer")
 	local position = self.position
 	if value < 128 then
-		if position >= self.capacity then self:ensure(1) end
+		if position >= self.capacity or (self.maxBytes and position >= self.maxBytes) then self:ensure(1) end
 		buffer.writeu8(self.buffer, position, value)
 		self.position = position + 1
 		return
 	end
-	if position + 8 > self.capacity then
+	if position + 8 > self.capacity or (self.maxBytes and position + 8 > self.maxBytes) then
 		-- A short varint can fit even when fewer than eight bytes remain.
 		-- Reserving eight bytes used to overgrow buffers (or reject valid
 		-- packets near MaxOutgoingBatchBytes).
@@ -9992,6 +9992,7 @@ local function tryDecodeTinyCodec(data, length)
 	if length < 2 or length > 64 then return nil end
 	local count = buffer.readu8(data, 1)
 	if count > 4 then return nil end
+	if count > Config.MaxTableEntries then error("NetStream.Codec.Decode argument count exceeds MaxTableEntries", 0) end
 	local args = table.create(count)
 	local position = 2
 	for i = 1, count do
@@ -10027,6 +10028,7 @@ end
 -- structural Compression v2.3 packet and is selected only when it round-trips
 -- the argument table and produces a smaller physical payload.
 function Codec._EncodeArgs(args)
+	if args.n > Config.MaxTableEntries then error("NetStream.Codec.Encode argument count exceeds MaxTableEntries", 0) end
 	local tiny = tryEncodeTinyCodec(args)
 	if tiny then return tiny, false, nil end
 	-- Reuse the same bounded writer pool as the transport packer, while
