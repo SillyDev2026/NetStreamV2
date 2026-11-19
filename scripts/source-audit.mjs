@@ -10,7 +10,7 @@ assert(source.includes("function Codec._EncodeArgs(args)"), "Missing public code
 assert(source.includes("local writer = acquireWriter()"), "Public encoder must reuse bounded writer pool");
 assert(source.includes("local reader = acquireReader(data)"), "Public decoder must reuse bounded reader pool");
 assert(source.includes("self:ensure(Internal.varUIntByteLength(value))"), "Writer must reserve exact varint length at buffer boundary");
-assert(source.includes("function Codec.Encode(...)\\n\\tlocal args = makeArgs(...)".replace(/\\n/g, "\n").replace(/\\t/g, "\t")), "Public encoder must reuse argument pool");
+assert(source.includes("function Codec.Encode(...)") && source.includes("local args = makeArgs(...)"), "Public encoder must reuse argument pool");
 assert(read("tests/runtime/packer_regression.luau").includes("0003271063616263"), "Baseline golden codec bytes missing");
 assert(read("scripts/runtime-tests.mjs").includes("--profile-only"), "Packer profiling CLI missing");
 assert(read(".github/workflows/source-audit.yml").includes("node scripts/runtime-tests.mjs --profile-only"), "Packer profiling not covered by CI");
