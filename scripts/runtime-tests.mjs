@@ -28,6 +28,28 @@ NetStream.__test = {
     receivePacket = receive,
     drainDispatch = runDispatch,
     makeRawWriter = function(capacity, maxBytes) return Writer.new(capacity, maxBytes) end,
+    baselineCodecEncode = function(...)
+        local args = table.pack(...)
+        validateArgs(args)
+        local writer = Writer.new(256, Config.MaxOutgoingBatchBytes)
+        writer:u8(0)
+        writer:varUInt(args.n)
+        for i = 1, args.n do writeValue(writer, args[i], 0, nil) end
+        return writer:finish()
+    end,
+    baselineCodecDecode = function(data)
+        local reader = Reader.new(data)
+        reader.position = 1
+        assert(reader:u8() == 0)
+        local count = reader:varUInt()
+        assert(count <= Config.MaxTableEntries)
+        local args = table.create(count)
+        args.n = count
+        for i = 1, count do args[i] = readValue(reader, 0) end
+        assert(reader.position == reader.length)
+        validateArgs(args)
+        return table.unpack(args, 1, args.n)
+    end,
     peekRPCReply = function(player)
         local bucket = targetBuckets[player]
         local queue = bucket and bucket.reliable
@@ -82,7 +104,7 @@ local function loadNetStream()
 end
 `;
 try {
-    const suites = process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression']);
+    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression']));
     for (const suite of suites) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
