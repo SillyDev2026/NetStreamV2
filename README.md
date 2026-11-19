@@ -185,6 +185,26 @@ Executable Luau security regressions were added; full Studio multiplayer
 verification and release versioning are still pending.
 
 ## v4.3.1: Executable regression gates and lifecycle fixes
+## Security hardening patch (unreleased)
+
+A server-only action gate now supports the **Server → Client → Server** pattern:
+`CreateActionGate():Issue(player, action, serverPayload)` issues a per-player
+one-use U32 ticket, and `Redeem(player, ticket, action, handler)` checks server
+records before running the authoritative handler. Tickets are identifiers, not
+client secrets or cryptographic authentication.
+
+`RequireServerPolicies(true)` optionally denies inbound Event/Function
+callbacks without server policies. Security predicates fail closed if they
+throw **or yield**. `RejectClientStateRoutes(true)` separately rejects inbound
+client State updates before they can modify the server peer-state cache,
+including legacy and BitFrame receive flows. Both strict switches are **opt-in**
+to avoid silently breaking older applications.
+
+See [Action-gate security and complete examples](docs/ACTION_GATE_SECURITY.md).
+This is a source branch patch, **not a new released version**. Studio multiplayer
+and cross-server persistence verification remain necessary.
+
+
 
 - **Delta validation:** Reject nil masks above the schema width before 32-bit conversion; reject sparse or keyed value arrays before allocating the next state. Valid snapshots/deltas retain their existing format.
 - **RPC cleanup:** Callbacks completing after player disconnect or `Destroy()` no longer recreate outbound queues. Existing callbacks still finish and return their concurrency slots.
