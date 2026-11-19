@@ -15,6 +15,7 @@
 ```sh
 # Requires official Luau CLI
 node scripts/runtime-tests.mjs --profile-only
+node scripts/runtime-tests.mjs --compare-only
 node scripts/runtime-tests.mjs
 node scripts/runtime-tests.mjs --stress-only
 ```
