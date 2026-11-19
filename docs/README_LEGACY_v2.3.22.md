@@ -1,6 +1,11 @@
-> **Archived historical document (v2.3.22).** This is the previous long-form README retained for release history and migration context. For the current v2.3.25 instructions, consult [the main README](../README.md) and [Architecture](ARCHITECTURE.md).
+> [!IMPORTANT]
+> **Archived manual — NetStream v2.3.22.** This file is preserved as a historical reference and is **not maintained as current API, installation, security, or performance guidance**. Its examples and defaults may differ from the v4.3.1-compatible `main` branch.
+>
+> For current instructions, start with the [project README](../README.md), [architecture](ARCHITECTURE.md), [security guidelines](SECURITY.md), and [changelog](CHANGELOG.md). Review compatibility and regression tests before copying legacy examples into a new project.
 
 ---
+
+<!-- Historical v2.3.22 content below is intentionally preserved for traceability. -->
 
 # NetStreamV2 (NetStream)
 
