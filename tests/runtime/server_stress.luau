@@ -77,6 +77,46 @@ benchmark("default-deny firewall", PEERS * 40, function()
 end)
 assert(net.GetStats().SecurityUnprotectedDrops == PEERS * 40, "Unprotected events were not dropped")
 
+local ingressCount = 0
+local ingress = {Id = 600003, _listenerCount = 1}
+ingress._head = {connected = true, once = false, callback = function(player, value)
+    assert(active[player] == true and value == 2, "Untrusted packet changed authoritative state")
+    ingressCount += 1
+end}
+hooks.registerEvent(ingress.Id, ingress)
+net.SetServerPolicy(ingress, {
+    Validate = function(_, value) return value == 2 end,
+    Authorize = function(player) return active[player] == true end,
+})
+hooks.startWithoutTransport()
+local baselineReceived = net.GetStats().ReceivedMessages
+local baselineAtomicDrops = net.GetStats().BitFrameAtomicRejectedPackets
+local validPackets, maliciousPackets = 0, 0
+benchmark("real BitFrame ingress", PEERS * 24, function()
+    for _, player in players do
+        for iteration = 1, 24 do
+            local value = if iteration % 7 == 0 then 65535 else 2
+            hooks.receivePacket(player, hooks.encodeEventPacket(ingress.Id, value))
+            if active[player] and value == 2 then validPackets += 1 else maliciousPackets += 1 end
+        end
+    end
+    return PEERS * 24
+end)
+while net.GetStats().DispatchBacklog > 0 do hooks.drainDispatch() end
+assert(ingressCount == validPackets, "BitFrame ingress bypassed policy or lost accepted packets")
+assert(net.GetStats().ReceivedMessages == baselineReceived + PEERS * 24, "Valid BitFrame packets not decoded")
+
+local validPair = hooks.encodeTwoEvents(ingress.Id, 2, 2)
+local corrupted = buffer.create(buffer.len(validPair) + 1)
+buffer.copy(corrupted, 0, validPair)
+buffer.writeu8(corrupted, buffer.len(validPair), 255)
+hooks.receivePacket(players[1], corrupted)
+while net.GetStats().DispatchBacklog > 0 do hooks.drainDispatch() end
+assert(ingressCount == validPackets, "Malformed batch partially applied authenticated events")
+assert(net.GetStats().BitFrameAtomicRejectedPackets == baselineAtomicDrops + 1, "Malformed batch did not stage-rollback")
+assert(net.GetStats().DispatchBacklog == 0, "BitFrame callback backlog leaked")
+print("PASS wire: " .. validPackets .. " valid accepted, " .. maliciousPackets .. " policy-denied, malformed batch rolled back")
+
 local gate = net.CreateActionGate({TTLSeconds = 120, MaxTicketsPerPlayer = 16})
 local ticketSuccess, ticketReplays, ticketWrongPlayer = 0, 0, 0
 benchmark("action ticket cycles", PEERS * TICKETS_PER_PEER, function()
