@@ -2,10 +2,9 @@
 
 > **Status:** Implemented in the v4.3.1-compatible `main` branch. Security policies and action-ticket enforcement are opt-in; verify adoption for each sensitive route.
 
-NetStream's client is **untrusted**. This implementation adds an opt-in, server-only policy
-gateway for inbound `Event` and `Function` routes, with a bounded idempotency
-helper. See [Action-gate security](ACTION_GATE_SECURITY.md) for one-use server-issued tickets, strict route mode, and client State rejection. It does **not** prevent exploiters from sending remote packets, make
-client scripts tamper-proof, or replace game-specific authorization.
+NetStream treats every client as **untrusted**. Its optional server-only policy gateway validates inbound `Event` and `Function` routes; a separate bounded helper protects against duplicate request keys within one server session. These controls do **not** prevent clients from forging packets, make client scripts tamper-proof, or replace game-specific authorization.
+
+For one-use server-issued tickets, default-deny route mode, and client State rejection, see [Action-gate security](ACTION_GATE_SECURITY.md).
 
 ## Example: validate a purchase request
 
