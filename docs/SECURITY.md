@@ -108,6 +108,23 @@ Authorize = function(player, ...): boolean?})`
   still require app-level acknowledgement/retry decisions.
 
 ## Validation boundaries
+## Peer-state isolation and snapshots
+
+When enabling `NetStream.RejectClientStateRoutes(true)`, any previously
+accepted client-origin peer state is cleared immediately. This avoids exposing
+stale untrusted values through `NetStream.GetState` or
+`NetStream.GetStateSnapshot`.
+
+`NetStream.GetStateSnapshot` returns detached nested tables and fresh copies
+of mutable `buffer` values; modifying a snapshot cannot change the live
+peer-state cache. `StateRoute:Get(player)` correctly distinguishes
+`false` from an absent (`nil`) value.
+
+All peer-state values remain untrusted client data, even when read from a
+copied snapshot. Do not treat snapshots as authoritative gameplay or economy
+state.
+
+
 
 `tests/runtime/security.luau` exercises actual event/scalar dispatch,
 RPC callback admission, fail-closed error handling, disconnected senders,
