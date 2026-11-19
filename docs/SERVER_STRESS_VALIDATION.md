@@ -17,6 +17,7 @@ The standard runner without --stress-only still runs the existing codec, delta, 
 | BitFrame receive | 96 x 24 = 2,304 packets | Real production encoded packets pass through decoder and callback queue; guarded actions only |
 | Atomic packet rejection | Corrupted two-event packet | No decoded action is applied on bad trailing bytes |
 | RPC admission | 512 simultaneously yielded callbacks | Concurrency limit holds; all in-flight capacity reclaimed |
+| RPC error privacy | Deliberately thrown server error and invalid result | Error details and server stack traces must not reach the client; counters increment |
 | Server-issued tickets | 96 x 240 = 23,040 issues | Player binding, single execution, 23,040 replay attempts rejected |
 | Idempotency | 96 x 120 = 11,520 transactions | Duplicate request IDs cannot execute twice |
 | Delta replication | 96 x 180 = 17,280 transitions | Revisions increase and stale frames are rejected |
