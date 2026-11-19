@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false})
 local T = NetStream.Types
 local Packed = NetStream.Event("__NSMemoryPacked", {Id = 35601, Schema = {T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8, T.U8}, Compression = false})
@@ -26,4 +26,4 @@ String:Connect(function(player, value)
     assert(value == expected[stringCount], "Unaligned binary string did not round-trip")
     maybeFinish(player)
 end)
-print("NetStream v4.3.1 memory/binary regression server ready")
+print("NetStream v4.4.0 memory/binary regression server ready")

@@ -2,7 +2,7 @@
 -- Standalone handshake replay regression for StarterPlayerScripts.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1", "Expected NetStream 4.3.1")
+assert(NetStream.GetVersion() == "4.4.0", "Expected NetStream 4.4.0")
 NetStream.Configure({HandshakeEnabled = true, HandshakeRequireReady = false})
 NetStream.Start()
 local started = os.clock()

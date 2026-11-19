@@ -3,7 +3,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.05})
 local T = NetStream.Types
 local Mixed = NetStream.Event("__NSMixedFixed42", {Id = 36420, Compression = false, Schema = {T.Bool, T.U8, T.U16, T.I16, T.U32, T.I32, T.Bool, T.U8, T.U16, T.I16, T.U32, T.I32}})
@@ -26,4 +26,4 @@ Mixed:Connect(function(player, a, b, c, d, e, f, g, h, j, k, l, m)
     end
 end)
 Players.PlayerRemoving:Connect(function(player) received[player] = nil end)
-print("NetStream v4.3.1 mixed schema server ready")
+print("NetStream v4.4.0 mixed schema server ready")

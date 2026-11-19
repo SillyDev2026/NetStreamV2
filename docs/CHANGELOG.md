@@ -1,6 +1,15 @@
 # NetStreamV2 Changelog
 
-The current release candidate is **v4.3.1**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+The current release candidate is **v4.4.0**, using **BitFrame v1** and bundled **Compression v2.4.2** (codec **230**). Release notes describe implemented source changes. Roblox Studio performance results are **not yet measured**.
+
+## v4.4.0 — Server-authoritative owner state and command processing
+
+- Add optional `AuthoritativeState` child and `NetStream.CreateReplica` public factory; four reserved event IDs, duplicate/collision guards and automatic NetStream destruction cleanup.
+- Own immutable state per attached player on the server; support Attach/Set/Update/Detach and client change subscriptions. Support 1..32 primitive fields; copy/freeze state and command payloads.
+- Automate full/delta snapshots, exact pending revision acknowledgements, full retries, rate-limited resync and epoch-based lifecycle protection. Keep one pending state and an acknowledged baseline per recipient; coalesce newer changes.
+- Add required server command validation and transactional, non-yielding reducers, aggregate/per-command token buckets, sequence replay rejection, bounded payloads/handlers/listeners, and command result subscriptions.
+- Add 13 standalone scenarios including deterministic loss over 2,000 updates and actual BitFrame encode/decode/dispatch integration with fake remotes. Add a paired two-player Studio regression (96 authored Studio scripts total) and working server/client shop examples.
+- Wire formats remain BitFrame v1 / Compression codec 230. The new application-level replica protocol requires matching v4.4.0 endpoints. Studio multiplayer, real scheduling, bandwidth performance and heap measurements remain pending. This is cheat-resistant infrastructure, not a universal anti-cheat guarantee.
 
 ## v4.3.1 — Runtime regression gates, strict delta frames and RPC teardown
 

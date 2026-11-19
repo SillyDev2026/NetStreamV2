@@ -2,13 +2,13 @@
 
 **Reliable/unreliable networking, compact binary schemas, RPC, state, traffic management and performance telemetry for Roblox Luau.**
 
-![Release](https://img.shields.io/badge/release-v4.3.1-2563eb)
+![Release](https://img.shields.io/badge/release-v4.4.0-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
 ![Language](https://img.shields.io/badge/language-Luau-6366f1)
 ![Codec](https://img.shields.io/badge/bundled_compression-2.4.2-0f766e)
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 
-> **Current release candidate: NetStream v4.3.1.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Executable standalone Luau regressions, source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
+> **Current release candidate: NetStream v4.4.0.** Bundled child Compression: **v2.4.2**, wire codec **230**. Default packet format: **BitFrame v1**. Executable standalone Luau regressions, source-level checks and Studio test scripts exist. The reported 128-probe RTT and CPU samples are user-supplied and are not a controlled, independently reproduced comparison; v4.1.0 has not yet been measured in Roblox Studio.
 
 ## Contents
 [Quick start](#quick-start) · [Architecture](#architecture) · [Routes and schemas](#routes-and-schemas) · [Message lifecycle](#message-lifecycle) · [Serialization and compression](#serialization-and-compression) · [Queues and latency](#queues-and-latency) · [Handshake and safety](#handshake-and-safety) · [Performance monitoring](#performance-monitoring) · [Validation](#validation) · [Release notes and documentation](#release-notes-and-documentation)
@@ -20,7 +20,8 @@ Put the repository code into **ModuleScripts** in Roblox Studio:
 ```text
 ReplicatedStorage
 └── Netstream               -- ModuleScript using Netstream.lua
-    └── Compression         -- child ModuleScript using Compression.lua
+    ├── Compression         -- child ModuleScript using Compression.lua
+    └── AuthoritativeState  -- optional child, required by CreateReplica
 ServerScriptService
 └── NetworkServer           -- Script
 StarterPlayer
@@ -166,6 +167,18 @@ sequenceDiagram
 ```
 
 The receiver checks incoming envelope rates, optional handshake readiness and byte limits before decoding. It then resolves route IDs, reads schema/dynamic values and dispatches callbacks. RPC calls use request IDs and timeouts. The event dispatch queue is bounded.
+
+## v4.4.0: Server-authoritative state replication
+
+`NetStream.CreateReplica(name, {Id = 46000, Fields = {"Coins", "Level"}})` adds per-player, owner-only server state with automatic deltas, revision ACKs, full-snapshot resync and epoch/replay checks. Add **AuthoritativeState** as a child ModuleScript when using this API. Four consecutive event IDs are reserved.
+
+Only server code can `Attach`, `Set`, `Update` or register `HandleCommand`. Clients use `SendCommand` and read a frozen state mirror. Required server validators and non-yielding reducers decide every command; invalid/yielding/erroring handlers do not commit their draft. Aggregate and per-command rate limits apply. ACKs select a server-owned replication baseline and never grant state authority.
+
+The first version supports 1..32 named primitive fields, one pending snapshot per recipient, and reliable owner-only delivery. It is not a persistence system, general entity subscription service or a promise that a game is uncheatable. Game rules still need server validation.
+
+[API, security model and limitations](docs/AUTHORITATIVE_REPLICATION.md) · [Server shop example](examples/AuthoritativeShop.server.lua) · [Client shop example](examples/AuthoritativeShop.client.lua)
+
+Standalone regression coverage includes 13 replication scenarios, 2,000 lossy update steps and real BitFrame encode/decode/dispatch integration with fake remotes. The paired two-player Studio regression is authored; live Studio performance and multiplayer validation remain pending.
 
 ## v4.3.1: Executable regression gates and lifecycle fixes
 

@@ -6,7 +6,7 @@ import {dirname, resolve} from "node:path";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const source = read("Netstream.lua");
-const version = "4.3.1";
+const version = "4.4.0";
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
@@ -791,3 +791,7 @@ for (let iteration = 1; iteration <= 2048; iteration++) {
 }
 assert(read("README.md").includes(`v${version}`));
 console.log(`PASS NetStream ${version}: 10,000 packed-U8 cases, 6,009 valid varuints, 8 rejected invalid varuints, 8 F64 cases, 5,000 packed-split parity models, atomic parser + packed scalar allowance models, fixed-discard, writer fast path and packed high-water GC guards, ${tests.length} Studio-script static scans`);
+
+for (const path of ["AuthoritativeState.lua", "tests/runtime/replica.luau", "examples/AuthoritativeShop.server.lua", "examples/AuthoritativeShop.client.lua"]) {
+    assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(read(path)), `Broken local assignment in ${path}`);
+}

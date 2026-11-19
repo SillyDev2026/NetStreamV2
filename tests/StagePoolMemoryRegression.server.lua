@@ -1,7 +1,7 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false, CompressionEnabled = false, MaxBitFrameStagePoolSize = 0, MaxPooledBitFrameActions = 2})
 local T = NetStream.Types
 local Scalar = NetStream.Event("__NSStagePoolScalar", {Id = 35911, Schema = {T.U8}, Compression = false})
@@ -15,6 +15,6 @@ Scalar:Connect(function(player, value)
     assert(memory.MaxBitFrameStagePoolSize == 0, "Stage pool cap not applied")
     if count == 16 then
         assert(Ack:FireClientNow(player, 1), "Stage pool memory ACK failed")
-        print("NetStream 4.3.1 stage pool memory PASS", memory.BitFrameStagePoolSize)
+        print("NetStream 4.4.0 stage pool memory PASS", memory.BitFrameStagePoolSize)
     end
 end)

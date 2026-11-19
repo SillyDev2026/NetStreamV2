@@ -1,3 +1,9 @@
+# v4.4.0 follow-up priorities
+
+Owner-only authoritative replication now manages revision ACKs, resync, full/delta snapshots, bounded per-player baselines and server-validated commands. See [the API and security model](AUTHORITATIVE_REPLICATION.md).
+
+Next gates: run the paired two-player Studio test; benchmark ACK-gated update throughput and heap under 1/10/25 players; test live handshake recovery and congestion; design durable transaction/idempotency integration for persistence-backed actions. Generated schemas and spatial/observer replication remain separate future work. Earlier notes below are historical and may describe gaps addressed since their release.
+
 # NetStreamV2 — Prioritized Upgrade Options
 
 **Current:** v4.3.0. Scores below are **engineering priority estimates from 1–10**, not speed measurements or feature quality benchmarks. Every major change requires paired Studio tests and compatibility review.

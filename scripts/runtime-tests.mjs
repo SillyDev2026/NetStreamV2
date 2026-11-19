@@ -17,18 +17,26 @@ NetStream.__test = {
     register = function(id, callback) functionRoutes[id] = {_callback = callback} end,
     charge = Internal.chargeIncomingCall,
     run = Internal.runIncomingCall,
+    startWithoutTransport = function(remote) started = true; reliableRemote = remote end,
+    receive = receive,
+    dispatch = runDispatch,
 }
 `;
 const bootstrap = `
 local Compression = (function()
 ${read('Compression.lua')}
 end)()
-local function loadNetStream()
-    local services = {RunService = {IsServer = function() return true end}, ReplicatedStorage = {}, Players = {}}
+local function loadAuthoritativeState()
+    local nativeTypeof = typeof
+    local typeof = function(value) return if type(value) == "table" and value.__player then "Instance" else nativeTypeof(value) end
+    ${read('AuthoritativeState.lua')}
+end
+local function loadNetStream(testServices)
+    local services = testServices or {RunService = {IsServer = function() return true end}, ReplicatedStorage = {}, Players = {}}
     local nativeTypeof = typeof
     local typeof = function(value) return if type(value) == "table" and value.__player then "Instance" else nativeTypeof(value) end
     local game = {GetService = function(_, name) return assert(services[name], name) end}
-    local script = {WaitForChild = function() return Compression end}
+    local script = {WaitForChild = function(_, name) return if name == "Compression" then Compression elseif name == "AuthoritativeState" then loadAuthoritativeState() else nil end}
     local require = function(module) return module end
     local Random = {new = function() return {NextInteger = function(_, low) return low end} end}
     local warn = function() end
@@ -39,7 +47,7 @@ local function loadNetStream()
 end
 `;
 try {
-    for (const suite of ['codec', 'delta', 'rpc']) {
+    for (const suite of ['codec', 'delta', 'rpc', 'replica']) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
         const result = spawnSync(process.env.LUAU_BIN || 'luau', [path], {stdio: 'inherit'});

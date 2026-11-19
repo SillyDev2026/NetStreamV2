@@ -9,6 +9,7 @@ The runner places the complete, unchanged Compression module and Netstream modul
 | Codec | 1,000 argument tuples including interior/trailing nils, false, buffers, nested tables and numeric values; every truncated prefix and a trailing byte of a representative native packet |
 | Compression | 500 structural round-trips and checksum-corruption rejections using the bundled codec |
 | Delta | 2,000 deterministic transitions over all 32 fields, nil removals, false values, high bit, replays, invalid masks, extra/sparse/keyed arrays and unchanged input on rejection |
+| Replication | 13 scenarios: owner isolation, immutable state, command validation/replay/rates, yielding and erroneous reducers, missing ACKs, full resync, epochs, schema mismatch, lifecycle cleanup, 2,000 lossy updates and public API integration through real BitFrame encoding/decoding/dispatch |
 | RPC | Actual admission/runner functions with coroutine suspension; global/per-player caps, accounting after errors, peak reset, disconnect/destroy while suspended, and suppression of late response queues |
 
 ## Reproduced defects
@@ -21,4 +22,6 @@ The old RPC completion path also queued a response for a departed player, recrea
 
 Standalone Luau tests are functional regression evidence, not Roblox benchmarks. The service doubles do not reproduce RemoteEvent serialization, packet delivery, Heartbeat/task scheduling, Instances, Vector/CFrame types, replication, or multiplayer behavior. Run the existing paired Studio regressions, including handshake recovery, atomic packets, RPC concurrency, memory retention and p95/p99 benchmarks, before production rollout.
 
-Remaining major gaps include generated schema serializers, acknowledged per-peer delta baselines/resync, automatic spatial interest management, and controlled comparisons against other networking modules. Current delta helpers require the caller to manage baselines and resync. No competitive speed ranking or percentage improvement is justified by these tests.
+Remaining major gaps include generated schema serializers, automatic spatial interest management, and controlled comparisons against other networking modules. CreateReplica now manages acknowledged baselines/resync for owner-only primitive state; the lower-level delta codec still leaves those responsibilities to its caller. No competitive speed ranking or percentage improvement is justified by these tests.
+
+The replica suite additionally supplies deterministic clocks and in-memory event transport with production codec round-trips. Its public-factory integration uses two production NetStream instances and actual BitFrame encode/decode/dispatch, replacing only remotes/service startup. Handshake and bandwidth timing are disabled in that integration case; the tests do not establish behavior under the Roblox scheduler.

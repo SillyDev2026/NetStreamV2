@@ -2,7 +2,7 @@
 -- Pair with InterestGroupRegression.server.lua in a separate Roblox Studio Play session.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false})
 local T = NetStream.Types
 local Event = NetStream.Event("__InterestEvent423", {Id = 36510, Schema = {T.U8}, Compression = false})
@@ -16,7 +16,7 @@ local function finish()
     if done or received ~= 2 or not stateSeen then return end
     done = true
     assert(Ack:FireServer(received), "Interest ACK failed")
-    print("NetStream v4.3.1 interest CLIENT PASS")
+    print("NetStream v4.4.0 interest CLIENT PASS")
 end
 Event:Connect(function(value)
     received += 1

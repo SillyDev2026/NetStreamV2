@@ -2,7 +2,7 @@
 -- StarterPlayerScripts; pair with HomogeneousIntegerRunRegression.server.lua.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.08, PackedSchemaRunEnabled = true, PackedSchemaRunMaxFields = 16, MaxBatchMessages = 128})
 local T = NetStream.Types
 local U16Fields = table.create(12)
@@ -32,7 +32,7 @@ Ack:Connect(function(n16, n32)
     assert(stats.BitFrameHomogeneousRunFastWrites > 0 and stats.BitFrameHomogeneousRunFastReads > 0, "Homogeneous run fast paths not exercised in both directions")
     assert(stats.DecodeErrors == 0, "Homogeneous echo decode errors")
     acked = true
-    print("NetStream 4.3.1 U16/U32 client PASS", stats.BitFrameHomogeneousRunFastWrites, stats.BitFrameHomogeneousRunFastReads)
+    print("NetStream 4.4.0 U16/U32 client PASS", stats.BitFrameHomogeneousRunFastWrites, stats.BitFrameHomogeneousRunFastReads)
 end)
 for i = 1, 32 do
     assert(Word:FireServer(i, 0, 65535, 8, 32768, 65535, 1, 2, 3, 4, 5, 65535), "U16 tuple enqueue failed")

@@ -3,7 +3,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.08, PackedSchemaRunEnabled = true, PackedSchemaRunMaxFields = 16, MaxBatchMessages = 128})
 local T = NetStream.Types
 local U16Fields = table.create(12)
@@ -22,7 +22,7 @@ local function done(player)
     assert(stats.BitFrameHomogeneousRunFastReads > 0, "Server did not use homogeneous packed-run decoder")
     assert(stats.DecodeErrors == 0, "Homogeneous integer packet decode failed")
     assert(Ack:FireClient(player, state.word, state.dword), "Homogeneous ACK enqueue failed")
-    print("NetStream 4.3.1 U16/U32 server PASS", stats.U16SchemaFastReads, stats.U32SchemaFastReads)
+    print("NetStream 4.4.0 U16/U32 server PASS", stats.U16SchemaFastReads, stats.U32SchemaFastReads)
 end
 Word:Connect(function(player, ...)
     local state = seen[player] or {word = 0, dword = 0, ack = false}

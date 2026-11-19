@@ -2,7 +2,7 @@
 -- ServerScriptService; pair with DispatchFairnessRegression.client.lua in Studio.
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local NetStream = require(ReplicatedStorage:WaitForChild("Netstream"))
-assert(NetStream.GetVersion() == "4.3.1")
+assert(NetStream.GetVersion() == "4.4.0")
 NetStream.Configure({HandshakeEnabled = false, BandwidthGovernorEnabled = false, TransportFastFlushEnabled = false, TransportBatchWindowSeconds = 0.1, MaxBatchMessages = 256, MaxDispatchPerCycle = 1, MaxDispatchBacklog = 64, DispatchPerPlayerBacklogLimit = 12, DispatchBudgetCheckInterval = 1})
 local T = NetStream.Types
 local Ready = NetStream.Event("__NSDispatchReady43", {Id = 44301, Schema = {T.Bool}, Compression = false})
@@ -26,6 +26,6 @@ Ready:Connect(function(player, ready)
         assert(pending.Backlog == 0 and pending.PerPlayerLimit == 12 and pending.BudgetCheckInterval == 1, "Dispatch queue did not drain")
         assert((seen[player] or 0) > 0, "No valid messages were delivered")
         assert(Ack:FireClient(player, seen[player], stats.DispatchPerPlayerDrops), "Dispatch ACK failed")
-        print("NetStream v4.3.1 dispatch server PASS", seen[player], stats.DispatchPerPlayerDrops)
+        print("NetStream v4.4.0 dispatch server PASS", seen[player], stats.DispatchPerPlayerDrops)
     end)
 end)
