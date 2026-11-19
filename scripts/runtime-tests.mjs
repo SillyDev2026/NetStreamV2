@@ -35,6 +35,14 @@ NetStream.__test = {
         releaseMessage(message)
         return packet
     end,
+    encodeTransportEvent = function(routeId, ...)
+        local route = assert(eventRoutes[routeId], "Missing transport route")
+        local args = table.pack(...)
+        local message = makeMessage(KIND_EVENT, routeId, 0, args, route._schema, "Normal")
+        local packet = encodeBatch({message})
+        releaseMessage(message)
+        return packet
+    end,
     encodeTwoEvents = function(routeId, first, second)
         local route = assert(eventRoutes[routeId], "Missing stress route")
         local firstMessage = makeMessage(KIND_EVENT, routeId, 0, table.pack(first), route._schema, "Normal")
