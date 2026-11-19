@@ -1,12 +1,16 @@
-# Standalone Luau server stress and security regression harness
+# Standalone Luau Server Stress and Security Validation
 
-This harness runs production Netstream.lua and bundled Compression.lua in the pinned official Luau interpreter through GitHub Actions. Roblox services are replaced with minimal deterministic mocks; network packets do not leave this process.
+> **Scope:** Deterministic execution of the production Luau networking code with mock Roblox services. These are correctness and regression tests, **not** live-server load measurements.
 
-## Run command
+The harness runs `Netstream.lua` and bundled `Compression.lua` in the pinned official Luau interpreter through GitHub Actions. Minimal service doubles replace Roblox service objects; packets never leave the Luau process.
 
-    node scripts/runtime-tests.mjs --stress-only
+## Run the suite
 
-The standard runner without --stress-only still runs the existing codec, delta, RPC, security and ticket suites.
+```bash
+node scripts/runtime-tests.mjs --stress-only
+```
+
+The standard runner without `--stress-only` runs codec, delta, RPC, policy, ticket, and packer regressions. Set `LUAU_BIN` to the official Luau interpreter if it is not on your `PATH`.
 
 ## Stress matrix
 
@@ -30,4 +34,8 @@ These are simulated Luau server operations, **not 96 real Roblox clients**. Repo
 
 The test uses production BitFrame encode/receive/dispatch and server security logic. It does **not** simulate full Roblox networking, reliable/unreliable RemoteEvents, heartbeat scheduling, network congestion, live packet loss, physics, server restart recovery, DataStore persistence, or cross-server transactions.
 
-Live Roblox Studio multiplayer stress and adversarial network testing are still required. Neither a ticket nor any client handshake can make a compromised client trustworthy.
+## Limitations and next validation
+
+Live Roblox Studio multiplayer stress, network loss/reordering, and adversarial traffic must still be tested. Neither a ticket nor any client handshake can make a compromised client trustworthy.
+
+See [Runtime validation](RUNTIME_VALIDATION.md), [Benchmarking](BENCHMARKING.md), and the [project overview](../README.md).
