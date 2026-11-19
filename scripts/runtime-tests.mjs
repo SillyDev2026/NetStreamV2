@@ -104,7 +104,7 @@ local function loadNetStream()
 end
 `;
 try {
-    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression']));
+    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression', 'codec_limits']));
     for (const suite of suites) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
