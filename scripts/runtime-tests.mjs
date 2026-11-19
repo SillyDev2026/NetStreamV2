@@ -17,6 +17,8 @@ NetStream.__test = {
     register = function(id, callback) functionRoutes[id] = {_callback = callback} end,
     registerFunction = function(id, route) functionRoutes[id] = route end,
     registerEvent = function(id, route) eventRoutes[id] = route end,
+    registerState = function(id, route) stateRoutes[id] = route end,
+    allowance = consumeRouteAllowance,
     dispatch = dispatchRoute,
     dispatchScalar = dispatchRouteScalar,
     charge = Internal.chargeIncomingCall,
