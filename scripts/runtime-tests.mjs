@@ -19,6 +19,7 @@ NetStream.__test = {
     registerEvent = function(id, route) eventRoutes[id] = route end,
     registerState = function(id, route) stateRoutes[id] = route end,
     allowance = consumeRouteAllowance,
+    stateGet = StateRoute.Get,
     dispatch = dispatchRoute,
     dispatchScalar = dispatchRouteScalar,
     charge = Internal.chargeIncomingCall,

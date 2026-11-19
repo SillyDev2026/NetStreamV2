@@ -40,13 +40,58 @@ print("PASS TICKETS: fail-closed opt-in policies, yield rejection, RPC and disco
 
 local stateRoute = {Id = 9944}
 hooks.registerState(stateRoute.Id, stateRoute)
+local staleState = net.GetState(player)
+staleState[stateRoute.Id] = "forged-old-client-state"
 assert(net.RejectClientStateRoutes(true))
+assert(net.GetState(player)[stateRoute.Id] == nil, "Strict State mode retained previously accepted untrusted state")
+assert(net.GetState(player) ~= staleState, "Strict mode left stale peer table live")
 assert(hooks.allowance(stateRoute, player, 1) == 0)
 assert(hooks.allowance(stateRoute, player, 3) == 0)
 assert(net.GetStats().SecurityClientStateDrops == 4, "Blocked client State updates were not counted")
 assert(net.RejectClientStateRoutes(false) == false)
 assert(hooks.allowance(stateRoute, player, 1) == 1, "State compatibility mode broken")
 print("PASS TICKETS: State ingress rejection before peer-state mutation")
+
+local nested = {Payload = {Score = 8, Encoded = buffer.fromstring("abc")}}
+local internalState = net.GetState(player)
+internalState[9945] = nested
+local firstSnapshot = net.GetStateSnapshot(player)
+local secondSnapshot = net.GetStateSnapshot(player)
+assert(firstSnapshot ~= internalState and firstSnapshot[9945] ~= nested, "Snapshot returned live state")
+assert(firstSnapshot[9945].Payload ~= nested.Payload, "Snapshot retained nested table alias")
+assert(firstSnapshot[9945].Payload.Encoded ~= nested.Payload.Encoded, "Snapshot retained mutable buffer alias")
+firstSnapshot[9945].Payload.Score = 123
+buffer.writeu8(firstSnapshot[9945].Payload.Encoded, 0, 122)
+assert(nested.Payload.Score == 8 and buffer.readu8(nested.Payload.Encoded, 0) == 97, "Editing snapshot mutated trusted cached state")
+assert(secondSnapshot[9945].Payload.Score == 8, "Separate snapshots aliased each other")
+local cyclic = {}
+cyclic.Self = cyclic
+internalState[9946] = cyclic
+local cyclicSnapshot = net.GetStateSnapshot(player)
+assert(cyclicSnapshot[9946] ~= cyclic and cyclicSnapshot[9946].Self == cyclicSnapshot[9946], "Snapshot failed to clone cycles safely")
+print("PASS STATE: nested tables, mutable buffers and cyclic snapshots are detached")
+
+local mutableKey = {Id = 3}
+local sharedBuffer = buffer.fromstring("xy")
+internalState[9948] = {[mutableKey] = {Shared = sharedBuffer}, Ref = sharedBuffer}
+local mapped = net.GetStateSnapshot(player)[9948]
+local copiedKey = nil
+for key in pairs(mapped) do if type(key) == "table" then copiedKey = key end end
+assert(copiedKey and copiedKey ~= mutableKey, "Snapshot retained mutable table map key")
+copiedKey.Id = 99
+assert(mutableKey.Id == 3, "Snapshot mutation changed live map key")
+assert(mapped.Ref ~= sharedBuffer and mapped[copiedKey].Shared == mapped.Ref, "Snapshot buffer alias graph was not detached consistently")
+print("PASS STATE: mutable map keys and shared buffers are independently copied")
+
+local falseRoute = {Id = 9947}
+hooks.registerState(falseRoute.Id, falseRoute)
+internalState[falseRoute.Id] = false
+assert(hooks.stateGet(falseRoute, player) == false, "StateRoute:Get collapsed false to nil")
+internalState[falseRoute.Id] = true
+assert(hooks.stateGet(falseRoute, player) == true, "StateRoute:Get failed for true")
+internalState[falseRoute.Id] = nil
+assert(hooks.stateGet(falseRoute, player) == nil, "StateRoute:Get failed for absent value")
+print("PASS STATE: boolean false/true and absent-value parity")
 
 local gate = net.CreateActionGate({TTLSeconds = 20, MaxTicketsPerPlayer = 2})
 assert(not pcall(function() gate:Issue(player, "Buy", {}) end), "Mutable server payload allowed")
@@ -76,9 +121,9 @@ local failed, failReason = gate:Redeem(player, second, "BuyUpgrade", function() 
 assert(not failed and failReason == "HandlerError")
 local again = gate:Redeem(player, second, "BuyUpgrade", function() error("Failed ticket replay") end)
 assert(not again, "Failed execution ticket became reusable")
-assert(gate:Revoke(player, id))
-local removed, reason = gate:Redeem(player, id, "BuyUpgrade", function() error("Revoked ticket") end)
-assert(not removed and reason == "Unknown")
+assert(not gate:Revoke(player, id), "Revoke must not claim an executing/used ticket was canceled")
+local removed, reason = gate:Redeem(player, id, "BuyUpgrade", function() error("Used ticket executed") end)
+assert(not removed and reason == "Duplicate")
 gate:ClearPlayer(player)
 local newId = gate:Issue(player, "Equip", "Sword")
 assert(newId)
@@ -90,3 +135,35 @@ assert(net.GetStats().SecurityTicketsRedeemed == 1)
 assert(net.GetStats().SecurityTicketsReplayDrops >= 2)
 assert(net.GetStats().SecurityTicketsHandlerErrors == 1)
 print("PASS TICKETS: binding, action matching, one use, reentrancy, limits, revocation, errors, disconnected players")
+
+
+local rollover = net.CreateActionGate({TTLSeconds = 20, MaxTicketsPerPlayer = 1})
+player.Parent = hooks.players
+local first = rollover:Issue(player, "Repeat", 1)
+assert(first ~= nil, "Initial ticket could not be issued")
+assert(rollover:Redeem(player, first, "Repeat", function(_, value) assert(value == 1); return true end))
+local secondTicket = rollover:Issue(player, "Repeat", 2)
+assert(secondTicket and secondTicket ~= first, "Consumed ticket blocked a new offer")
+local deniedCap, capReason = rollover:Issue(player, "Repeat", 3)
+assert(not deniedCap and capReason == "Capacity", "Outstanding ticket cap not enforced")
+assert(rollover:Revoke(player, secondTicket), "Unused ticket could not be revoked")
+assert(not rollover:Redeem(player, secondTicket, "Repeat", function() error("Revoked ticket executed") end))
+assert(not rollover:Revoke(player, first), "Used/expired ticket revoke incorrectly succeeded")
+local third = rollover:Issue(player, "Repeat", 3)
+assert(third and third > secondTicket, "Revoked ticket slot was not recovered")
+assert(rollover:Redeem(player, third, "Repeat", function() return true end))
+assert(not rollover:Redeem(player, third, "Repeat", function() error("Replay executed") end))
+print("PASS TICKETS: consumed offers free admission, tombstones bounded and revocation accurate")
+
+local sustained = net.CreateActionGate({TTLSeconds = 30, MaxTicketsPerPlayer = 4})
+local previousId = 0
+for iteration = 1, 512 do
+    local requestId = sustained:Issue(player, "Cycle", iteration)
+    assert(requestId and requestId > previousId, "Tickets were reused or leaked admission capacity")
+    local accepted, echoed = sustained:Redeem(player, requestId, "Cycle", function(_, value) return value end)
+    assert(accepted and echoed == iteration, "Action ticket was rejected before expiration")
+    local replayed = sustained:Redeem(player, requestId, "Cycle", function() error("Replay executed") end)
+    assert(not replayed, "Previously redeemed ticket was reused")
+    previousId = requestId
+end
+print("PASS TICKETS: 512 issue/redeem/replay cycles without capacity leaks")

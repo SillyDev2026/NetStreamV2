@@ -35,6 +35,14 @@ entitlements—inside the handler. Tickets do **not** authorize a fresh client
 request the server never approved.
 
 Records are in process memory: no cross-server durability, inventory lock,
+Ticket capacity counts **outstanding unused** tickets. Completed tickets retain
+a bounded replay tombstone (up to the configured cap); old tombstones can be
+evicted without allowing redemption, because numeric IDs are never reused.
+`Revoke` returns false for expired or already consumed tickets, including
+a redemption currently executing. It cannot undo a committed or in-flight
+transaction. Recheck authoritative conditions immediately before committing.
+
+
 or exactly-once persistence guarantee. The per-player cap and TTL bound memory.
 `Revoke` does not cancel a handler already running.
 
