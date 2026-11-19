@@ -24,6 +24,26 @@ NetStream.__test = {
     dispatchScalar = dispatchRouteScalar,
     charge = Internal.chargeIncomingCall,
     run = Internal.runIncomingCall,
+    startWithoutTransport = function() started = true end,
+    receivePacket = receive,
+    drainDispatch = runDispatch,
+    encodeEventPacket = function(routeId, ...)
+        local route = assert(eventRoutes[routeId], "Missing stress route")
+        local args = table.pack(...)
+        local message = makeMessage(KIND_EVENT, routeId, 0, args, route._schema, "Normal")
+        local packet = Internal.encodeBitFrame({message})
+        releaseMessage(message)
+        return packet
+    end,
+    encodeTwoEvents = function(routeId, first, second)
+        local route = assert(eventRoutes[routeId], "Missing stress route")
+        local firstMessage = makeMessage(KIND_EVENT, routeId, 0, table.pack(first), route._schema, "Normal")
+        local secondMessage = makeMessage(KIND_EVENT, routeId, 0, table.pack(second), route._schema, "Normal")
+        local packet = Internal.encodeBitFrame({firstMessage, secondMessage})
+        releaseMessage(firstMessage)
+        releaseMessage(secondMessage)
+        return packet
+    end,
 }
 `;
 const bootstrap = `
