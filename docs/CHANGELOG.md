@@ -1,5 +1,14 @@
 # NetStreamV2 Changelog
 
+## RPC error-information disclosure fix (unreleased)
+
+- Stop returning raw server callback exceptions, stack traces, or value-validation
+  error details to remote clients. Return generic RPC error descriptions, log
+  details server-side under debug diagnostics, and expose separate callback/
+  invalid-return counters.
+- Add a Luau regression that deliberately includes a private marker inside
+  a server exception and asserts it is absent from the queued client reply.
+
 ## Standalone Luau stress regression gate (unreleased)
 
 - Add deterministic 96-peer simulated server load and adversarial tests against
