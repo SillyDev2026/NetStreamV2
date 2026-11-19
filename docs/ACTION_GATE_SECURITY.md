@@ -1,11 +1,14 @@
-# Server-issued action tickets and fail-closed route security
+# Server-Issued Action Tickets
 
-This patch extends the v4.3.1 security framework without changing BitFrame v1,
-codec 230, or any transport packet format. It is a defense-in-depth layer,
-**not** a client anti-tamper system. Clients can forge or replay packets and
-modify everything they receive. Only the server's state and rules are trusted.
+**Applies to:** NetStreamV2 v4.3.1-compatible source on `main`. **Availability:** Implemented, opt-in, server-only.
 
-## 1. Server-only action ticket gate
+[← Documentation index](README.md) · [Security policies](SECURITY.md) · [Runtime validation](RUNTIME_VALIDATION.md)
+
+Action tickets implement a constrained **server → client → server** interaction: the server issues a temporary permission record, the client returns its identifier, and the server independently verifies and consumes it before running an authoritative handler.
+
+**Tickets are not secrets or proof of client integrity.** A modified client can inspect and submit identifiers. Security depends on player/action binding, expiry, one-use redemption, and full server-owned game-rule validation.
+
+## API and ticket lifecycle
 
 `NetStream.CreateActionGate({TTLSeconds = 10, MaxTicketsPerPlayer = 32})`
 creates a local server-only ticket registry.
@@ -34,19 +37,11 @@ The server must re-check changing facts—balance, ownership, stock and
 entitlements—inside the handler. Tickets do **not** authorize a fresh client
 request the server never approved.
 
-Records are in process memory: no cross-server durability, inventory lock,
-Ticket capacity counts **outstanding unused** tickets. Completed tickets retain
-a bounded replay tombstone (up to the configured cap); old tombstones can be
-evicted without allowing redemption, because numeric IDs are never reused.
-`Revoke` returns false for expired or already consumed tickets, including
-a redemption currently executing. It cannot undo a committed or in-flight
-transaction. Recheck authoritative conditions immediately before committing.
+Ticket capacity counts **outstanding unused tickets**, not already consumed offers. Completed tickets retain bounded replay tombstones, and ticket IDs are never reused by the same gate instance. `Revoke` returns `false` for expired or already consumed tickets; it cannot cancel a handler already executing.
 
+Records live in **one server process**. Tickets do not guarantee cross-server coordination, durable inventory locking, or exactly-once persistence. The configured TTL and per-player cap bound retained state, but gameplay and storage operations must enforce their own consistency invariants.
 
-or exactly-once persistence guarantee. The per-player cap and TTL bound memory.
-`Revoke` does not cancel a handler already running.
-
-## 2. Server-to-client-to-server example
+## Example: Server-authorized upgrade
 
 Server:
 
@@ -121,7 +116,7 @@ Never let an untrusted client generate arbitrary purchase offers. The server
 should only issue tickets for actions that make sense for the player's current
 server-validated context.
 
-## 3. Opt-in policy firewall
+## Optional default-deny route firewall
 
 `NetStream.RequireServerPolicies(true)` enables default-deny mode for
 **incoming Event and Function gameplay callbacks** on that server.
@@ -141,7 +136,7 @@ This checks callback admission, not the atomicity of game data writes.
 Authorization policies must remain pure and non-yielding; changing conditions
 must also be verified in the protected handler.
 
-## 4. Monitoring and testing
+## Monitoring and testing
 
 `GetStats()` adds:
 
@@ -155,9 +150,13 @@ Run the paired Studio scripts for actual server/client transport behavior.
 CI service mocks do not simulate multiplayer, Heartbeat, network loss,
 DataStores or cross-server persistence.
 
-## Threat-model limitations
+## Trust boundaries
 
 No key, hash, encrypted packet, client checksum or handshake can make client
 data immutable once it reaches the player's machine. The server-to-client-
 to-server round trip limits *which* actions may be attempted but is not a
 substitute for authoritative game state and independent validation.
+
+---
+
+For additional authorization semantics, rate limits and server-owned transaction guidance, see [Security policies](SECURITY.md). Real Roblox Studio testing is required before treating this example as production-ready.
