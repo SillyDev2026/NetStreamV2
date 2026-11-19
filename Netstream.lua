@@ -9157,17 +9157,22 @@ end
 -- Snapshot must not share mutable nested State payload tables or buffers.
 -- Peer state is client-reported data, not server-authoritative gameplay state.
 local function cloneStateSnapshot(value, seen)
+	if type(value) ~= "table" and typeof(value) ~= "buffer" then return value end
+	local prior = seen[value]
+	if prior then return prior end
 	if typeof(value) == "buffer" then
 		local copy = buffer.create(buffer.len(value))
+		seen[value] = copy
 		buffer.copy(copy, 0, value)
 		return copy
 	end
-	if type(value) ~= "table" then return value end
-	local prior = seen[value]
-	if prior then return prior end
 	local copy = table.clone(value)
 	seen[value] = copy
-	for key, nested in pairs(value) do copy[key] = cloneStateSnapshot(nested, seen) end
+	for key, nested in pairs(value) do
+		local clonedKey = cloneStateSnapshot(key, seen)
+		if clonedKey ~= key then copy[key] = nil end
+		copy[clonedKey] = cloneStateSnapshot(nested, seen)
+	end
 	return copy
 end
 
