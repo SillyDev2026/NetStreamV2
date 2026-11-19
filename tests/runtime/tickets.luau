@@ -71,6 +71,18 @@ local cyclicSnapshot = net.GetStateSnapshot(player)
 assert(cyclicSnapshot[9946] ~= cyclic and cyclicSnapshot[9946].Self == cyclicSnapshot[9946], "Snapshot failed to clone cycles safely")
 print("PASS STATE: nested tables, mutable buffers and cyclic snapshots are detached")
 
+local mutableKey = {Id = 3}
+local sharedBuffer = buffer.fromstring("xy")
+internalState[9948] = {[mutableKey] = {Shared = sharedBuffer}, Ref = sharedBuffer}
+local mapped = net.GetStateSnapshot(player)[9948]
+local copiedKey = nil
+for key in pairs(mapped) do if type(key) == "table" then copiedKey = key end end
+assert(copiedKey and copiedKey ~= mutableKey, "Snapshot retained mutable table map key")
+copiedKey.Id = 99
+assert(mutableKey.Id == 3, "Snapshot mutation changed live map key")
+assert(mapped.Ref ~= sharedBuffer and mapped[copiedKey].Shared == mapped.Ref, "Snapshot buffer alias graph was not detached consistently")
+print("PASS STATE: mutable map keys and shared buffers are independently copied")
+
 local falseRoute = {Id = 9947}
 hooks.registerState(falseRoute.Id, falseRoute)
 internalState[falseRoute.Id] = false
