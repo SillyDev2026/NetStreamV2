@@ -177,6 +177,16 @@ assert(invalidReply and invalidReply[1] == false and invalidReply[2] == "Remote 
 assert(net.GetRPCStats().InvalidResults == 1, "Invalid callback return was not counted")
 print("PASS RPC: server exception tracebacks and invalid result internals never reach the client")
 
+local unboundRPC = {Id = 600008, _callback = nil}
+hooks.registerFunction(unboundRPC.Id, unboundRPC)
+net.SetServerPolicy(unboundRPC, {Authorize = function() return true end})
+assert(hooks.charge(players[1]))
+hooks.run(players[1], unboundRPC.Id, 900003, table.pack(1))
+local unboundReply = hooks.peekRPCReply(players[1])
+assert(unboundReply and unboundReply[1] == false and unboundReply[2] == "Remote callback unavailable", "Unbound RPC disclosed route registration internals")
+assert(net.GetRPCStats().Active == 0, "Unbound RPC leaked its concurrency slot")
+print("PASS RPC: unavailable handlers fail with generic errors and reclaim capacity")
+
 local gate = net.CreateActionGate({TTLSeconds = 120, MaxTicketsPerPlayer = 16})
 local ticketSuccess, ticketReplays, ticketWrongPlayer = 0, 0, 0
 benchmark("action ticket cycles", PEERS * TICKETS_PER_PEER, function()
