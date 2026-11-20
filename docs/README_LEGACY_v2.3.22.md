@@ -5,6 +5,23 @@
 
 ---
 
+## Reading this archive
+
+| If you need… | Use the current reference |
+| --- | --- |
+| Installation and live API overview | [Current project README](../README.md) |
+| Route authorization and replay protection | [Security guide](SECURITY.md) |
+| Server-owned ACK/resync replication | [Experimental replica guide](AUTHORITATIVE_REPLICATION.md) |
+| Wire layout and runtime internals | [Architecture](ARCHITECTURE.md) |
+| Current validation and benchmark limitations | [Runtime validation](RUNTIME_VALIDATION.md) |
+| Version history and source maintenance | [Changelog](CHANGELOG.md) |
+
+**Preservation policy:** The remainder of this file is retained for historical traceability and is not kept synchronized with the current module's APIs or defaults. Verify any older snippets against the current source before using them.
+
+[← Documentation index](README.md) · [Contributing](../CONTRIBUTING.md)
+
+---
+
 <!-- Historical v2.3.22 content below is intentionally preserved for traceability. -->
 
 # NetStreamV2 (NetStream)
