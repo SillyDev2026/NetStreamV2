@@ -8915,6 +8915,14 @@ end
 
 -- Optional, owner-only server-authoritative replication. This is loaded lazily
 -- and does not change the existing v4.3.1 protocol or codec version.
+function NetStream.CreateSecureUI(name, options)
+    assert(not destroyed, "NetStream has been destroyed")
+    if not Internal.secureUIFactory then
+        Internal.secureUIFactory = require(assert(script:WaitForChild("SecureUIController", 10), "CreateSecureUI requires a child ModuleScript named SecureUIController"))
+    end
+    return Internal.secureUIFactory.Create(NetStream, name, options, {Server = IS_SERVER, Players = Players})
+end
+
 function NetStream.CreateReplica(name, options)
 	assert(not destroyed, "NetStream has been destroyed")
 	assert(type(name) == "string" and #name >= 1 and #name <= 64, "Replica name must contain 1..64 bytes")

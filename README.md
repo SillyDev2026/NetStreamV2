@@ -200,6 +200,10 @@ local Account = NetStream.CreateReplica("Account", {
 
 This feature is a **v4.4 preview on the v4.3.1 source line**, not a certified v4.4.0 release. Real Roblox Studio multiplayer verification, long-run heap measurements, and persistence-backed transaction safety are still pending. Read the [complete replica API and rollout guidance](docs/AUTHORITATIVE_REPLICATION.md) before enabling it.
 
+## Secure UI controller (experimental)
+
+The optional `NetStream.CreateSecureUI(name, options)` API provides server-authorized panel visibility and per-action permission checks over the experimental owner replica system. Install `SecureUIController.lua` alongside `AuthoritativeState.lua` and `Compression.lua` as child ModuleScripts of `Netstream`. The client can still modify its own GUI; real security comes from rejecting unauthorized server actions. See the [Secure UI controller guide](docs/SECURE_UI_CONTROLLER.md).
+
 ## Encoding and performance
 
 The default wire format is **BitFrame v1**. Its compact framing combines route/request metadata with typed or dynamic values and optional compression when beneficial.
