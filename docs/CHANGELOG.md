@@ -17,6 +17,13 @@ For installation and supported APIs, see the [project README](../README.md). For
 
 For the current source line, the module still identifies as `v4.3.1`. The replica implementation is a **v4.4 preview**, not an announced v4.4.0 release. These labels should not be interpreted as independent security or performance certifications.
 
+## Unreleased — Core dispatch lifecycle fixes
+
+- Recheck session and peer lifecycle after each server policy predicate, preventing later authorization or gameplay callbacks after shutdown or player removal.
+- Reject disconnected peers even when an Event or Function route has no policy. Admitted RPC work still returns its concurrency slot when rejected.
+- Stop remaining event listeners when a peer leaves while an earlier listener is suspended. This does not cancel a callback already executing.
+- Add table/scalar event and RPC regressions covering both policy stages, shutdown, player removal and listener suspension. Wire formats and public API signatures are unchanged.
+
 ## Unreleased — Replica lifecycle and recovery fixes
 
 - Stop command processing between validation and reduction if the controller, NetStream, or player attachment has ended. Recheck lifecycle before reducer and Update commits.

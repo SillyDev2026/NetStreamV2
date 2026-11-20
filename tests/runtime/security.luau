@@ -83,3 +83,84 @@ assert(not pending and pendingReason == "Duplicate", "Pending request was not re
 assert(coroutine.resume(thread))
 assert(coroutine.status(thread) == "dead")
 print("PASS SECURITY: in-flight duplicate suppression")
+
+-- Policy callbacks must not authorize later work after ending the peer/session.
+for _, mode in {"event", "scalar", "rpc"} do
+    for _, stage in {"Validate", "Authorize"} do
+        for _, action in {"disconnect", "destroy"} do
+            local api = loadNetStream()
+            local h = api.__test
+            h.startWithoutTransport()
+            local peer = {Parent = h.players, __player = true, IsA = function(_, kind) return kind == "Player" end}
+            local called, authorized = 0, 0
+            local route = if mode == "rpc" then api.Function("Lifecycle", {Id = 9301}) else api.Event("Lifecycle", {Id = 9301})
+            local callback = function() called += 1 end
+            if mode == "rpc" then route:SetCallback(callback) else route:Connect(callback) end
+            local function endSession()
+                if action == "destroy" then api.Destroy() else peer.Parent = nil end
+                return true
+            end
+            api.SetServerPolicy(route, {
+                Validate = if stage == "Validate" then endSession else function() return true end,
+                Authorize = function()
+                    authorized += 1
+                    if stage == "Authorize" then return endSession() end
+                    return true
+                end,
+            })
+            if mode == "rpc" then
+                assert(h.charge(peer))
+                h.run(peer, route.Id, 1, table.pack(7))
+                assert(api.GetRPCStats().Active == 0, "Lifecycle rejection leaked an RPC slot")
+            elseif mode == "scalar" then h.dispatchScalar(route, peer, 7)
+            else h.dispatch(route, peer, table.pack(7)) end
+            assert(called == 0, "Callback ran after policy teardown: " .. mode .. "/" .. stage .. "/" .. action)
+            assert(stage ~= "Validate" or authorized == 0, "Authorize ran after validation ended the session")
+            assert(api.GetStats().SecurityPolicyAccepted == 0)
+        end
+    end
+end
+print("PASS SECURITY: policy teardown blocks authorization and event/scalar/RPC callbacks")
+
+for _, mode in {"event", "scalar", "rpc"} do
+    local api = loadNetStream()
+    local h = api.__test
+    h.startWithoutTransport()
+    local peer = {Parent = h.players, __player = true, IsA = function(_, kind) return kind == "Player" end}
+    local called = 0
+    local route = if mode == "rpc" then api.Function("Disconnected", {Id = 9302}) else api.Event("Disconnected", {Id = 9302})
+    local callback = function() called += 1 end
+    if mode == "rpc" then
+        route:SetCallback(callback)
+        assert(h.charge(peer))
+        peer.Parent = nil
+        h.run(peer, route.Id, 1, table.pack(7))
+        assert(api.GetRPCStats().Active == 0)
+    else
+        route:Connect(callback)
+        peer.Parent = nil
+        if mode == "scalar" then h.dispatchScalar(route, peer, 7) else h.dispatch(route, peer, table.pack(7)) end
+    end
+    assert(called == 0, "Unprotected callback ran for a disconnected peer")
+end
+print("PASS SECURITY: disconnected unprotected routes reject work and reclaim RPC slots")
+
+for _, scalar in {false, true} do
+    local api = loadNetStream()
+    local h = api.__test
+    h.startWithoutTransport()
+    local peer = {Parent = h.players, __player = true, IsA = function(_, kind) return kind == "Player" end}
+    local route = api.Event("YieldingListeners", {Id = 9303})
+    local later = 0
+    route:Connect(function() coroutine.yield() end)
+    route:Connect(function() later += 1 end)
+    local worker = coroutine.create(function()
+        if scalar then h.dispatchScalar(route, peer, 7) else h.dispatch(route, peer, table.pack(7)) end
+    end)
+    assert(coroutine.resume(worker))
+    assert(coroutine.status(worker) == "suspended")
+    peer.Parent = nil
+    assert(coroutine.resume(worker))
+    assert(coroutine.status(worker) == "dead" and later == 0, "Listener chain continued after peer removal")
+end
+print("PASS SECURITY: yielding event/scalar listeners stop dispatch after peer removal")

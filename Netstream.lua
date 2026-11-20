@@ -5823,9 +5823,10 @@ end
 
 -- Server-side gameplay policy. Every registered callback on a guarded route shares this gate.
 function Internal.allowServerRoute(route, player, args, scalar)
+	if destroyed then return false end
 	if not IS_SERVER then return true end
 	local policy = route and route._serverPolicy or nil
-	if not policy and not requireServerPolicies then return true end
+	if not policy and not requireServerPolicies then return player ~= nil and player.Parent == Players end
 	Stats.SecurityPolicyChecks += 1
 	if not player or player.Parent ~= Players then
 		Stats.SecurityPolicyRejects += 1
@@ -5856,7 +5857,7 @@ function Internal.allowServerRoute(route, player, args, scalar)
 				return false
 			end
 			if not ok then Stats.SecurityPolicyErrors += 1 end
-			if not ok or accepted ~= true then
+			if not ok or accepted ~= true or destroyed or player.Parent ~= Players then
 				Stats.SecurityPolicyRejects += 1
 				return false
 			end
@@ -5872,7 +5873,7 @@ local function dispatchRoute(route, player, args)
 	end
 	if not Internal.allowServerRoute(route, player, args, false) then return end
 	local node = route._head
-	while node do
+	while node and not destroyed and (not IS_SERVER or (player and player.Parent == Players)) do
 		local nextNode = node.next
 		if node.connected then
 			if node.once then
@@ -5898,7 +5899,7 @@ local function dispatchRouteScalar(route, player, value)
 	end
 	if not Internal.allowServerRoute(route, player, value, true) then return end
 	local node = route._head
-	while node do
+	while node and not destroyed and (not IS_SERVER or (player and player.Parent == Players)) do
 		local nextNode = node.next
 		if node.connected then
 			if node.once then
