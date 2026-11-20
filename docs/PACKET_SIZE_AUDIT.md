@@ -4,6 +4,27 @@
 
 **Scope:** BitFrame v1, bundled Compression 2.4.2 (codec 230). This report is grounded in `Internal.bitFrameWriteOne`, `finishBitFrameBatch`, `BitFrameWriter:adaptiveUInt` and successful `sendBatch` in `Netstream.lua`. It reports **encoded buffers**, not packet profiler's complete remote-call estimates, internet packets, TLS, or Roblox engine replication. This is an audit of source layout; actual performance still requires a Roblox Studio run.
 
+[← Documentation index](README.md) · [Architecture](ARCHITECTURE.md) · [Benchmark procedure](BENCHMARKING.md)
+
+## Measurement boundaries
+
+| Quantity | Included | Excluded |
+| --- | --- | --- |
+| BitFrame encoded bytes | Message kind, route/request metadata, payload bits and padding | Roblox remote invocation overhead and internet protocol headers |
+| Compressed payload bytes | Compressed representation when the encoder selects it | Any assumption that compression always saves bytes |
+| Per-message average | Number of encoded payload bytes divided by logical messages | Engine scheduling, retransmission or queue wait |
+| Per-player bandwidth | Requires a representative live-server observation | Inferences from one small packet or a synthetic CPU profile |
+
+Use source-derived calculations as a hypothesis. For authoritative measurements, capture the encoded packet and relevant Roblox engine network statistics on a fixed workload.
+
+## Reproduction checklist
+
+1. Record the source commit, schema, route ID, options and serialized values.
+2. Compare encoded buffer lengths for identical payloads and record packet grouping.
+3. Include framing, byte alignment, compression selection and the number of logical events per batch.
+4. Repeat under small, mixed and high-frequency traffic; examine p95/p99 rather than only averages.
+5. Confirm any optimization preserves decoding and rejects malformed input at configured limits.
+
 ## Framing grammar
 
 Every BitFrame packet is a chain of messages followed by a single end marker. Per item:
