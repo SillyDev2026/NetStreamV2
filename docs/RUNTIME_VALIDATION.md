@@ -4,6 +4,21 @@
 
 Run `node scripts/source-audit.mjs`, then `LUAU_BIN=/path/to/luau node scripts/runtime-tests.mjs` from the repository. Node 22+ and the official Luau CLI are required. CI builds Luau revision `c87565b8b0db5d5d5bfd2b8b00ad6573e5d06d9f`, compiles the sources, and runs both gates.
 
+[← Documentation index](README.md) · [Studio benchmarking](BENCHMARKING.md) · [Replica preview](AUTHORITATIVE_REPLICATION.md)
+
+## Verification matrix
+
+| Suite or artifact | Execution model | Primary coverage |
+| --- | --- | --- |
+| `scripts/source-audit.mjs` | Node.js source-level audit | Static invariants and regression fixtures |
+| `scripts/docs-audit.mjs` | Node.js documentation audit | Titles, fences, local links and basic table structure |
+| `scripts/runtime-tests.mjs` | Official Luau interpreter, mock services | Codec, RPC, security, replica and lifecycle behavior |
+| `--stress-only` | Deterministic simulated clients | High-volume command, packet and queue behavior |
+| `--profile-only` / `--compare-only` | Luau CLI microbenchmarks | Named serializer CPU workloads |
+| `tests/*.server.lua` and `*.client.lua` | Requires manual Roblox Studio Play | Actual RemoteEvents and Roblox scheduler integration |
+
+A successful Luau mock run is necessary regression evidence but **not** an assertion that the matching Studio scripts have been executed.
+
 ## Test commands
 
 Run these from the repository root with Node.js and the official Luau CLI available:
