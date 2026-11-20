@@ -359,6 +359,9 @@ test("public API through real BitFrame encode/decode/dispatch and shutdown", fun
     local options = {Id = ID, Fields = {"Coins", "Wins"}}
     local authoritative = server.CreateReplica("Account", options)
     local mirror = client.CreateReplica("Account", options)
+    server.RequireServerPolicies(true)
+    -- Replica-internal client command and control routes must be admitted
+    -- by explicit server policies even with application-wide default deny.
     assert(not pcall(server.CreateReplica, "Account", {Id = ID + 10, Fields = {"Coins"}}))
     assert(not pcall(server.CreateReplica, "Collision", options))
     local function pump()
@@ -389,6 +392,20 @@ test("public API through real BitFrame encode/decode/dispatch and shutdown", fun
     server.Destroy(); client.Destroy()
     assert(heartbeat:Count() == 0 and players.PlayerRemoving:Count() == 0)
     assert(not pcall(server.CreateReplica, "AfterDestroy", {Id = ID + 20, Fields = {"Coins"}}))
+end)
+
+test("malformed replication frames are rejected without unwinding callbacks", function()
+    local w = world()
+    w:Ready()
+    local before = w.CA:GetStats().InvalidFrames
+    local epoch = w.Server:GetStats(w.A).Epoch
+    -- Bad bitfield shapes can throw from a standalone delta decoder; the
+    -- wire-facing replica callback must convert them into a resync request.
+    local broken = {Schema = "5:Coins4:Wins5:Title5:Ready", Full = false, Base = 1, Revision = 2, ChangedMask = 0/0, Values = {}}
+    local success = pcall(function() w.ClientRoutes[w.A][ID].Signal:Fire(epoch, broken) end)
+    assert(success, "Malformed frame escaped the client listener")
+    assert(w.CA:GetStats().InvalidFrames > before, "Malformed frame was not rejected")
+    assert(w.CA:Get().Coins == 100, "Malformed frame altered client state")
 end)
 
 print("PASS authoritative replication suites:", passed)
