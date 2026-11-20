@@ -6,6 +6,21 @@ NetStream treats every client as **untrusted**. Its optional server-only policy 
 
 For one-use server-issued tickets, default-deny route mode, and client State rejection, see [Action-gate security](ACTION_GATE_SECURITY.md).
 
+[← Documentation index](README.md) · [Authoritative replication](AUTHORITATIVE_REPLICATION.md) · [Contributing](../CONTRIBUTING.md)
+
+## Trust-boundary checklist
+
+| Data or action | Source of truth | Server-side requirement |
+| --- | --- | --- |
+| Currency, item ownership and XP | Trusted server profile | Validate and commit atomically |
+| Damage, cooldowns and ability use | Server-owned rules and state | Check range, rates and permission before applying |
+| Client-issued action ticket | Server's per-player ticket registry | Match player/action, expiry and single-use reservation |
+| Replicated client state | Untrusted mirror | Never derive a purchase or entitlement from a client-reported value |
+| RPC response | Server callback | Redact internal errors and enforce resource budgets |
+| Cross-server transaction | Persistent application data layer | Durable request IDs and concurrency/conflict handling |
+
+These measures complement schema and bandwidth checks. They do not establish tamper-proof code on the client.
+
 ## Example: validate a purchase request
 
 ```luau
@@ -150,6 +165,10 @@ test rapid join/leave and permission changes, and stress concurrent purchases.
 
 Security code cannot protect replicated code and assets. Only server-exclusive
 scripts and server-owned gameplay state should contain authority.
+
+## Production review
+
+Before enabling `RequireServerPolicies(true)`, enumerate all incoming `Event` and `Function` routes, attach policies to legitimate client-facing routes, and test denial and recovery behavior. Audit ownership checks again inside each sensitive gameplay handler. In-memory idempotency and action tickets are **not** a substitute for persistent transaction records. For the experimental owner-replication API, follow the additional [release checklist](AUTHORITATIVE_REPLICATION.md).
 
 ## Related documentation
 
