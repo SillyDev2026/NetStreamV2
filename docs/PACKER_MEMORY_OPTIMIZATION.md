@@ -2,6 +2,19 @@
 
 > **Status:** Implemented on the v4.3.1-compatible `main` branch. Fast paths preserve BitFrame v1, codec 230, and valid encoded packet bytes. The limitations and measured trade-offs below still apply.
 
+[← Documentation index](README.md) · [Memory diagnostics](MEMORY_EFFICIENCY.md) · [Benchmarking](BENCHMARKING.md)
+
+## Choosing the right path
+
+| Payload | Encoding approach | Interpretation |
+| --- | --- | --- |
+| Up to four eligible small primitives | Direct native tiny-tuple codec | Avoids temporary writer/reader wrappers |
+| Longer strings, repeated dictionary strings, structured values | Pooled general codec | Targets allocation reuse; may have additional CPU cost |
+| Typed event schema | BitFrame typed field encoder | Message framing and schemas determine actual wire bytes |
+| Existing compressed payload | Bundled compressor when appropriate | Compression only helps when output is smaller after overhead |
+
+A faster microbenchmark does not imply that every Roblox networking operation improves. Keep security limits and packet byte compatibility as non-negotiable regression gates.
+
 ## Implementation summary
 
 - A new **tiny native tuple path** handles up to four nil, boolean, small signed/unsigned integer, or short distinct-string values directly. A tiny encode creates only the final packet buffer; a tiny decode builds the returned value table without allocating a Reader wrapper. Duplicate strings, longer strings, extended numbers, tables and other values automatically fall back to the existing codec. Byte format is identical to the pre-patch native codec.
@@ -56,6 +69,10 @@ The follow-up fix merged in PR #22 enforces `MaxTableEntries` for standalone arg
 - These optimizations do not reduce network ping or Roblox RemoteEvent overhead.
 - Real Studio MicroProfiler, heap snapshots, and matched throughput tests against Zap/Blink/ByteNet remain needed to establish production efficiency.
 - Large persistent application payloads still dominate memory; app code must respect configured size limits and avoid constructing unnecessary temporary tables.
+
+## Interpretation and monitoring
+
+Compare `WriterPoolHits`, `ReaderPoolHits`, temporary argument-pool usage and actual encoded packet sizes under the same payload distribution. Use after-GC heap measurement in Roblox Studio to quantify memory changes. For user-visible networking performance, also measure queue wait, server callback cost and p95/p99 end-to-end latency; packing nanoseconds alone are insufficient.
 
 ## Related documentation
 
