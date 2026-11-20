@@ -1,7 +1,7 @@
 local production = loadNetStream()
 local factory = loadAuthoritativeState()
 local ID = 45000
-local passed = 0
+local passed, failed = 0, 0
 local function signal()
     local callbacks = {}
     local result = {}
@@ -120,7 +120,8 @@ local function world()
 end
 
 local function test(name, callback)
-    callback()
+    local ok, err = pcall(callback)
+    if not ok then failed += 1; print("FAIL replica", name, err); return end
     passed += 1
     print("PASS replica", name)
 end
@@ -415,4 +416,111 @@ test("malformed replication frames are rejected without unwinding callbacks", fu
     assert(w.CA:Get().Coins == 100, "Malformed frame altered client state")
 end)
 
+test("validator teardown prevents reducer side effects", function()
+    for _, action in {"destroy", "disconnect", "net destroy"} do
+        local w = world()
+        w:Ready()
+        local reduced = false
+        w.Server:HandleCommand("Stop", {
+            Validate = function()
+                if action == "destroy" then w.Server:Destroy()
+                elseif action == "disconnect" then w.A.Parent = nil; w.Players.PlayerRemoving:Fire(w.A)
+                else w.ServerNet.Dead = true end
+                return true
+            end,
+            Reduce = function(_, _, state) reduced = true; return state end,
+        })
+        assert(w.CA:SendCommand("Stop", {}))
+        w:Flush()
+        assert(not reduced, "Reducer ran after " .. action)
+    end
+end)
+
+test("client restart resumes command sequence after resync", function()
+    local w = world()
+    w:Ready()
+    w:BuyHandler()
+    assert(w.CA:SendCommand("Buy", {Item = 7})); w:Flush()
+    w.CA:Destroy()
+    w.CA = w:Client(w.A)
+    for _ = 1, 5 do w:Tick(1) end
+    local ok, sequence = w.CA:SendCommand("Buy", {Item = 7})
+    assert(ok and sequence == 2, "Restart reused a consumed command sequence")
+    w:Flush()
+    assert(w.Server:Get(w.A).Coins == 80)
+end)
+
+test("rejected detach retries and stale tombstones cannot revoke reattachment", function()
+    local w = world()
+    w:Ready()
+    local epoch = w.Server:GetStats(w.A).Epoch
+    w.Reject = true
+    assert(w.Server:Detach(w.A))
+    assert(w.Server:Get(w.A) == nil and w.Server:GetStats().TrackedPlayers == 0)
+    w.Reject = false
+    for _ = 1, 5 do w:Tick(1) end
+    assert(w.CA:Get() == nil, "Rejected detach left stale client state")
+    w.Server:Attach(w.A, {Coins = 50})
+    w:Tick()
+    w.ClientRoutes[w.A][ID].Signal:Fire(epoch, false)
+    assert(w.CA:Get().Coins == 50)
+end)
+
+test("detach ACK loss retries without duplicate change notifications", function()
+    local w = world()
+    w:Ready()
+    local changed = 0
+    w.CA:OnChanged(function() changed += 1 end)
+    w.Drop = function(packet) return packet.Sender and packet.Id == ID + 1 and packet.Args[1] == 1 and packet.Args[3] == 0 end
+    w.Server:Detach(w.A); w:Flush()
+    w:Tick(2)
+    assert(changed == 1 and w.Server:GetStats().Retries > 0)
+    w.Drop = nil
+    w:Tick(2)
+    local retries = w.Server:GetStats().Retries
+    w:Tick(4)
+    assert(changed == 1 and w.Server:GetStats().Retries == retries, "Detach retries did not stop after ACK")
+end)
+
+test("updates and reducers cannot commit after net teardown", function()
+    local w = world()
+    w:Ready()
+    assert(not pcall(function()
+        w.Server:Update(w.A, function(state) w.ServerNet.Dead = true; state.Coins = 999; return state end)
+    end))
+    w.ServerNet.Dead = false
+    assert(w.Server:Get(w.A).Coins == 100)
+    w.Server:HandleCommand("Stop", {Validate = function() return true end, Reduce = function(_, _, state)
+        w.ServerNet.Dead = true; state.Coins = 999; return state
+    end})
+    assert(w.CA:SendCommand("Stop", {})); w:Flush()
+    w.ServerNet.Dead = false
+    assert(w.Server:Get(w.A).Coins == 100 and w.Server:GetStats().CommandsAccepted == 0)
+end)
+
+test("sequence metadata is validated and never rewinds queued commands", function()
+    local w = world()
+    w:Ready()
+    local frame = production.CreateDeltaCodec({"Coins", "Wins", "Title", "Ready"}):Full({Coins = 100}, w.CA:GetStats().Revision)
+    frame.Schema = "5:Coins4:Wins5:Title5:Ready"
+    local epoch = w.CA:GetStats().Epoch
+    local route = w.ClientRoutes[w.A][ID]
+    local invalid = w.CA:GetStats().InvalidFrames
+    for _, value in {false, -1, 0/0, math.huge, "1"} do
+        frame.CommandSequence = value
+        route.Signal:Fire(epoch, frame)
+    end
+    assert(w.CA:GetStats().InvalidFrames == invalid + 5)
+    frame.CommandSequence = 20
+    route.Signal:Fire(epoch, frame)
+    local ok, sequence = w.CA:SendCommand("Anything", {})
+    assert(ok and sequence == 21)
+    frame.CommandSequence = 0
+    route.Signal:Fire(epoch, frame)
+    ok, sequence = w.CA:SendCommand("Anything", {})
+    assert(ok and sequence == 22)
+end)
+
 print("PASS authoritative replication suites:", passed)
+
+assert(failed == 0, tostring(failed) .. " replica suites failed")

@@ -90,7 +90,7 @@ The complete [server shop example](../examples/AuthoritativeShop.server.lua) bel
 | `OnChanged(callback)` | Client | Receive `(frozenStateOrNil, revision)`; nil indicates revocation; returns disconnectable connection |
 | `OnCommandResult(callback)` | Client | Receive `(sequence, accepted, reason)`; returns disconnectable connection |
 | `RequestResync()` | Client | Request a rate-limited full snapshot for this client's attachment |
-| `Detach(player)` | Server | Revoke membership, clear state/baselines and send a tombstone when connected |
+| `Detach(player)` | Server | Revoke membership, clear state/baselines and retry a tombstone until acknowledged when connected |
 | `GetStats(player?)` | Both | Inspect traffic/rejections; server includes tracked-player count and optional pending/acknowledged revisions |
 | `Destroy()` | Both | Disconnect listeners and heartbeat, clear state and handlers; server attempts a revocation message |
 
@@ -106,6 +106,10 @@ The complete [server shop example](../examples/AuthoritativeShop.server.lua) bel
 - Detach/reattach uses a new server-generated epoch. Old commands, ACKs and frames cannot act on the new attachment. A tombstone prevents a delayed old frame from restoring revoked state.
 - Reliable, coalesced data events keep queued retry storage bounded. Existing NetStream packet, queue and bandwidth controls still apply. If the connection cannot carry the configured state within those limits, retries cannot make it deliverable.
 
+Detach tombstones use an epoch-matching revision-zero ACK. The server keeps at most one pending tombstone per detached connected player and retries at `RetryInterval`; reattachment, disconnection or destruction clears it. Duplicate tombstones do not repeat `OnChanged`. `Destroy()` still makes only a best-effort final send because it stops the retry loop.
+
+Snapshot metadata includes optional `CommandSequence`, the server's consumed sequence number. New clients restore their sequence after resync without rewinding already queued commands. Old frames without this field remain readable, but both peers must be updated for restart recovery and detach acknowledgement support. BitFrame v1 and codec 230 are unchanged.
+
 ## Command trust boundary
 
 The player comes from Roblox's server event, never from a payload `Player`/`UserId`. Commands require a matching attachment epoch and a monotonically increasing safe-integer sequence. Duplicate/old sequences are rejected. Gaps are allowed because the transport may reject queued commands under pressure. Sequence numbers are replay bookkeeping, **not authentication**. A cheater can invent fresh numbers, so validation and rate limits remain mandatory.
@@ -114,7 +118,7 @@ An aggregate server token bucket and a per-command bucket bound handler entry. U
 
 Payloads are flat plain tables: at most 16 named primitive fields, key lengths 1..64 bytes, string values at most 256 bytes, and a 2,048-byte semantic key/value budget. Nested tables, buffers, Instances, nonfinite numbers and metatables are rejected by the command layer. These are **post-decode** limits; NetStream's global envelope/byte/depth/node limits remain the first defense against oversized packets. Tighten those global limits to suit your game.
 
-`Validate(player, frozenPayload, frozenState)` must return exactly true. `Reduce(player, frozenPayload, draft)` returns the entire next state. Both must be fast and **must not yield**. Errors, yields, invalid state or validation denial leave the replica state unchanged. Attempts to call `Set`, `Update` or `Detach` recursively from a handler are rejected. The draft is copied again on commit, so retaining it does not grant future mutation access.
+`Validate(player, frozenPayload, frozenState)` must return exactly true. `Reduce(player, frozenPayload, draft)` returns the entire next state. Both must be fast and **must not yield**. Errors, yields, invalid state or validation denial leave the replica state unchanged. Attempts to call `Set`, `Update` or `Detach` recursively from a handler are rejected. The draft is copied again on commit, so retaining it does not grant future mutation access. Lifecycle is checked after validation and before committing: shutdown or player removal during a validator prevents the reducer from running.
 
 Reducers must be pure state transformations. This API cannot roll back external effects already performed by a validator/reducer (DataStore writes, inventory changes in another service, HTTP requests, spawned tasks, etc.), and cannot preempt an infinite CPU loop. Use a separate server transaction design for such operations. Replay rejection applies to an attachment only; it is not durable exactly-once processing across reconnects/restarts. Do not automatically retry purchases with new sequences.
 
