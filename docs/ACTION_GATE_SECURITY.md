@@ -2,10 +2,18 @@
 
 > **Status:** Available in the current v4.3.1-compatible `main` branch. These controls are opt-in and do not alter BitFrame v1 or codec 230.
 
-This feature extends the v4.3.1 security framework without changing BitFrame v1,
-codec 230, or any transport packet format. It is a defense-in-depth layer,
-**not** a client anti-tamper system. Clients can forge or replay packets and
-modify everything they receive. Only the server's state and rules are trusted.
+The action gate extends the v4.3.1 security framework without changing the BitFrame v1 or codec 230 wire formats. It is a **defense-in-depth control**, not client anti-tamper: a modified client can submit arbitrary requests and inspect every ticket it receives. Server-owned state and independent validation remain the trust boundary.
+
+[← Documentation index](README.md) · [Security policies](SECURITY.md) · [Authoritative replication](AUTHORITATIVE_REPLICATION.md)
+
+## Security guarantees and limits
+
+| Mechanism | Guarantees within one server process | Does not guarantee |
+| --- | --- | --- |
+| Player/action binding | An issued ticket is matched against the named player and action | The client cannot inspect or forward its identifier |
+| Single-use redemption | A previously consumed ticket cannot execute again | A handler's side effects can be rolled back automatically |
+| Expiry and bounded storage | Unused offers expire and outstanding capacity is capped | Persistent state across server restart or teleport |
+| Route policies | Defined Validate/Authorize checks gate incoming callbacks | Domain invariants are correct without server-owned checks |
 
 ## Server-only action ticket gate
 
@@ -136,6 +144,14 @@ server-validated context.
 This checks callback admission, not the atomicity of game data writes.
 Authorization policies must remain pure and non-yielding; changing conditions
 must also be verified in the protected handler.
+
+## Deployment checklist
+
+- [ ] Use server-only logic to decide whether a ticket should be issued.
+- [ ] Ensure the ticket is bound to the intended player and action.
+- [ ] Revalidate mutable prices, balance, ownership, cooldowns and permissions inside the redemption handler.
+- [ ] Reserve and commit durable purchase identifiers outside NetStream when persistence is required.
+- [ ] Run duplicate, expired, wrong-player, wrong-action, disconnect and handler-error regressions.
 
 ## Diagnostics and testing
 
