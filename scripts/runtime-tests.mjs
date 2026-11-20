@@ -27,6 +27,7 @@ NetStream.__test = {
     startWithoutTransport = function(remote) started = true; if remote then reliableRemote = remote end end,
     receive = receive,
     pumpDispatch = runDispatch,
+    dispatchPump = runDispatch,
     receivePacket = receive,
     drainDispatch = runDispatch,
     makeRawWriter = function(capacity, maxBytes) return Writer.new(capacity, maxBytes) end,
