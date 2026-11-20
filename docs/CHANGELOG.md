@@ -4,6 +4,19 @@ NetStreamV2 uses versioned release notes for its historical changes and a separa
 
 For installation and supported APIs, see the [project README](../README.md). For test methodology, see [Runtime validation](RUNTIME_VALIDATION.md) and [Benchmarking](BENCHMARKING.md).
 
+[← Documentation index](README.md) · [Current README](../README.md) · [Contributing](../CONTRIBUTING.md)
+
+## Release-status legend
+
+| Status | Meaning |
+| --- | --- |
+| **Released** | A numbered source version appears in the module and has a corresponding release record |
+| **Merged, unreleased** | Included on `main` but not yet given a new source version |
+| **Experimental preview** | An opt-in API included in source that still needs explicit Studio and production validation |
+| **Historical** | Preserved older work; current implementation and limitations take precedence |
+
+For the current source line, the module still identifies as `v4.3.1`. The replica implementation is a **v4.4 preview**, not an announced v4.4.0 release. These labels should not be interpreted as independent security or performance certifications.
+
 ## Unreleased v4.4 feature preview — owner-authoritative replication
 
 - Add optional `AuthoritativeState.lua` and `NetStream.CreateReplica` to the latest v4.3.1-compatible core.
