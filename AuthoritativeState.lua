@@ -147,6 +147,21 @@ function AuthoritativeState.Create(net, name, options, context)
     local commandRoute = net.Event("__Replica/" .. name .. "/Command", {Id = options.Id + 2, Compression = false, MaxPerSecond = commandRate, Burst = commandBurst})
     local resultRoute = net.Event("__Replica/" .. name .. "/Result", {Id = options.Id + 3, Schema = {T.VarUInt, T.VarUInt, T.Bool, T.String}, Compression = false})
 
+    -- Internal replica command/control routes must remain usable when the
+    -- application enables RequireServerPolicies(true). Deny data/results
+    -- submissions from clients, which are server -> client directions.
+    if server and type(net.SetServerPolicy) == "function" then
+        net.SetServerPolicy(dataRoute, {Authorize = function() return false end})
+        net.SetServerPolicy(resultRoute, {Authorize = function() return false end})
+        net.SetServerPolicy(controlRoute, {Validate = function(player, op, epoch, revision)
+            return connected(player) and integer(op, 1, 2) and integer(epoch, 0, MAX_INTEGER) and integer(revision, 0, MAX_INTEGER)
+        end})
+        net.SetServerPolicy(commandRoute, {Validate = function(player, epoch, sequence, commandName, payload)
+            return connected(player) and integer(epoch, 1, MAX_INTEGER) and integer(sequence, 1, MAX_INTEGER)
+                and type(commandName) == "string" and #commandName > 0 and #commandName <= 64 and type(payload) == "table"
+        end})
+    end
+
     local function send(route, player, ...)
         if destroyed or net.IsDestroyed() or (server and not connected(player)) then return false end
         local ok, accepted
