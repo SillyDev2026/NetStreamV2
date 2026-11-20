@@ -4,6 +4,14 @@ NetStreamV2 uses versioned release notes for its historical changes and a separa
 
 For installation and supported APIs, see the [project README](../README.md). For test methodology, see [Runtime validation](RUNTIME_VALIDATION.md) and [Benchmarking](BENCHMARKING.md).
 
+## Unreleased v4.4 feature preview — owner-authoritative replication
+
+- Add optional `AuthoritativeState.lua` and `NetStream.CreateReplica` to the latest v4.3.1-compatible core.
+- Provide per-player server-owned state, bounded full/delta replication, exact revision acknowledgements, epoch isolation, retries, and resynchronization.
+- Validate incoming commands with server-only policies, non-yielding validators and reducers, replay guards, and rate limits. Invalid delta frames recover without unwinding the client callback.
+- Add isolated Luau replica tests, BitFrame integration, two-player Studio regression scripts, and an illustrative shop example.
+- **Not yet a numbered v4.4 release:** live Roblox Studio networking, cross-server durability, and real heap/latency measurements remain outstanding.
+
 ## Unreleased — v4.3.1-Compatible Main-Branch Improvements
 
 These improvements are implemented on `main`, without a release-number or wire-format change.
