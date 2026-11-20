@@ -4,6 +4,31 @@
 
 This guide describes the actual architecture in [Netstream.lua](../Netstream.lua) and [Compression.lua](../Compression.lua). All performance outcomes require measurement in Roblox Studio; the diagrams below are explanatory, not benchmark results.
 
+[← Documentation index](README.md) · [Server security](SECURITY.md) · [Replica API](AUTHORITATIVE_REPLICATION.md)
+
+## System boundaries
+
+```text
+Client game code
+  → NetStream route / serializer
+  → Reliable or unreliable Roblox remote
+  → Server input limits and route policy
+  → Application's authoritative gameplay handler
+  → Server-owned state / optional replica controller
+  → Revisioned full or delta updates with ACK and resync
+  → Client read-only state mirror
+```
+
+| Boundary | Owner | Important rule |
+| --- | --- | --- |
+| Remote transport | Roblox engine and NetStream scheduler | Unreliable updates can be dropped; queues and budgets are bounded |
+| Packet decoding | NetStream serialization layer | Successfully decoded input is still untrusted |
+| Command permission | Server route policy plus gameplay code | Validate both admission and mutable state at commit time |
+| Replication baseline | Experimental `AuthoritativeState` controller | Only server state forms the next snapshot; ACKs affect delivery state, not currency |
+| Durable player data | Game's persistence layer | Replication does not provide DataStore consistency or exactly-once transactions |
+
+The owner-replica controller is an optional child ModuleScript. It complements, rather than replaces, the existing `Event`, `Function`, `State`, and `CreateDeltaCodec` APIs.
+
 ## Current architecture at a glance
 
 - **Server authority:** Inbound Event/Function callbacks support per-route policies and optional default-deny enforcement. Server-issued tickets and idempotency helpers are server-local controls; they do not establish client integrity or durable exactly-once execution.
@@ -244,6 +269,14 @@ Per-target reliable `State` suppression maintains bounded, weak-keyed last-**suc
 ## v4.1.1 packet-size audit instrumentation
 
 When `PacketSizeAuditEnabled` is true, the existing writer separately accounts for each BitFrame message's presence bit, two message-kind bits, variable-length route/request IDs, schema-event run bit and optional run count, plus all remaining payload bits. One end bit finishes the packet and byte padding fills the remainder. Only a **successfully dispatched RemoteEvent** records these logical packet bits; encoding attempts and budget re-encodes do not affect totals. `GetPacketSizeAudit()` returns `LastPacket` and `Totals`. The wire grammar and public send/receive behavior are unchanged. Detailed examples: [Packet Size Audit](PACKET_SIZE_AUDIT.md).
+
+## Architecture review checklist
+
+- Confirm schemas, route IDs, and protocol configuration match on both endpoints.
+- Keep control-plane handshakes and player/action authorization conceptually separate.
+- Reject malformed messages before invoking gameplay callbacks and treat decoded data as untrusted.
+- Measure pooling and batching effects with matched loads; do not infer lower ping from local encoding speed.
+- Validate replica ACK/resync behavior, reconnects and cleanup in Roblox Studio before deployment.
 
 ## Related documentation
 
