@@ -17,6 +17,13 @@ For installation and supported APIs, see the [project README](../README.md). For
 
 For the current source line, the module still identifies as `v4.3.1`. The replica implementation is a **v4.4 preview**, not an announced v4.4.0 release. These labels should not be interpreted as independent security or performance certifications.
 
+## Unreleased — Replica lifecycle and recovery fixes
+
+- Stop command processing between validation and reduction if the controller, NetStream, or player attachment has ended. Recheck lifecycle before reducer and Update commits.
+- Include the server-consumed command sequence in replica frames so a restarted client can resume after resync without replaying consumed sequence numbers. Existing queued client sequences never rewind.
+- Retry detach tombstones until an epoch-matching revision-zero ACK arrives. Duplicate tombstones are acknowledged without duplicate change notifications; reattach, player removal and destruction clear retry records.
+- Add six regression suites, including three reproduced failures against the previous implementation. BitFrame v1 and codec 230 are unchanged; replica frames gain optional command metadata and detach ACK semantics. Update both peers to receive the full recovery behavior.
+
 ## Unreleased v4.4 feature preview — owner-authoritative replication
 
 - Add optional `AuthoritativeState.lua` and `NetStream.CreateReplica` to the latest v4.3.1-compatible core.

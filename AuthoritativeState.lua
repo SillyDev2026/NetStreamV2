@@ -46,6 +46,7 @@ function AuthoritativeState.Create(net, name, options, context)
     assert(integer(maxStateBytes, 128, 65536), "Replica MaxStateBytes must be 128..65536")
     assert(integer(commandRate, 1, 60) and integer(commandBurst, 1, 60), "Replica command rate/burst must be 1..60")
     local records = {}
+    local detached = {}
     local handlers = {}
     local handlerCount = 0
     local connections = {}
@@ -183,6 +184,7 @@ function AuthoritativeState.Create(net, name, options, context)
             if not record.ForceFull and now - pending.SentAt < retryInterval then return end
             if not pending.Frame.Full then pending.Frame = codec:Full(pending.State, pending.Revision) end
             pending.Frame.Schema = signature
+            pending.Frame.CommandSequence = record.LastCommand
             if send(dataRoute, player, record.Epoch, pending.Frame) then stats.Retries += 1 end
             pending.SentAt = now
             record.ForceFull = false
@@ -199,6 +201,7 @@ function AuthoritativeState.Create(net, name, options, context)
         end
         -- One pending revision per recipient. Changes while awaiting ACK remain coalesced in State.
         frame.Schema = signature
+        frame.CommandSequence = record.LastCommand
         record.Pending = {Frame = frame, State = record.State, Revision = frame.Revision, SentAt = now}
         record.ForceFull = false
         if send(dataRoute, player, record.Epoch, frame) then
@@ -212,6 +215,7 @@ function AuthoritativeState.Create(net, name, options, context)
         assert(not records[player], "Player already attached; use Set or Detach")
         assert(nextEpoch < MAX_INTEGER, "Replica epoch exhausted")
         local state = copyState(initialState)
+        detached[player] = nil
         nextEpoch += 1
         records[player] = {State = state, Epoch = nextEpoch, Revision = 0, Baseline = nil, Pending = nil, ForceFull = true, LastCommand = 0, Busy = false, Commands = bucket(commandBurst), Control = bucket(60), Resync = bucket(2), Rates = {}}
         return nextEpoch
@@ -225,7 +229,10 @@ function AuthoritativeState.Create(net, name, options, context)
         assert(not record.Busy, "Cannot detach from a command handler")
         records[player] = nil
         dataRoute:CancelQueuedClient(player)
-        if connected(player) then send(dataRoute, player, record.Epoch, false) end
+        if connected(player) then
+            detached[player] = {Epoch = record.Epoch, SentAt = clock()}
+            send(dataRoute, player, record.Epoch, false)
+        end
         return true
     end
 
@@ -246,7 +253,7 @@ function AuthoritativeState.Create(net, name, options, context)
         local ok, state = invoke(transform, table.clone(record.State))
         record.Busy = false
         assert(ok, "Replica Update failed or yielded")
-        assert(not destroyed and records[player] == record, "Replica changed during Update")
+        assert(not destroyed and not net.IsDestroyed() and records[player] == record and connected(player), "Replica changed during Update")
         record.State = copyState(state)
     end
 
@@ -331,6 +338,7 @@ function AuthoritativeState.Create(net, name, options, context)
             listenerCounts[kind] = 0
         end
         table.clear(records)
+        table.clear(detached)
         table.clear(handlers)
         table.clear(connections)
         clientState = nil
@@ -339,6 +347,11 @@ function AuthoritativeState.Create(net, name, options, context)
     if server then
         connections[#connections + 1] = controlRoute:Connect(function(player, op, epoch, revision)
             if destroyed then return end
+            local retired = detached[player]
+            if retired then
+                if connected(player) and op == 1 and epoch == retired.Epoch and revision == 0 then detached[player] = nil end
+                return
+            end
             local record = records[player]
             if not record or not connected(player) then return end
             if not take(record.Control, 60, 60) then stats.RateLimited += 1; return end
@@ -377,13 +390,14 @@ function AuthoritativeState.Create(net, name, options, context)
             if record.Busy then reject("Busy"); return end
             record.Busy = true
             local valid, allowed = invoke(handler.Validate, player, copied, record.State)
+            if destroyed or net.IsDestroyed() or records[player] ~= record or not connected(player) then record.Busy = false; return end
             local ok, nextState = false, nil
             if valid and allowed == true then
                 ok, nextState = invoke(handler.Reduce, player, copied, table.clone(record.State))
                 if ok then ok, nextState = pcall(copyState, nextState) end
             end
             record.Busy = false
-            if destroyed or records[player] ~= record or not connected(player) then return end
+            if destroyed or net.IsDestroyed() or records[player] ~= record or not connected(player) then return end
             if not valid or (allowed == true and not ok) then stats.CallbackErrors += 1; reject("HandlerError"); return end
             if allowed ~= true then reject("Denied"); return end
             record.State = nextState
@@ -392,21 +406,29 @@ function AuthoritativeState.Create(net, name, options, context)
         end)
         connections[#connections + 1] = players.PlayerRemoving:Connect(function(player)
             records[player] = nil
+            detached[player] = nil
         end)
     else
         connections[#connections + 1] = dataRoute:Connect(function(epoch, frame)
-            if destroyed or not integer(epoch, 1, MAX_INTEGER) or epoch < clientEpoch or epoch <= retiredEpoch then return end
+            if destroyed or not integer(epoch, 1, MAX_INTEGER) or epoch < clientEpoch then return end
             if frame == false then
+                if epoch < retiredEpoch then return end
+                local changed = epoch > retiredEpoch
                 retiredEpoch, clientEpoch = epoch, epoch
                 clientState, clientRevision = nil, 0
-                notify("Changed", nil, 0)
+                send(controlRoute, nil, 1, epoch, 0)
+                if changed then notify("Changed", nil, 0) end
                 return
             end
+            if epoch <= retiredEpoch then return end
             if type(frame) ~= "table" then stats.InvalidFrames += 1; resync(); return end
             if frame.Schema ~= signature then stats.InvalidFrames += 1; resync(); return end
+            local acknowledgedCommand = if frame.CommandSequence == nil then 0 else frame.CommandSequence
+            if not integer(acknowledgedCommand, 0, MAX_INTEGER) then stats.InvalidFrames += 1; resync(); return end
             if epoch > clientEpoch and frame.Full ~= true then stats.InvalidFrames += 1; resync(); return end
             if epoch == clientEpoch and integer(frame.Revision, 1, MAX_INTEGER) and frame.Revision < clientRevision then return end
             if epoch == clientEpoch and frame.Revision == clientRevision and clientState then
+                commandSequence = math.max(commandSequence, acknowledgedCommand)
                 send(controlRoute, nil, 1, epoch, clientRevision)
                 return
             end
@@ -417,7 +439,7 @@ function AuthoritativeState.Create(net, name, options, context)
             if not applied or not nextState then stats.InvalidFrames += 1; resync(); return end
             local valid, copied = pcall(copyState, nextState)
             if not valid then stats.InvalidFrames += 1; resync(); return end
-            if epoch ~= clientEpoch then commandSequence = 0 end
+            commandSequence = math.max(if epoch == clientEpoch then commandSequence else 0, acknowledgedCommand)
             clientEpoch, clientRevision, clientState = epoch, revision, copied
             send(controlRoute, nil, 1, epoch, revision)
             notify("Changed", clientState, clientRevision)
@@ -436,6 +458,13 @@ function AuthoritativeState.Create(net, name, options, context)
         if server then
             for player, record in pairs(records) do
                 if connected(player) then transmit(player, record) else records[player] = nil end
+            end
+            for player, record in pairs(detached) do
+                if not connected(player) then detached[player] = nil
+                elseif clock() - record.SentAt >= retryInterval then
+                    record.SentAt = clock()
+                    if send(dataRoute, player, record.Epoch, false) then stats.Retries += 1 end
+                end
             end
         elseif not clientState then resync() end
     end)
