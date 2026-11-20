@@ -182,6 +182,21 @@ Policies are not a replacement for transaction-level validation. Tickets are ide
 
 See [security policies](docs/SECURITY.md) and [action tickets](docs/ACTION_GATE_SECURITY.md) for supported semantics and implementation examples.
 
+## Server-authoritative replication (experimental)
+
+The optional `NetStream.CreateReplica(name, options)` API provides **owner-only replicated state** with a server-owned field list, revision acknowledgements, automatic full/delta snapshots, bounded retries and resynchronization. It also accepts named client commands, but **only server-side validators and reducers can approve state changes**.
+
+Add `AuthoritativeState.lua` as a child ModuleScript of `Netstream` alongside `Compression` when using this API. Existing Event, Function and State users do not need this additional child.
+
+```luau
+local Account = NetStream.CreateReplica("Account", {
+    Id = 46000,
+    Fields = {"Coins", "Level"},
+})
+```
+
+This feature is a **v4.4 preview on the v4.3.1 source line**, not a certified v4.4.0 release. Real Roblox Studio multiplayer verification, long-run heap measurements, and persistence-backed transaction safety are still pending. Read the [complete replica API and rollout guidance](docs/AUTHORITATIVE_REPLICATION.md) before enabling it.
+
 ## Encoding and performance
 
 The default wire format is **BitFrame v1**. Its compact framing combines route/request metadata with typed or dynamic values and optional compression when beneficial.
