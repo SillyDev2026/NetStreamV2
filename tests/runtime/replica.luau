@@ -364,9 +364,9 @@ test("public API through real BitFrame encode/decode/dispatch and shutdown", fun
     local function pump()
         heartbeat:Fire(0.1)
         server.FlushTarget(player)
-        client.__test.dispatch()
+        client.__test.dispatchPump()
         client.FlushTarget()
-        server.__test.dispatch()
+        server.__test.dispatchPump()
     end
     authoritative:Attach(player, {Coins = 10, Wins = 0})
     pump()
