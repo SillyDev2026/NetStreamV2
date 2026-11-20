@@ -399,12 +399,19 @@ test("malformed replication frames are rejected without unwinding callbacks", fu
     w:Ready()
     local before = w.CA:GetStats().InvalidFrames
     local epoch = w.Server:GetStats(w.A).Epoch
-    -- Bad bitfield shapes can throw from a standalone delta decoder; the
-    -- wire-facing replica callback must convert them into a resync request.
-    local broken = {Schema = "5:Coins4:Wins5:Title5:Ready", Full = false, Base = 1, Revision = 2, ChangedMask = 0/0, Values = {}}
+    local revision = w.CA:GetStats().Revision
+    -- Construct an otherwise valid next revision, then corrupt its mask.
+    local previous = w.CA:Get()
+    local nextState = table.clone(previous)
+    nextState.Coins = 999
+    local broken = production.CreateDeltaCodec({"Coins", "Wins", "Title", "Ready"}):Diff(previous, nextState, revision)
+    assert(broken, "Failed to construct malformed-frame fixture")
+    broken.Schema = "5:Coins4:Wins5:Title5:Ready"
+    broken.Mask = 0/0
     local success = pcall(function() w.ClientRoutes[w.A][ID].Signal:Fire(epoch, broken) end)
     assert(success, "Malformed frame escaped the client listener")
-    assert(w.CA:GetStats().InvalidFrames > before, "Malformed frame was not rejected")
+    local after = w.CA:GetStats().InvalidFrames
+    assert(after > before, string.format("Malformed frame was not rejected (before=%d after=%d epoch=%d clientEpoch=%d revision=%d)", before, after, epoch, w.CA:GetStats().Epoch, revision))
     assert(w.CA:Get().Coins == 100, "Malformed frame altered client state")
 end)
 
