@@ -2,7 +2,7 @@
 
 > **Status:** Experimental, opt-in feature integrated into the v4.3.1-compatible source line. The installed NetStream module still reports **v4.3.1** until real Roblox Studio multiplayer validation supports a numbered v4.4 release.
 
-[← Documentation index](README.md) · [Server security](SECURITY.md) · [Runtime validation](RUNTIME_VALIDATION.md)
+[← Project README](../README.md) · [Server security](SECURITY.md) · [Runtime validation](RUNTIME_VALIDATION.md)
 
 `NetStream.CreateReplica` owns a separate server state for each attached player and replicates it only to that player. Clients submit commands; registered server validators and reducers decide whether to change state. The API is cheat-resistant infrastructure, not a guarantee that an entire game is uncheatable.
 
