@@ -232,7 +232,8 @@ See [Runtime validation](docs/RUNTIME_VALIDATION.md) and [Server stress validati
 
 | Guide | Contents |
 | --- | --- |
-| [Architecture](docs/ARCHITECTURE.md) | Remote hierarchy, packet framing, queues, and message lifecycle |
+| [Authoritative replication](docs/AUTHORITATIVE_REPLICATION.md) | Experimental owner-only server state, ACK/resync, commands and tests |
+| [Architecture](docs/ARCHITECTURE.md) || [Architecture](docs/ARCHITECTURE.md) | Remote hierarchy, packet framing, queues, and message lifecycle |
 | [Security policies](docs/SECURITY.md) | Validation, authorization, threat model, and idempotency |
 | [Action-ticket security](docs/ACTION_GATE_SECURITY.md) | One-time server-issued tickets and strict route mode |
 | [RPC concurrency](docs/RPC_CONCURRENCY.md) | Concurrent callback admission and cleanup |
