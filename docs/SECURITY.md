@@ -175,3 +175,9 @@ Before enabling `RequireServerPolicies(true)`, enumerate all incoming `Event` an
 - [Action tickets and strict route mode](ACTION_GATE_SECURITY.md)
 - [Server stress-test methodology](SERVER_STRESS_VALIDATION.md)
 - [Project overview](../README.md)
+
+## Callback lifecycle
+
+NetStream checks shutdown and server peer membership before callback admission, even on routes without a policy. It checks again after each policy predicate, so a validator that disconnects a player or destroys NetStream cannot authorize subsequent work. Rejected RPC work releases its concurrency slot.
+
+Event dispatch also checks lifecycle between listeners. If a listener yields and the peer disconnects before it resumes, the remaining listeners are skipped. An already executing callback is not cancelled; application code must recheck mutable gameplay conditions after its own yields.
