@@ -4,6 +4,15 @@
 
 Priority scores in older sections are **engineering estimates**, not measured performance or competitive rankings. Every significant change requires controlled compatibility, security, and Roblox Studio verification.
 
+[← Documentation index](README.md) · [Current replication API](AUTHORITATIVE_REPLICATION.md) · [Changelog](CHANGELOG.md)
+
+## Planning principles
+
+- Prioritize proven defects, correctness regressions, and realistic Studio evidence before additional features.
+- Require byte-for-byte compatibility tests for changes to BitFrame v1 or codec 230.
+- Treat application-level durable transaction safety as distinct from in-memory networking and replication.
+- Keep historical roadmap entries for traceability; do not interpret older "next" items as present-day missing features.
+
 ## Authoritative replication preview status
 
 An experimental owner-only `CreateReplica` implementation adds server-side commands, per-recipient revision ACKs, bounded full/delta retransmission and automatic resync. See [authoritative replication](AUTHORITATIVE_REPLICATION.md). This does not provide durable transactions, shared entity replication or client integrity. Real Studio and persistence validation remain the priority before release.
@@ -15,10 +24,10 @@ An experimental owner-only `CreateReplica` implementation adds server-side comma
 | **1 — Production validation** | Live Roblox Studio multiplayer stress under representative game traffic | p50/p95/p99, frame time, packet loss, server Lua heap/GC, connection recovery, and sustained duration recorded |
 | **2 — Structured codec throughput** | Reduce allocation *and* CPU cost for complex native payloads | Byte-for-byte compatibility and better same-process encode/decode results without security regressions |
 | **3 — Durable authoritative transactions** | Integrate game-specific persistent ledgers, conflict handling, and restart safety | Concurrent purchases and cross-server transitions cannot duplicate persistent rewards |
-| **4 — Acknowledged replication** | Per-player revision ACKs, explicit resync, and snapshot budgets | Deterministic recovery from missed/stale state revisions |
+| **4 — Replication production hardening** | Validate the implemented owner-only ACK/resync system in Roblox Studio | Two-player and high-load recovery, restart behavior and performance measurements recorded |
 | **5 — Controlled competitor comparison** | Compare equivalent payloads and limits with competing Roblox networking libraries | Published workload, configuration, machine, memory, and repeatable measurements |
 
-**Already implemented on `main`:** optional strict server route policies, one-use action tickets, BitFrame v1 fast paths, direct tiny Codec packing, pooled serializers, codec bounds enforcement, and the standalone server stress suite.
+**Already implemented on `main`:** optional strict server route policies, one-use action tickets, BitFrame v1 fast paths, direct tiny Codec packing, pooled serializers, codec bounds enforcement, a simulated-server stress suite, and experimental owner-only ACK/resync replication. Real Studio validation and durable transactions remain outstanding.
 
 For current behavior, see the [project README](../README.md) and [changelog](CHANGELOG.md). Historical version sections follow.
 

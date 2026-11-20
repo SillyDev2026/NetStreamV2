@@ -2,6 +2,20 @@
 
 > **Scope:** Introduced in v4.3.0 and maintained on the v4.3.1-compatible `main` branch. Concurrency controls are separate from per-second ingress limits and route authorization.
 
+[← Documentation index](README.md) · [Security policies](SECURITY.md) · [Runtime validation](RUNTIME_VALIDATION.md)
+
+## Operational summary
+
+| Scenario | Expected behavior | Developer responsibility |
+| --- | --- | --- |
+| More concurrent calls than allowed | Admission is rejected and a counter increments | Choose caps for expected yielded callbacks |
+| Callback throws | Active slot is released; client receives a generic error | Inspect server-only diagnostics |
+| Callback yields indefinitely | It continues occupying an active slot until it completes | Use explicit application deadlines and cancellation policy |
+| Request is rate-limited before callback | It may time out rather than return a gameplay result | Implement safe retries and idempotency only when appropriate |
+| Player disconnects | Per-player state is cleaned up when lifecycle permits | Test outstanding callbacks and avoid stale references |
+
+Concurrent-call limits are **resource boundaries**, not proof that a validly encoded request is authorized.
+
 ## Problem and design
 
 NetStream previously enforced incoming call **rate** (calls per second) but not the number of asynchronous callbacks remaining alive at once. A callback that yields for several seconds can allow thousands of outstanding Luau tasks across a server, even when every call was rate-compliant.

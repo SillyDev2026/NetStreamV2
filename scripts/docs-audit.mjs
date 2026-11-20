@@ -55,6 +55,38 @@ for (const [path, content] of markdown) {
     if (titleCount === 0 || (!archivedManual && titleCount !== 1)) problems.push(`${relative(root, path)}: expected ${archivedManual ? "at least one" : "one"} H1, found ${titleCount}`);
     headings.set(path, slugs);
 }
+// Active reference tables must have consistent columns. Archived docs are
+// intentionally exempt because their old formatting is preserved verbatim.
+for (const [path, content] of markdown) {
+    if (path.endsWith("/docs/README_LEGACY_v2.3.22.md")) continue;
+    let inFence = false;
+    let fenceMarker = "";
+    let expectedColumns = null;
+    for (const [index, line] of content.split("\n").entries()) {
+        const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+        if (fence) {
+            if (!inFence) { inFence = true; fenceMarker = fence[1][0]; }
+            else if (fenceMarker === fence[1][0]) inFence = false;
+            expectedColumns = null;
+            continue;
+        }
+        if (inFence) continue;
+        const row = line.trim();
+        if (!row.startsWith("|") || !row.endsWith("|")) {
+            expectedColumns = null;
+            continue;
+        }
+        const delimiters = [...row.matchAll(/(?<!\\)\|/g)].length;
+        if (delimiters < 3 || row.includes("||")) {
+            problems.push(`${relative(root, path)}: malformed table row at line ${index + 1}`);
+        }
+        if (expectedColumns !== null && delimiters !== expectedColumns) {
+            problems.push(`${relative(root, path)}: inconsistent table columns at line ${index + 1}`);
+        }
+        expectedColumns = delimiters;
+    }
+}
+
 for (const [path, content] of markdown) {
     // Check local Markdown hyperlinks, including fragment links. Remote URLs are
     // deliberately excluded, because this is an offline source audit.
@@ -76,7 +108,10 @@ for (const [path, content] of markdown) {
         }
     }
 }
-assert(documents.length >= 15, "Expected NetStreamV2 Markdown documentation inventory");
+for (const required of ["README.md", "CONTRIBUTING.md", "docs/README.md", "docs/STYLE_GUIDE.md", "docs/AUTHORITATIVE_REPLICATION.md"]) {
+    if (!markdown.has(join(root, required))) problems.push(`Missing required documentation: ${required}`);
+}
+assert(documents.length >= 19, "Expected all maintained NetStreamV2 Markdown guides and contributor standards");
 if (problems.length) {
     for (const problem of problems) process.stderr.write(`DOC ERROR: ${problem}\n`);
     process.exitCode = 1;

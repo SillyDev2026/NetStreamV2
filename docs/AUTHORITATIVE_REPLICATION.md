@@ -2,11 +2,31 @@
 
 > **Status:** Experimental, opt-in feature integrated into the v4.3.1-compatible source line. The installed NetStream module still reports **v4.3.1** until real Roblox Studio multiplayer validation supports a numbered v4.4 release.
 
-[← Project README](../README.md) · [Server security](SECURITY.md) · [Runtime validation](RUNTIME_VALIDATION.md)
+[← Documentation index](README.md) · [Project README](../README.md) · [Server security](SECURITY.md) · [Runtime validation](RUNTIME_VALIDATION.md)
 
-`NetStream.CreateReplica` owns a separate server state for each attached player and replicates it only to that player. Clients submit commands; registered server validators and reducers decide whether to change state. The API is cheat-resistant infrastructure, not a guarantee that an entire game is uncheatable.
+`NetStream.CreateReplica` owns a separate server state for each attached player and replicates it only to that player. Clients submit commands; registered server validators and reducers decide whether to change state. It helps enforce a server-authoritative trust boundary; it cannot guarantee that a game is exploit-proof.
+
+## At a glance
+
+| Concern | Behavior |
+| --- | --- |
+| Authority | Only server-owned state may be attached, updated or committed |
+| Audience | One attached player per server-side replica record; no shared entity observers |
+| Delivery | Revision ACKs, coalesced deltas, full snapshots and bounded retries |
+| Client input | Named commands require server-side validation and reduction |
+| Persistence | In-memory only; DataStore transactions are outside this module |
+| Release status | Experimental v4.4 preview; Studio multiplayer validation pending |
 
 ## Install
+
+Use the following ModuleScript hierarchy in `ReplicatedStorage`:
+
+```text
+ReplicatedStorage
+└── Netstream                 ModuleScript: Netstream.lua
+    ├── Compression           ModuleScript: Compression.lua
+    └── AuthoritativeState    ModuleScript: AuthoritativeState.lua
+```
 
 Keep `Compression` as a child ModuleScript of `Netstream`. Add `AuthoritativeState.lua` as another child ModuleScript named **AuthoritativeState**. It is loaded lazily by `CreateReplica`; existing networking code does not require the new child. Server and client must use matching current branch source, IDs and ordered field lists.
 
@@ -127,6 +147,14 @@ Roblox guidance: [secure the client/server boundary](https://create.roblox.com/d
 Replica control and command events are automatically registered with server-side input policies. They continue operating when `NetStream.RequireServerPolicies(true)` is enabled for the application. The replica's server-side data/result event routes explicitly reject incoming client submissions. Schema, epoch, sequence, rate and command-handler validation still apply; no client can set the authoritative state through this protocol.
 
 Malformed received delta frames are converted into rejected-frame telemetry and a rate-limited resync request rather than escaping the client's receive callback. Run `tests/runtime/replica.luau` and the paired Studio regression before production use.
+
+## Release acceptance checklist
+
+- [ ] Paired Studio server/client scripts pass with at least two real players.
+- [ ] Missing, duplicated and delayed transport updates converge without exposing another player's state.
+- [ ] Command authorization, invalid inputs and rate-limit behavior are verified under malicious client requests.
+- [ ] Heap/GC, per-frame CPU cost and p95/p99 state latency are measured under representative traffic.
+- [ ] Durable purchases are handled by the game's server-side data layer and survive crash/reconnect tests.
 
 ## Persistence boundary
 

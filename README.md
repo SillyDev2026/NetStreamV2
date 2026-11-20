@@ -14,11 +14,13 @@ NetStreamV2 provides an application-layer networking API built on Roblox's `Remo
 
 ## Contents
 
+- [Documentation index](docs/README.md)
 - [Features](#features)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [API overview](#api-overview)
 - [Security and trust boundaries](#security-and-trust-boundaries)
+- [Experimental authoritative replication](#server-authoritative-replication-experimental)
 - [Encoding and performance](#encoding-and-performance)
 - [Testing and verification](#testing-and-verification)
 - [Documentation](#documentation)
@@ -31,7 +33,7 @@ NetStreamV2 provides an application-layer networking API built on Roblox's `Remo
 | **Transport** | Reliable and unreliable message routes over Roblox remotes |
 | **Serialization** | Compact typed schemas, dynamic values, BitFrame v1, optional bundled compression |
 | **Requests** | Function-style RPC with concurrency limits and lifecycle cleanup |
-| **State** | Latest-value updates, change suppression, manual revisioned delta codec |
+| **State** | Latest-value updates, change suppression, manual revisioned delta codec, and opt-in owner-authoritative replicas (experimental) |
 | **Queues** | Priority hints, batching, coalescing, bounded dispatch, per-player controls |
 | **Security** | Server route policies, optional fail-closed mode, single-use action tickets, in-memory idempotency |
 | **Diagnostics** | Packet, queue, RPC, security, compression, and memory/pool counters |
@@ -46,7 +48,8 @@ Create the following hierarchy in Roblox Studio:
 ```text
 ReplicatedStorage
 └── Netstream                   ModuleScript: contents of Netstream.lua
-    └── Compression             Child ModuleScript: contents of Compression.lua
+    ├── Compression             Child ModuleScript: contents of Compression.lua
+    └── AuthoritativeState      Optional child ModuleScript: contents of AuthoritativeState.lua
 
 ServerScriptService
 └── NetworkServer               Script
@@ -56,7 +59,7 @@ StarterPlayer
     └── NetworkClient           LocalScript
 ```
 
-The `Compression` ModuleScript must be a child of `Netstream`. Server and client scripts must declare matching route IDs and schemas. Keep privileged validation, economy data, and persistence logic **server-side**.
+The `Compression` ModuleScript must be a child of `Netstream`. Add the optional `AuthoritativeState` child only when using `CreateReplica`. Server and client scripts must declare matching route IDs and schemas. Keep privileged validation, economy data, and persistence logic **server-side**.
 
 ## Quick start
 
@@ -232,8 +235,9 @@ See [Runtime validation](docs/RUNTIME_VALIDATION.md) and [Server stress validati
 
 | Guide | Contents |
 | --- | --- |
+| [Documentation index](docs/README.md) | Find the right guide by task and deployment status |
 | [Authoritative replication](docs/AUTHORITATIVE_REPLICATION.md) | Experimental owner-only server state, ACK/resync, commands and tests |
-| [Architecture](docs/ARCHITECTURE.md) || [Architecture](docs/ARCHITECTURE.md) | Remote hierarchy, packet framing, queues, and message lifecycle |
+| [Architecture](docs/ARCHITECTURE.md) | Remote hierarchy, packet framing, queues, and message lifecycle |
 | [Security policies](docs/SECURITY.md) | Validation, authorization, threat model, and idempotency |
 | [Action-ticket security](docs/ACTION_GATE_SECURITY.md) | One-time server-issued tickets and strict route mode |
 | [RPC concurrency](docs/RPC_CONCURRENCY.md) | Concurrent callback admission and cleanup |
@@ -256,4 +260,4 @@ See [Runtime validation](docs/RUNTIME_VALIDATION.md) and [Server stress validati
 - **Persistence:** In-memory ticket and idempotency records are not durable cross-server transaction mechanisms.
 - **Performance:** Published Luau CLI timings are reproducible microbenchmark evidence, not independently measured Studio RTT or heap savings.
 
-For migration or regressions, review the [changelog](docs/CHANGELOG.md), run the relevant suites, and benchmark your actual experience before deploying.
+For migration or regressions, review the [changelog](docs/CHANGELOG.md), run the relevant suites, and benchmark your actual experience before deploying. See [CONTRIBUTING.md](CONTRIBUTING.md) for review standards and [the documentation style guide](docs/STYLE_GUIDE.md) for writing conventions.

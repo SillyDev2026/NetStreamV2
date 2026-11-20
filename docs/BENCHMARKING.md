@@ -4,6 +4,33 @@
 
 This guide distinguishes **standalone Luau microbenchmarks**, which measure code-path CPU time, from **Roblox Studio measurements**, which are required to evaluate real networking, memory, and frame-time behavior. Do not compare libraries using different payloads, player counts, protocol options, or hardware.
 
+[← Documentation index](README.md) · [Packer results](PACKER_MEMORY_OPTIMIZATION.md) · [Simulated stress tests](SERVER_STRESS_VALIDATION.md)
+
+## Evidence levels and release gates
+
+| Evidence | Can establish | Cannot establish |
+| --- | --- | --- |
+| Source audit | Required checks, invariants and API references exist | Runtime behavior under real Roblox events |
+| Standalone Luau tests | Correctness for tested code paths with controlled mocks | Network RTT, real remote delivery or Studio heap usage |
+| Same-process microbenchmark | Relative CPU cost for the named codec payload | End-to-end game throughput or universal speed claims |
+| Roblox Studio controlled test | Observed CPU, memory, timing and recovery in that experience | Behavior for every device, game workload or network |
+| Persistence fault injection | Recovery for tested transaction/restart scenarios | Universal exactly-once processing without a ledger |
+
+A production verification report should identify the commit SHA, Roblox Studio version, player count, payload distribution, test duration, remote configuration, instrumentation settings, and limitations.
+
+## Example result record
+
+| Metric | Baseline | Candidate | Unit and method |
+| --- | ---: | ---: | --- |
+| Server script CPU p95 | — | — | ms per frame, MicroProfiler |
+| GC-adjusted retained Luau heap | — | — | MiB, after matched idle/GC interval |
+| Network bytes per message | — | — | encoded buffers plus Roblox-reported traffic |
+| State update latency p95 | — | — | ms, matched request-to-ack measurement |
+| Reconnect/resync completion | — | — | success ratio and elapsed seconds |
+| Invalid-command admission | — | — | accepted/rejected counts across identical adversarial scripts |
+
+Record raw observations; do not replace blank measurements with theoretical improvements. Report any additional CPU time from security checks or replication ACKs alongside their correctness benefits.
+
 ## Recommended verification sequence
 
 1. Run `node scripts/source-audit.mjs` and `node scripts/runtime-tests.mjs` in the repository root.
@@ -274,6 +301,10 @@ For real savings, run a matched 60-second Roblox Studio autoclick workload using
 Enable `PacketSizeAuditEnabled = true` before creating routes on the client. Run `tests/PacketSizeAuditRegression.server.lua` and `.client.lua` as a matched Studio Play session. The client checks the precise encoded BitFrame bytes for one U32 route 1001 (7 B), one U16 route 1002 (5 B), one U16 route 1 (4 B), and eight packed U16 route 1002 values (20 B). The last packet's metadata bit categories must sum to UsefulBits, with padding summing to PhysicalBits. The total is 36 encoded bytes across 11 logical messages; this is not an estimate of total Roblox network traffic. Report `NetStream.GetPacketSizeAudit().Totals`, `LastPacket`, `NetStream.GetStats()`, Packet Profiler buffer and remote-call totals, and RTT. Enable auditing only during diagnosis; repeat with instrumentation disabled to characterize application performance.
 
 Read [Packet Size Audit](PACKET_SIZE_AUDIT.md) for derivations and measurement limitations.
+
+## Acceptance for the experimental replica feature
+
+The v4.4 preview requires a two-player Studio session with strict server policies enabled, repeated attach/detach, old-epoch replays, duplicate ACKs, state-loss recovery and command validation tests. Validate that per-player state does not leak and that in-memory ACKs do not substitute for durable DataStore commits. Capture p95/p99 timings and heap samples before applying a release number.
 
 ## Related documentation
 

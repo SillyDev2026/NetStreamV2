@@ -4,6 +4,20 @@
 
 The harness runs `Netstream.lua` and bundled `Compression.lua` in the pinned official Luau interpreter through GitHub Actions. Minimal service doubles replace Roblox service objects; packets never leave the Luau process.
 
+[← Documentation index](README.md) · [Runtime suites](RUNTIME_VALIDATION.md) · [Studio methodology](BENCHMARKING.md)
+
+## Test interpretation
+
+The simulated load intentionally exercises code-path correctness, resource bounds, and rejection behavior. It is **not** a throughput contract or a certified Roblox player capacity. The benchmark does not include real engine remotes, replication scheduling, network transit, physical devices or real DataStore operations.
+
+| Observation | Interpretation |
+| --- | --- |
+| All simulated messages processed without assertion failure | Those exact invariants held in the test harness |
+| A rate-limited message did not reach gameplay | The exercised admission path rejected it |
+| An ACK/resync simulation converged | The tested deterministic loss sequence recovered |
+| A run completed quickly | The local Luau workload was fast on that runner, not necessarily in Studio |
+| A simulated player has a mock `Player` object | It is not a real connected Roblox player |
+
 ## Run the suite
 
 ```bash
@@ -33,6 +47,10 @@ The standard runner without `--stress-only` runs codec, delta, RPC, policy, tick
 These are simulated Luau server operations, **not 96 real Roblox clients**. Reported durations are Luau interpreter CPU timings on CI hardware, not ping, network throughput or engine frame times. There are no arbitrary latency assertions.
 
 The test uses production BitFrame encode/receive/dispatch and server security logic. It does **not** simulate full Roblox networking, reliable/unreliable RemoteEvents, heartbeat scheduling, network congestion, live packet loss, physics, server restart recovery, DataStore persistence, or cross-server transactions.
+
+## Live Roblox Studio handoff
+
+Before describing production performance, run paired server/client regression scripts on the target Roblox Studio version. Record connected player count, run duration, p50/p95/p99, heap after GC, packet volumes, disconnect/rejoin recovery, strict policy rejection and any packet-loss simulation assumptions. Test the experimental replica controller separately with owner isolation and malformed command attempts.
 
 ## Limitations and next validation
 

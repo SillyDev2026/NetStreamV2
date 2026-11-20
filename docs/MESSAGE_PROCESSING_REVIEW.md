@@ -4,6 +4,20 @@
 
 The current branch also contains v4.3.1-compatible security and packer improvements. See the [changelog](CHANGELOG.md) for subsequent changes.
 
+[← Documentation index](README.md) · [Current architecture](ARCHITECTURE.md) · [Upgrade roadmap](NEXT_OPTIONS.md)
+
+## Decision status
+
+This is a historical decision record, **not the authoritative list of current missing features**. Some recommendations from the original review have since been implemented, including server-side policy controls, codec memory pooling and experimental owner-only revision ACK/resync through `CreateReplica`. The remaining comparison ideas require independently repeatable Roblox Studio benchmarks.
+
+| Workstream | Current status |
+| --- | --- |
+| Server command policy and admission checks | Implemented on `main` |
+| Compact native codec tuples and pooled serializers | Implemented; measure real game workloads before ranking |
+| Owner-only revision ACK and resync | Experimental implementation; Studio validation pending |
+| Automatic spatial observers and arbitrary shared-entity replication | Not part of the owner-only replica preview |
+| Matched third-party benchmark results | Not established in this document |
+
 ## Other Roblox networking projects reviewed
 
 The following are **publicly documented design references**, not code copied into NetStreamV2. Verify current upstream behavior before relying on comparative claims:
@@ -39,7 +53,7 @@ BlinkBlox and Zap illustrate what a generated schema-specific encoder can achiev
 - Code-generated static serializers and route manifests (build tooling, compatibility/ID allocation)
 - Per-route callback fairness and prioritized processing with reliable gameplay guarantees
 - Multi-client automated Roblox Studio integration harness
-- Acknowledged and retriable per-recipient state delta baselines
+- Production-verified acknowledged replication for live Roblox Studio clients (the owner-only preview is implemented, but its Studio release gate remains open)
 
 This is a targeted performance/safety patch rather than a rewrite or a claim of world-leading speed.
 
