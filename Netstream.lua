@@ -8912,6 +8912,28 @@ function NetStream.CreateActionGate(options)
 	return table.freeze(gate)
 end
 
+-- Optional, owner-only server-authoritative replication. This is loaded lazily
+-- and does not change the existing v4.3.1 protocol or codec version.
+function NetStream.CreateReplica(name, options)
+	assert(not destroyed, "NetStream has been destroyed")
+	assert(type(name) == "string" and #name >= 1 and #name <= 64, "Replica name must contain 1..64 bytes")
+	assert(type(options) == "table" and isInteger(options.Id) and options.Id >= 1 and options.Id <= 2147483644, "Replica requires four consecutive event IDs")
+	if not Internal.replicaFactory then
+		Internal.replicaFactory = require(assert(script:WaitForChild("AuthoritativeState", 10), "CreateReplica requires a child ModuleScript named AuthoritativeState"))
+	end
+	ensureStarted()
+	if not Internal.replicas then Internal.replicas = {}; Internal.replicaCount = 0 end
+	assert(not Internal.replicas[name], "Replica name already used in this NetStream lifetime")
+	assert(Internal.replicaCount < 128, "Replica controller limit reached")
+	for id = options.Id, options.Id + 3 do
+		assert(not eventRoutes[id] and not eventNames[id], "Replica event ID is already registered")
+	end
+	local replica = Internal.replicaFactory.Create(NetStream, name, options, {Server = IS_SERVER, Players = Players, Heartbeat = RunService.Heartbeat, Clock = os.clock})
+	Internal.replicas[name] = replica
+	Internal.replicaCount += 1
+	return replica
+end
+
 function NetStream.CreateDeltaCodec(fieldNames)
 	assert(type(fieldNames) == "table" and #fieldNames >= 1 and #fieldNames <= 32, "Delta codec expects 1..32 named fields")
 	local count = #fieldNames
@@ -9832,6 +9854,11 @@ function NetStream.Destroy()
 	end
 	destroyed = true
 	started = false
+	if Internal.replicas then
+		for _, replica in pairs(Internal.replicas) do replica:Destroy() end
+		table.clear(Internal.replicas)
+		Internal.replicaFactory = nil
+	end
 	Internal._lastEncodedPacketAudit = nil
 	table.clear(stateDeliveryCache)
 	if heartbeatConnection then
