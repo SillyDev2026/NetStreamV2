@@ -96,12 +96,15 @@ local function loadAuthoritativeState()
     local typeof = function(value) return if type(value) == "table" and value.__player then "Instance" else nativeTypeof(value) end
     ${read('AuthoritativeState.lua')}
 end
+local function loadSecureUIController()
+    ${read('SecureUIController.lua')}
+end
 local function loadNetStream(testServices)
     local services = testServices or {RunService = {IsServer = function() return true end}, ReplicatedStorage = {}, Players = {}}
     local nativeTypeof = typeof
     local typeof = function(value) return if type(value) == "table" and value.__player then "Instance" else nativeTypeof(value) end
     local game = {GetService = function(_, name) return assert(services[name], name) end}
-    local script = {WaitForChild = function(_, name) return if name == "Compression" then Compression elseif name == "AuthoritativeState" then loadAuthoritativeState() else nil end}
+    local script = {WaitForChild = function(_, name) return if name == "Compression" then Compression elseif name == "AuthoritativeState" then loadAuthoritativeState() elseif name == "SecureUIController" then loadSecureUIController() else nil end}
     local require = function(module) return module end
     local Random = {new = function() return {NextInteger = function(_, low) return low end} end}
     local warn = function() end
@@ -112,7 +115,7 @@ local function loadNetStream(testServices)
 end
 `;
 try {
-    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression', 'codec_limits', 'replica']));
+    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression', 'codec_limits', 'replica', 'secure_ui']));
     for (const suite of suites) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));
