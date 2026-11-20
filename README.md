@@ -1,6 +1,6 @@
 # NetStreamV2
 
-**Typed binary networking, reliable and unreliable events, RPC, state updates, and traffic controls for Roblox Luau.**
+**High-performance Roblox Luau networking with typed binary packets, reliable/unreliable messaging, server-authoritative security, and optional protected UI actions.**
 
 ![Version](https://img.shields.io/badge/version-v4.3.1-2563eb)
 ![Platform](https://img.shields.io/badge/platform-Roblox-00a2ff)
@@ -8,7 +8,7 @@
 ![Wire](https://img.shields.io/badge/wire-BitFrame_v1-475569)
 ![Codec](https://img.shields.io/badge/compression-v2.4.2-0f766e)
 
-NetStreamV2 provides an application-layer networking API built on Roblox's `RemoteEvent` and `UnreliableRemoteEvent` transports. It combines typed and dynamic serializers with message batching, bounded queues, server-side route policies, diagnostic counters, and optional performance telemetry.
+NetStreamV2 is a feature-rich Roblox Luau networking library built on Roblox's `RemoteEvent` and `UnreliableRemoteEvent` transports. It combines efficient typed and dynamic serialization, batching, bounded queues, RPC, and traffic diagnostics with a **zero-trust server-authoritative security model**: server-enforced route policies, replay/duplicate defenses, and rate limits. Optional experimental modules provide owner-only state replication and `SecureUIController` for server-authorized UI visibility and validated actions. Client UI rendering remains editable on the client's own device; authoritative gameplay permissions and state must always stay on the server.
 
 > **Status:** The `main` branch identifies as **NetStream v4.3.1**, with **BitFrame v1** and bundled **Compression v2.4.2 (codec 230)**. The branch includes additional compatible maintenance patches that have not been assigned a new release number. GitHub Actions runs source checks, executable Luau regressions, and a deterministic simulated-server stress suite. **Real Roblox Studio multiplayer performance and heap usage are not yet independently verified.**
 
@@ -21,6 +21,7 @@ NetStreamV2 provides an application-layer networking API built on Roblox's `Remo
 - [API overview](#api-overview)
 - [Security and trust boundaries](#security-and-trust-boundaries)
 - [Experimental authoritative replication](#server-authoritative-replication-experimental)
+- [Secure UI controller](docs/SECURE_UI_CONTROLLER.md)
 - [Encoding and performance](#encoding-and-performance)
 - [Testing and verification](#testing-and-verification)
 - [Documentation](#documentation)
@@ -34,8 +35,9 @@ NetStreamV2 provides an application-layer networking API built on Roblox's `Remo
 | **Serialization** | Compact typed schemas, dynamic values, BitFrame v1, optional bundled compression |
 | **Requests** | Function-style RPC with concurrency limits and lifecycle cleanup |
 | **State** | Latest-value updates, change suppression, manual revisioned delta codec, and opt-in owner-authoritative replicas (experimental) |
+| **Secure UI** | Optional experimental server-authorized panel state, live permission checks for every action, and client rendering from replicated state |
 | **Queues** | Priority hints, batching, coalescing, bounded dispatch, per-player controls |
-| **Security** | Server route policies, optional fail-closed mode, single-use action tickets, in-memory idempotency |
+| **Security** | Server route policies, optional fail-closed mode, single-use action tickets, in-memory idempotency, and owner-only authority boundaries |
 | **Diagnostics** | Packet, queue, RPC, security, compression, and memory/pool counters |
 | **Tests** | Official Luau runtime regressions, fuzz inputs, simulated-server stress, and Studio test scripts |
 
@@ -49,7 +51,8 @@ Create the following hierarchy in Roblox Studio:
 ReplicatedStorage
 └── Netstream                   ModuleScript: contents of Netstream.lua
     ├── Compression             Child ModuleScript: contents of Compression.lua
-    └── AuthoritativeState      Optional child ModuleScript: contents of AuthoritativeState.lua
+    ├── AuthoritativeState      Optional child ModuleScript: contents of AuthoritativeState.lua
+    └── SecureUIController      Optional child ModuleScript: contents of SecureUIController.lua
 
 ServerScriptService
 └── NetworkServer               Script
@@ -59,7 +62,7 @@ StarterPlayer
     └── NetworkClient           LocalScript
 ```
 
-The `Compression` ModuleScript must be a child of `Netstream`. Add the optional `AuthoritativeState` child only when using `CreateReplica`. Server and client scripts must declare matching route IDs and schemas. Keep privileged validation, economy data, and persistence logic **server-side**.
+The `Compression` ModuleScript must be a child of `Netstream`. Add the optional `AuthoritativeState` child when using `CreateReplica`. Add both `AuthoritativeState` and `SecureUIController` when using `CreateSecureUI`. Server and client scripts must declare matching route IDs and schemas. Keep privileged validation, economy data, and persistence logic **server-side**.
 
 ## Quick start
 
