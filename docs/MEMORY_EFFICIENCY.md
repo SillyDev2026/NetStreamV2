@@ -4,6 +4,20 @@
 
 These source-level changes aim to reduce the **retained Luau heap after traffic bursts**. They do not alter BitFrame v1, the bundled Compression 2.4.2 codec (230), route IDs, packet ordering, or the encoded wire bytes.
 
+[← Documentation index](README.md) · [Packer optimization](PACKER_MEMORY_OPTIMIZATION.md) · [Benchmarks](BENCHMARKING.md)
+
+## Allocation and retention model
+
+| Resource | Strategy | What to measure |
+| --- | --- | --- |
+| Native writers and readers | Bounded pooling, reset before reuse | Heap after GC and pool-hit rates at steady state |
+| BitFrame staging buffers | Reuse on normal paths; enforce configured byte limits | Peak packet size, rejected oversize input and retained capacity |
+| Temporary argument arrays | Recycle cleared arrays where safe | Churn from small and structured messages |
+| Per-player queues and routes | Bounded storage, lifecycle cleanup | Heap after disconnect and long-running traffic |
+| Experimental replica state | Per-player server snapshots and one pending revision | Tracked players, ACK backlog, retries and stale attachments |
+
+Pooling reduces some allocations but **can increase retained idle memory**. Tune based on a measured workload, not pool-hit counts alone; no source-level counter proves a particular number of MiB saved in Studio.
+
 ## Latest compatible changes
 
 - The standalone Codec now reuses bounded writer, reader, and argument-array pools for complex payloads. Tiny primitive tuples can bypass writer/reader wrappers entirely.
