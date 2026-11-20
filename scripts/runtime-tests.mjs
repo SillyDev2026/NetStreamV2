@@ -24,7 +24,10 @@ NetStream.__test = {
     dispatchScalar = dispatchRouteScalar,
     charge = Internal.chargeIncomingCall,
     run = Internal.runIncomingCall,
-    startWithoutTransport = function() started = true end,
+    startWithoutTransport = function(remote) started = true; if remote then reliableRemote = remote end end,
+    receive = receive,
+    pumpDispatch = runDispatch,
+    dispatchPump = runDispatch,
     receivePacket = receive,
     drainDispatch = runDispatch,
     makeRawWriter = function(capacity, maxBytes) return Writer.new(capacity, maxBytes) end,
@@ -88,12 +91,17 @@ const bootstrap = `
 local Compression = (function()
 ${read('Compression.lua')}
 end)()
-local function loadNetStream()
-    local services = {RunService = {IsServer = function() return true end}, ReplicatedStorage = {}, Players = {}}
+local function loadAuthoritativeState()
+    local nativeTypeof = typeof
+    local typeof = function(value) return if type(value) == "table" and value.__player then "Instance" else nativeTypeof(value) end
+    ${read('AuthoritativeState.lua')}
+end
+local function loadNetStream(testServices)
+    local services = testServices or {RunService = {IsServer = function() return true end}, ReplicatedStorage = {}, Players = {}}
     local nativeTypeof = typeof
     local typeof = function(value) return if type(value) == "table" and value.__player then "Instance" else nativeTypeof(value) end
     local game = {GetService = function(_, name) return assert(services[name], name) end}
-    local script = {WaitForChild = function() return Compression end}
+    local script = {WaitForChild = function(_, name) return if name == "Compression" then Compression elseif name == "AuthoritativeState" then loadAuthoritativeState() else nil end}
     local require = function(module) return module end
     local Random = {new = function() return {NextInteger = function(_, low) return low end} end}
     local warn = function() end
@@ -104,7 +112,7 @@ local function loadNetStream()
 end
 `;
 try {
-    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression', 'codec_limits']));
+    const suites = process.argv.includes('--compare-only') ? ['packer_compare'] : (process.argv.includes('--profile-only') ? ['packer_profile'] : (process.argv.includes('--stress-only') ? ['server_stress'] : ['codec', 'delta', 'rpc', 'security', 'tickets', 'packer_regression', 'codec_limits', 'replica']));
     for (const suite of suites) {
         const path = join(temporary, suite + '.luau');
         writeFileSync(path, bootstrap + '\n' + read(`tests/runtime/${suite}.luau`));

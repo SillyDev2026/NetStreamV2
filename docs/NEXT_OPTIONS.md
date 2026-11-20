@@ -4,6 +4,10 @@
 
 Priority scores in older sections are **engineering estimates**, not measured performance or competitive rankings. Every significant change requires controlled compatibility, security, and Roblox Studio verification.
 
+## Authoritative replication preview status
+
+An experimental owner-only `CreateReplica` implementation adds server-side commands, per-recipient revision ACKs, bounded full/delta retransmission and automatic resync. See [authoritative replication](AUTHORITATIVE_REPLICATION.md). This does not provide durable transactions, shared entity replication or client integrity. Real Studio and persistence validation remain the priority before release.
+
 ## Current priorities
 
 | Priority | Work item | Acceptance criteria |

@@ -39,6 +39,12 @@ The old RPC completion path also queued a response for a departed player, recrea
 
 The current suite also exercises server route authorization, one-time tickets, replay protection, peer State snapshots, Boolean `false` values, RPC error privacy, malformed BitFrame packets, and codec buffer-size limits. The stress suite uses 96 **simulated** peers, not 96 networked Roblox clients. For the load matrix, see [Server stress validation](SERVER_STRESS_VALIDATION.md).
 
+## Owner-replica regression suite
+
+`tests/runtime/replica.luau` exercises the production replica controller with simulated players and injected packet loss, including denied commands, invalid frames, ACK matching, replay and epoch isolation, lifecycle cleanup, and 2,000 changing-state steps. It also exercises the public NetStream factory through actual BitFrame encoding, decoding and dispatch using deterministic service doubles and strict server route policies.
+
+Paired `tests/AuthoritativeReplicaRegression.server.lua` and `*.client.lua` scripts are supplied, but successful standalone execution is **not evidence of a Roblox Studio multiplayer pass**.
+
 ## Remaining verification requirements
 
 Standalone Luau tests are functional regression evidence, not Roblox benchmarks. The service doubles do not reproduce RemoteEvent serialization, packet delivery, Heartbeat/task scheduling, Instances, Vector/CFrame types, replication, or multiplayer behavior. Run the existing paired Studio regressions, including handshake recovery, atomic packets, RPC concurrency, memory retention and p95/p99 benchmarks, before production rollout.
