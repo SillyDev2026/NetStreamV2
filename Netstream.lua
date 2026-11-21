@@ -6,11 +6,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Players = game:GetService("Players")
 
 local Internal = {}
-Internal.CompressionCore = require(assert(script:WaitForChild("Compression", 10), "NetStream v4.0.0 requires a child ModuleScript named Compression"))
-assert(type(Internal.CompressionCore) == "table" and type(Internal.CompressionCore.Version) == "function", "NetStream v4.0.0 requires the bundled Compression API")
+Internal.CompressionCore = require(assert(script:WaitForChild("Compression", 10), "NetStream v4.1.1 requires a child ModuleScript named Compression"))
+assert(type(Internal.CompressionCore) == "table" and type(Internal.CompressionCore.Version) == "function", "NetStream v4.1.1 requires the bundled Compression API")
 Internal.CompressionVersion = tostring(Internal.CompressionCore.Version())
 local compressionFamily = string.sub(Internal.CompressionVersion, 1, 4)
-assert(compressionFamily == "2.3." or compressionFamily == "2.4.", "NetStream v4.0.0 requires Compression 2.3.x or 2.4.x; got " .. Internal.CompressionVersion)
+assert(compressionFamily == "2.3." or compressionFamily == "2.4.", "NetStream v4.1.1 requires Compression 2.3.x or 2.4.x; got " .. Internal.CompressionVersion)
 assert(Internal.CompressionCore.CodecVersion == 230 and Internal.CompressionCore.Magic == 0x4E433233, "NetStream requires Compression wire codec 230")
 assert(type(Internal.CompressionCore.CompressTablePacket) == "function" and type(Internal.CompressionCore.DecompressTable) == "function", "NetStream requires the Compression 230 packet API")
 

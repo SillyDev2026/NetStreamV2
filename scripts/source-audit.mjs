@@ -54,6 +54,9 @@ assert(read("tests/runtime/security.luau").includes("PASS SECURITY"), "Missing s
 
 
 assert(source.includes(`local VERSION = "${version}"`), "Release version mismatch");
+assert(source.includes(`NetStream v${version} requires a child ModuleScript named Compression`), "Versioned missing-module diagnostic drifted");
+assert(source.includes(`NetStream v${version} requires the bundled Compression API`), "Versioned invalid-module diagnostic drifted");
+assert(source.includes(`NetStream v${version} requires Compression 2.3.x or 2.4.x; got`), "Versioned incompatible-codec diagnostic drifted");
 assert(!/\blocal\s+[A-Za-z_]\w*\s*=\s*\n\s*\S/.test(source), "Local assignments must stay on one line");
 assert(source.includes("Internal.writeAdaptiveUIntBitsUnchecked(self.buffer, self.bitPosition, value)"), "Single-validation varuint path missing");
 assert(source.includes("writer:ensureBits(schema.count * 8)"), "U8 writer preflight missing");
